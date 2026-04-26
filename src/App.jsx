@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   Calendar, Users, ClipboardList, Sparkles, Plus, X, Clock,
