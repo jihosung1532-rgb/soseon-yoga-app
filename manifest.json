@@ -1,0 +1,14 @@
+{
+  "name": "소선요가",
+  "short_name": "소선요가",
+  "description": "소선요가 회원 관리",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F5F2EC",
+  "theme_color": "#2D2A26",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
