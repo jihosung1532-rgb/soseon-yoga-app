@@ -174,20 +174,20 @@ function sbSignOut() {
    K 키 → Supabase 테이블 매핑
    ========================================================= */
 const K = {
-  members:    { table: 'members',  id: 'all' },
-  sessions:   { table: 'sessions', id: 'all' },
-  classlog:   { table: 'classlog', id: 'all' },
-  trials:     { table: 'trials',   id: 'all' },
-  dashDismiss:{ table: 'settings', id: 'dashDismiss' },
-  smsConfirmed:{ table: 'settings', id: 'smsConfirmed' },
-  seeded:     { table: 'settings', id: 'seeded' },
+  members:     { lkey: 'sosun:members:v8',     table: 'members',  id: 'all' },
+  sessions:    { lkey: 'sosun:sessions:v8',    table: 'sessions', id: 'all' },
+  classlog:    { lkey: 'sosun:classlog:v8',    table: 'classlog', id: 'all' },
+  trials:      { lkey: 'sosun:trials:v8',      table: 'trials',   id: 'all' },
+  dashDismiss: { lkey: 'sosun:dashDismiss:v8', table: 'settings', id: 'dashDismiss' },
+  smsConfirmed:{ lkey: 'sosun:smsConfirmed:v8',table: 'settings', id: 'smsConfirmed' },
+  seeded:      { lkey: 'sosun:seeded:v8',      table: 'settings', id: 'seeded' },
 };
 
 async function loadKey(k, fallback) {
   try {
     // bypass 모드: localStorage 사용
     if (!sbAuth.token || sbAuth.token === 'bypass') {
-      const v = localStorage.getItem(k.id);
+      const v = localStorage.getItem(k.lkey);
       if (v === null) return fallback;
       return JSON.parse(v);
     }
@@ -202,7 +202,7 @@ async function saveKey(k, value) {
   try {
     // bypass 모드: localStorage 사용
     if (!sbAuth.token || sbAuth.token === 'bypass') {
-      localStorage.setItem(k.id, JSON.stringify(value));
+      localStorage.setItem(k.lkey, JSON.stringify(value));
       return;
     }
     await sb.upsert(k.table, k.id, value);
