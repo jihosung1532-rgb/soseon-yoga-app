@@ -3023,6 +3023,18 @@ function MemberCard({ member, onClick }) {
   
   // 대상자면 카드 강조
   const isAchiever = rs?.achieved;
+  
+  // 상태 텍스트 (회수 앞에 인라인 표시)
+  const statusText = (() => {
+    if (!ps) return null;
+    if (rs?.achieved) return { label: '🏆 대상자', color: '#6B5410' };
+    if (ps.label === '진행중') return { label: '진행중', color: theme.accent };
+    if (ps.label === '시작예정') return { label: '시작예정', color: '#8B6F30' };
+    if (ps.label === '홀딩') return { label: '홀딩', color: theme.warn };
+    if (ps.label === '완료') return { label: '완료', color: theme.success };
+    if (ps.tone === 'danger') return { label: ps.label, color: theme.danger };
+    return null;
+  })();
 
   return (
     <div onClick={onClick} className="rounded-2xl p-3.5 cursor-pointer transition-all active:scale-[0.99]"
@@ -3048,29 +3060,6 @@ function MemberCard({ member, onClick }) {
           )}
         </div>
         <div className="flex flex-col items-end gap-1 flex-shrink-0">
-          {ps && (() => {
-            // 진행중은 표시 안 함 (수강권 진행 막대로 충분)
-            // 시작예정/홀딩/D-day(만료임박)/완료만 표시
-            if (ps.label === '진행중') {
-              // 진행중일 때는 리듬 수련 칩으로 대체
-              const rs = pass ? rhythmStatus(pass) : null;
-              if (rs?.achieved) {
-                return <Chip tone="gold">🏆 대상자</Chip>;
-              }
-              if (rs?.challenging) {
-                return <Chip tone="goldSoft">도전중</Chip>;
-              }
-              return null;
-            }
-            return (
-              <Chip tone={
-                ps.label === '시작예정' ? 'warn' :
-                ps.label === '홀딩' ? 'warn' :
-                ps.label === '완료' ? 'success' :
-                ps.tone
-              }>{ps.label}</Chip>
-            );
-          })()}
           {member.assessment && <Chip tone="accent" size="sm">분석</Chip>}
         </div>
       </div>
@@ -3079,8 +3068,16 @@ function MemberCard({ member, onClick }) {
         <div>
           <div className="flex justify-between text-[12px] mb-1">
             <span style={{ color: theme.inkSoft }}>{pass.type}</span>
-            <span className="font-medium tabular-nums" style={{ color: theme.ink }}>
-              {ps?.notStarted ? '시작 전' : `${pass.usedSessions}/${pass.totalSessions}회`}
+            <span className="tabular-nums">
+              {statusText && (
+                <span style={{ color: statusText.color, fontWeight: 600, marginRight: 6 }}>
+                  {statusText.label}
+                </span>
+              )}
+              <span style={{ fontWeight: 600, color: rs?.achieved ? '#6B5410' : theme.ink }}>
+                {ps?.notStarted ? '0/' + pass.totalSessions + '회' : `${pass.usedSessions}/${pass.totalSessions}회`}
+                {rs?.achieved && ' ✓'}
+              </span>
             </span>
           </div>
           <div className="h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: theme.cardAlt }}>
@@ -3100,7 +3097,6 @@ function MemberCard({ member, onClick }) {
                   : `~ ${pass.expiryDate}`}
               {pass.holdUsed && !ps?.notStarted && !rs?.achieved && <span style={{ color: theme.warn }}> · 홀딩</span>}
             </span>
-            {/* D-day 표시: D-7 이내면 빨간색 */}
             {!ps?.notStarted && !ps?.done && ps?.daysLeft !== undefined && !rs?.achieved && (
               <span style={{ color: ps.daysLeft <= 7 ? theme.danger : theme.inkMute, fontWeight: ps.daysLeft <= 7 ? 600 : 400 }}>
                 D-{ps.daysLeft}
@@ -3110,14 +3106,15 @@ function MemberCard({ member, onClick }) {
               <span style={{ color: '#C9A961', fontWeight: 600 }}>완료</span>
             )}
           </div>
-          {/* 도전중 미니 트래커 */}
+          {/* 도전중 미니 트래커 - 바 안에 텍스트 */}
           {rs?.challenging && (
-            <div className="flex items-center gap-1.5 mt-1.5 px-2 py-1 rounded-full"
+            <div className="flex items-center gap-2 mt-1.5 px-2.5 py-1 rounded-full"
               style={{ backgroundColor: '#F5EBC8', color: '#6B5410', fontSize: 10 }}>
-              <span style={{ fontWeight: 600 }}>{rs.elapsedDays}/{rs.limitDays}일</span>
-              <div className="flex-1 h-[3px] rounded-full overflow-hidden" style={{ backgroundColor: 'rgba(201,169,97,0.25)' }}>
+              <span style={{ fontWeight: 700, flexShrink: 0 }}>🏆 도전중</span>
+              <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ backgroundColor: 'rgba(201,169,97,0.25)' }}>
                 <div className="h-full" style={{ width: `${Math.min(100, (rs.elapsedDays / rs.limitDays) * 100)}%`, backgroundColor: '#C9A961' }} />
               </div>
+              <span style={{ fontWeight: 600, flexShrink: 0 }}>{rs.elapsedDays}/{rs.limitDays}일</span>
             </div>
           )}
         </div>
