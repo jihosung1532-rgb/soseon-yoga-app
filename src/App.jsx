@@ -320,7 +320,7 @@ const PASS_PRESETS = [
   { label: '3개월 (24회)', total: 24, days: 112, price: 540000, category: 'group', note: '16주 이내 · 1회 홀딩', canHold: true },
   { label: '횟수권 (10회)', total: 10, days: 70, price: 270000, category: 'group', note: '10주 이내' },
   { label: '개인레슨 1회 (60분)', total: 1, days: 60, price: 80000, category: 'private' },
-  { label: '⭐ 스타터 패키지', special: 'starter', price: 360000, note: '개인 3회 + 소그룹 6회' },
+  { label: '스타터 패키지', special: 'starter', price: 360000, note: '개인 3회 + 소그룹 6회' },
   { label: '커스텀 수강권', special: 'custom', price: 0, note: '할인가·특수 수강권 자유 입력' },
 ];
 
@@ -1219,6 +1219,11 @@ function rhythmStatus(p) {
     targetSessions = 8;
     baseDays = 30;
     bonus = 1;
+  } else if (p.totalSessions === 16 && p.category !== 'private') {
+    // 2개월 16회 (단종됐지만 기존 회원 보상 유지)
+    targetSessions = 16;
+    baseDays = 60;
+    bonus = 2;
   } else if (p.totalSessions === 24) {
     // 3개월 24회
     targetSessions = 24;
@@ -1232,12 +1237,17 @@ function rhythmStatus(p) {
   const startMs = fromYMD(p.startDate).getTime();
   const todayMs = new Date().setHours(0,0,0,0);
   
-  // 홀딩일 더하기 (3개월권만)
+  // 홀딩일 더하기 (3개월권만, 2개월권은 홀딩 없음)
   const holdDays = (p.canHold && p.holdUsed && p.holdDays) ? p.holdDays : 0;
   const limitDays = baseDays + (targetSessions === 24 ? holdDays : 0);
   
   // 경과 일수
   const elapsedDays = Math.floor((todayMs - startMs) / (1000*60*60*24));
+  
+  // 시작 전이면 트래커 표시 안 함
+  if (elapsedDays < 0) {
+    return { eligible: true, notStarted: true, targetSessions, baseDays, bonus, limitDays };
+  }
   
   // 마지막 수업 날짜 (sessionDates 중 가장 최근)
   const sessionDates = p.sessionDates || [];
@@ -1520,7 +1530,7 @@ function Header({ tab, setTab, onOpenSettings }) {
   const tabs = [
     { id: 'schedule', label: '일정', icon: Calendar },
     { id: 'members', label: '회원', icon: Users },
-    { id: 'trials', label: '체험자', icon: UserPlus },
+    { id: 'trials', label: '체험', icon: UserPlus },
     { id: 'classlog', label: '수업 기록', icon: ClipboardList },
     { id: 'stats', label: '통계', icon: TrendingUp },
   ];
@@ -2065,8 +2075,22 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
     const oldParts = oldSess?.participants || [];
     const newParts = data?.participants || [];
 
-    // Charge diff: only non-cancelled participants with passId count
-    const chargeOf = (p) => (!p.cancelled || p.cancelled === 'charged') && p.memberId && p.passId ? `${p.memberId}|${p.passId}` : null;
+    // 차감 대상: status 기반 (없으면 옛 cancelled 필드 fallback)
+    // 차감 X: reserved, cancelled_advance, cancelled (no_charge), 당일 취소 미차감
+    // 차감 O: attended (default), no_show, cancelled_sameday w/charged, cancelled (charged)
+    const isCharged = (p) => {
+      // 새 status 시스템
+      if (p.status === 'reserved') return false;
+      if (p.status === 'cancelled_advance') return false;
+      if (p.status === 'cancelled_sameday') return p.cancelled === 'charged';
+      if (p.status === 'no_show') return true;
+      // 옛 cancelled 시스템 호환
+      if (p.cancelled === 'no_charge') return false;
+      if (p.cancelled === 'charged') return true;
+      // 기본: 출석 (attended) → 차감
+      return true;
+    };
+    const chargeOf = (p) => isCharged(p) && p.memberId && p.passId ? `${p.memberId}|${p.passId}` : null;
     const oldCharges = oldParts.map(chargeOf).filter(Boolean);
     const newCharges = newParts.map(chargeOf).filter(Boolean);
 
@@ -2502,11 +2526,18 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
     if (!m) return;
     const preferred = category === 'private' ? 'private' : 'group';
     const pass = activePass(m, preferred) || activePass(m, preferred === 'group' ? 'private' : 'group');
+    
+    // 미래 날짜면 예약 확정 상태로
+    const todayStr = toYMD(new Date());
+    const slotDateStr = slot.date ? toYMD(slot.date) : todayStr;
+    const isFuture = slotDateStr > todayStr;
+    
     setParts([...parts, {
       memberId: m.id, memberName: m.name, passId: pass?.id,
       sessionNumber: pass ? pass.usedSessions + 1 : undefined,
       totalSessions: pass?.totalSessions,
       classType: (pass?.category === 'private' || category === 'private') ? '개인' : undefined,
+      ...(isFuture ? { status: 'reserved' } : {}),
     }]);
     setAddingMember('');
   };
@@ -2517,13 +2548,32 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
     setTrialName('');
   };
 
+  // 상태 설정 - 'reserved' | 'attended' | 'cancelled_advance' | 'cancelled_sameday' | 'no_show'
+  const setStatus = (idx, status, opts = {}) => {
+    setParts(parts.map((p, i) => {
+      if (i !== idx) return p;
+      const next = { ...p, status };
+      // 호환성: cancelled 필드도 같이 설정
+      if (status === 'cancelled_advance') {
+        next.cancelled = 'no_charge';
+      } else if (status === 'cancelled_sameday') {
+        next.cancelled = opts.charged ? 'charged' : 'no_charge';
+      } else if (status === 'no_show') {
+        next.cancelled = 'charged';
+      } else {
+        delete next.cancelled;
+      }
+      return next;
+    }));
+  };
   const setCancelled = (idx, kind) => {
+    // 호환용 - 기존 코드가 호출
     setParts(parts.map((p, i) => i === idx ? { ...p, cancelled: kind } : p));
   };
   const undoCancel = (idx) => {
     setParts(parts.map((p, i) => {
       if (i !== idx) return p;
-      const { cancelled, cancelNote, ...rest } = p;
+      const { cancelled, cancelNote, status, ...rest } = p;
       return rest;
     }));
   };
@@ -2609,23 +2659,37 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
                 return (
                   <div key={i} className="rounded-lg p-2"
                     style={{
-                      backgroundColor: isCharged ? theme.dangerBg : isCancelled ? theme.cardAlt2 : theme.cardAlt,
-                      border: `1px solid ${isCharged ? '#D19B91' : theme.lineLight}`,
+                      backgroundColor: 
+                        p.status === 'no_show' || p.cancelled === 'charged' ? theme.dangerBg :
+                        p.status === 'cancelled_sameday' ? theme.warnBg :
+                        p.status === 'reserved' ? '#F5F4EC' :
+                        isCancelled ? theme.cardAlt2 : theme.cardAlt,
+                      border: `1px solid ${
+                        p.status === 'no_show' || p.cancelled === 'charged' ? '#D19B91' :
+                        p.status === 'cancelled_sameday' ? '#C8A366' :
+                        theme.lineLight
+                      }`,
                       opacity: isCancelled && !isCharged ? 0.7 : 1,
                     }}>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-sm font-medium" style={{
-                          color: isCharged ? theme.danger : theme.ink,
+                          color: p.status === 'no_show' || isCharged ? theme.danger : theme.ink,
                           textDecoration: isCancelled ? 'line-through' : 'none',
                         }}>
                           {p.memberName}
                         </span>
-                        {p.sessionNumber && p.totalSessions && !isCancelled && <Chip tone="accent" size="sm">{p.sessionNumber}/{p.totalSessions}</Chip>}
+                        {p.sessionNumber && p.totalSessions && !isCancelled && p.status !== 'reserved' && <Chip tone="accent" size="sm">{p.sessionNumber}/{p.totalSessions}</Chip>}
                         {p.isTrial && <Chip tone="peach" size="sm">체험</Chip>}
                         {p.classType === '개인' && <Chip tone="accent" size="sm">개인</Chip>}
-                        {p.cancelled === 'no_charge' && <Chip tone="neutral" size="sm">취소(미차감)</Chip>}
-                        {p.cancelled === 'charged' && <Chip tone="danger" size="sm">취소(차감)</Chip>}
+                        {/* 상태 칩 */}
+                        {p.status === 'reserved' && <Chip tone="accent" size="sm">예약 확정</Chip>}
+                        {p.status === 'no_show' && <Chip tone="danger" size="sm">노쇼</Chip>}
+                        {p.status === 'cancelled_advance' && <Chip tone="neutral" size="sm">예약 취소</Chip>}
+                        {p.status === 'cancelled_sameday' && <Chip tone="warn" size="sm">당일 취소{p.cancelled === 'charged' ? ' (차감)' : ''}</Chip>}
+                        {/* 호환: 옛 데이터 */}
+                        {!p.status && p.cancelled === 'no_charge' && <Chip tone="neutral" size="sm">취소(미차감)</Chip>}
+                        {!p.status && p.cancelled === 'charged' && <Chip tone="danger" size="sm">취소(차감)</Chip>}
                       </div>
                       <button onClick={() => setParts(parts.filter((_, j) => j !== i))} className="p-1 rounded" style={{ color: theme.danger }}>
                         <X size={14} />
@@ -2634,24 +2698,33 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
                     {p.cancelNote && (
                       <div className="text-[10px] mt-1" style={{ color: theme.inkMute }}>메모: {p.cancelNote}</div>
                     )}
-                    {!isCancelled ? (
-                      <div className="flex gap-1 mt-1.5">
-                        <button onClick={() => setCancelled(i, 'no_charge')}
+                    {/* 상태 변경 버튼 */}
+                    {!isCancelled && p.status !== 'no_show' && p.status !== 'reserved' ? (
+                      <div className="flex gap-1 mt-1.5 flex-wrap">
+                        <button onClick={() => setStatus(i, 'cancelled_advance')}
                           className="text-[11px] px-2 py-0.5 rounded-md"
                           style={{ color: theme.inkMute, border: `1px solid ${theme.line}` }}>
-                          미차감 취소
+                          예약 취소
                         </button>
-                        <button onClick={() => setCancelled(i, 'charged')}
+                        <button onClick={() => {
+                          const charged = confirm('당일 취소 — 차감하시겠어요?\n\n[확인] 차감\n[취소] 미차감');
+                          setStatus(i, 'cancelled_sameday', { charged });
+                        }}
+                          className="text-[11px] px-2 py-0.5 rounded-md"
+                          style={{ color: '#5E4520', border: `1px solid #C8A366` }}>
+                          당일 취소
+                        </button>
+                        <button onClick={() => setStatus(i, 'no_show')}
                           className="text-[11px] px-2 py-0.5 rounded-md"
                           style={{ color: theme.danger, border: `1px solid ${theme.danger}` }}>
-                          차감 취소
+                          노쇼
                         </button>
                       </div>
                     ) : (
                       <button onClick={() => undoCancel(i)}
                         className="text-[11px] mt-1.5 px-2 py-0.5 rounded-md"
                         style={{ color: theme.accent, border: `1px solid ${theme.accent}` }}>
-                        취소 해제
+                        상태 해제
                       </button>
                     )}
                   </div>
@@ -3254,8 +3327,8 @@ function MemberEditor({ member, onClose, onSave }) {
           </div>
         </div>
 
-        <Field label="메모">
-          <TextArea value={data.notes || ''} onChange={(e) => setData({ ...data, notes: e.target.value })} placeholder="특이사항이 있다면" />
+        <Field label="고정 메모">
+          <TextArea value={data.notes || ''} onChange={(e) => setData({ ...data, notes: e.target.value })} placeholder="회원 특이사항 (변하지 않는 정보)" />
         </Field>
 
         <div className="flex justify-end gap-2 pt-2">
@@ -3288,6 +3361,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
             sessionNumber: p.sessionNumber, totalSessions: p.totalSessions,
             cancelled: p.cancelled, cancelNote: p.cancelNote,
             classType: p.classType,
+            status: p.status, // 'attended' | 'reserved' | 'cancelled_advance' | 'cancelled_sameday' | 'no_show'
           });
         }
       });
@@ -3355,6 +3429,23 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
       phone: member.phone, name: member.name,
       template: SMS_TEMPLATES.hold(member, p, holdStart, holdEnd),
     });
+  };
+  
+  const cancelHold = async (pid) => {
+    const p = member.passes.find(x => x.id === pid);
+    if (!p) return;
+    if (!p.holdUsed) { toast('홀딩이 적용되지 않은 수강권이에요'); return; }
+    if (!confirm(`홀딩 ${p.holdDays}일을 취소할까요?\n만료일이 ${p.holdDays}일 앞당겨집니다.`)) return;
+    const newExpiry = toYMD(addDays(fromYMD(p.expiryDate), -p.holdDays));
+    await onUpdate({
+      ...member,
+      passes: member.passes.map(x => {
+        if (x.id !== pid) return x;
+        const { holdUsed, holdDays, holdStart, holdEnd, ...rest } = x;
+        return { ...rest, expiryDate: newExpiry };
+      }),
+    });
+    toast('홀딩이 취소되었어요');
   };
 
   const doConvert = async (oldPass, newPassData, refundAmount) => {
@@ -3438,8 +3529,8 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
           {[
             { id: 'passes', label: '수강권' },
             { id: 'overview', label: '정보' },
-            { id: 'history', label: '이력' },
-            { id: 'memo', label: '메모' },
+            { id: 'history', label: '수강이력' },
+            { id: 'memo', label: '수업 기록' },
             { id: 'progress', label: '경과' },
             { id: 'assessment', label: '분석' },
           ].map(t => (
@@ -3461,7 +3552,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
             <InfoRow label="직업" value={member.job} />
             <InfoRow label="요가·운동 경험" value={member.yogaExperience} />
             <InfoRow label="고정 수업" value={member.fixedSlots?.map(fs => `${WEEK_KR[fs.dow]}요일 ${fs.time}`).join(', ')} />
-            <InfoRow label="메모" value={member.notes} multiline />
+            <InfoRow label="고정 메모" value={member.notes} multiline />
             <InfoRow label="등록일" value={member.createdAt} />
             {member.refunds?.length > 0 && (
               <div>
@@ -3618,6 +3709,12 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
                     {p.canHold && !p.holdUsed && (
                       <Button size="sm" variant="ghost" onClick={() => applyHold(p.id, 7)}>홀딩 7일</Button>
                     )}
+                    {p.holdUsed && (
+                      <Button size="sm" variant="ghost" onClick={() => cancelHold(p.id)}
+                        style={{ color: theme.warn }}>
+                        홀딩 취소
+                      </Button>
+                    )}
                     <Button size="sm" variant="ghost" onClick={() => setConvertingPass(p)}>
                       <RefreshCw size={11} /> 전환
                     </Button>
@@ -3670,23 +3767,49 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
             ) : (
               <div className="space-y-1.5 max-h-[420px] overflow-y-auto">
                 {history.map((h, i) => {
-                  const isCharged = h.cancelled === 'charged';
-                  const isNoCharge = h.cancelled === 'no_charge';
+                  // 상태 판단
+                  const todayStr = toYMD(new Date());
+                  const isFuture = h.date > todayStr;
+                  
+                  // 상태 라벨/색상
+                  let statusChip = null;
+                  let bgColor = theme.cardAlt;
+                  let borderColor = theme.lineLight;
+                  let timeColor = theme.accent2;
+                  
+                  if (h.status === 'no_show') {
+                    statusChip = <Chip tone="danger" size="sm">노쇼</Chip>;
+                    bgColor = theme.dangerBg; borderColor = '#D19B91';
+                    timeColor = theme.danger;
+                  } else if (h.status === 'cancelled_sameday' || (h.cancelled && !h.status)) {
+                    // 기존 cancelled 데이터 호환
+                    if (h.cancelled === 'charged' || h.status === 'cancelled_sameday') {
+                      statusChip = <Chip tone="warn" size="sm">당일 취소{h.cancelled === 'charged' ? ' (차감)' : ''}</Chip>;
+                      bgColor = theme.warnBg; borderColor = '#C8A366';
+                    } else if (h.cancelled === 'no_charge') {
+                      statusChip = <Chip tone="neutral" size="sm">예약 취소</Chip>;
+                    }
+                  } else if (h.status === 'cancelled_advance') {
+                    statusChip = <Chip tone="neutral" size="sm">예약 취소</Chip>;
+                  } else if (h.status === 'reserved' || isFuture) {
+                    statusChip = <Chip tone="accent" size="sm">예약 확정</Chip>;
+                    bgColor = '#F5F4EC';
+                  } else {
+                    // 출석 (default)
+                    statusChip = <Chip tone="success" size="sm">출석</Chip>;
+                  }
+                  
                   return (
                     <div key={i} className="px-3 py-2 rounded-lg flex items-start gap-3"
-                      style={{
-                        backgroundColor: isCharged ? theme.dangerBg : theme.cardAlt,
-                        border: `1px solid ${isCharged ? '#D19B91' : theme.lineLight}`,
-                      }}>
+                      style={{ backgroundColor: bgColor, border: `1px solid ${borderColor}` }}>
                       <span className="text-[12px] tabular-nums shrink-0" style={{ color: theme.inkMute }}>{h.date}</span>
-                      <span className="text-[12px] font-medium tabular-nums" style={{ color: isCharged ? theme.danger : theme.accent2, fontFamily: theme.serif, fontSize: 13 }}>{h.time}</span>
+                      <span className="text-[12px] font-medium tabular-nums" style={{ color: timeColor, fontFamily: theme.serif, fontSize: 13 }}>{h.time}</span>
                       <div className="flex-1 flex flex-wrap items-center gap-1">
                         {h.classType === '개인' && <Chip tone="accent" size="sm">개인</Chip>}
-                        {h.sessionNumber && h.totalSessions && !h.cancelled && (
+                        {statusChip}
+                        {h.sessionNumber && h.totalSessions && !h.cancelled && h.status !== 'cancelled_advance' && h.status !== 'reserved' && !isFuture && (
                           <span className="text-[11px]" style={{ color: theme.inkSoft }}>{h.sessionNumber}/{h.totalSessions}</span>
                         )}
-                        {isNoCharge && <Chip tone="neutral" size="sm">취소(미차감)</Chip>}
-                        {isCharged && <Chip tone="danger" size="sm">취소(차감)</Chip>}
                         {h.cancelNote && <span className="text-[10px]" style={{ color: theme.inkMute }}>· {h.cancelNote}</span>}
                       </div>
                     </div>
@@ -3698,7 +3821,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
         )}
 
         {tab === 'memo' && (
-          <MemoTimeline items={member.memoTimeline || []} onUpdate={updateMemoTimeline} toast={toast} />
+          <MemoTimeline items={member.memoTimeline || []} onUpdate={updateMemoTimeline} toast={toast} memberName={member.name} />
         )}
 
         {tab === 'progress' && (
@@ -3756,17 +3879,22 @@ function InfoRow({ label, value, multiline }) {
 }
 
 /* ---------- Memo Timeline (date + text) ---------- */
-function MemoTimeline({ items, onUpdate, toast }) {
+function MemoTimeline({ items, onUpdate, toast, memberName }) {
   const [adding, setAdding] = useState(false);
+  const [mode, setMode] = useState('text'); // text | kakao
   const [date, setDate] = useState(toYMD(new Date()));
   const [text, setText] = useState('');
+  const [kakaoImages, setKakaoImages] = useState([]);
+  const [kakaoLoading, setKakaoLoading] = useState(false);
+  const [kakaoParsed, setKakaoParsed] = useState(null);
+  const fileRef = useRef();
 
   const add = async () => {
     if (!text.trim()) return;
     const next = [{ id: uid(), date, text: text.trim() }, ...items]
       .sort((a, b) => b.date.localeCompare(a.date));
     await onUpdate(next);
-    setAdding(false); setText(''); toast('메모 저장됨');
+    setAdding(false); setText(''); toast('수업 기록 저장됨');
   };
 
   const del = async (id) => {
@@ -3774,29 +3902,162 @@ function MemoTimeline({ items, onUpdate, toast }) {
     await onUpdate(items.filter(x => x.id !== id));
   };
 
+  // 카톡 캡처 분석
+  const handleKakaoFiles = async (files) => {
+    const arr = [...kakaoImages];
+    for (const f of files) {
+      if (!f.type.startsWith('image/')) continue;
+      const reader = new FileReader();
+      const dataUrl = await new Promise(res => { reader.onload = e => res(e.target.result); reader.readAsDataURL(f); });
+      arr.push({ id: uid(), name: f.name, dataUrl, base64: dataUrl.split(',')[1], mediaType: f.type });
+    }
+    setKakaoImages(arr);
+  };
+
+  const analyzeKakao = async () => {
+    if (kakaoImages.length === 0) return;
+    setKakaoLoading(true);
+    try {
+      const content = kakaoImages.map(img => ({
+        type: 'image',
+        source: { type: 'base64', media_type: img.mediaType, data: img.base64 },
+      }));
+      content.push({
+        type: 'text',
+        text: `이 카톡 캡처에서 ${memberName || '회원'}님과의 대화 내용을 정리해주세요.
+
+다음 JSON 형식으로 응답해주세요 (다른 설명 없이 JSON만):
+{
+  "date": "YYYY-MM-DD (대화가 있었던 날짜, 추정 가능하면)",
+  "summary": "대화 요약 (1-2줄)",
+  "messages": [
+    {"from": "회원" 또는 "강사", "time": "오전 10:30 같은 시간", "text": "메시지 내용"}
+  ],
+  "actionItems": ["일정 변경 요청", "취소" 등 강사가 처리해야 할 것]
+}
+
+날짜를 알 수 없으면 date는 빈 문자열로 두세요.`
+      });
+      const result = await callClaude([{ role: 'user', content }]);
+      const cleaned = result.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(cleaned);
+      setKakaoParsed(parsed);
+    } catch (e) {
+      console.error(e);
+      alert('분석 실패: ' + e.message);
+    }
+    setKakaoLoading(false);
+  };
+
+  const saveKakao = async () => {
+    if (!kakaoParsed) return;
+    const memoText = `📱 카톡 대화\n${kakaoParsed.summary || ''}\n\n` +
+      (kakaoParsed.messages || []).map(m => `[${m.from}${m.time ? ` · ${m.time}` : ''}] ${m.text}`).join('\n') +
+      ((kakaoParsed.actionItems || []).length ? `\n\n📌 처리 필요:\n${kakaoParsed.actionItems.map(a => '· ' + a).join('\n')}` : '');
+    const memoDate = kakaoParsed.date || toYMD(new Date());
+    const next = [{ id: uid(), date: memoDate, text: memoText, source: 'kakao' }, ...items]
+      .sort((a, b) => b.date.localeCompare(a.date));
+    await onUpdate(next);
+    setAdding(false); setKakaoImages([]); setKakaoParsed(null); setMode('text');
+    toast('카톡 대화 저장됨');
+  };
+
   return (
     <div className="space-y-2">
       {!adding && (
-        <Button icon={Plus} variant="soft" onClick={() => setAdding(true)} className="w-full">새 메모</Button>
+        <div className="flex gap-2">
+          <Button icon={Plus} variant="soft" onClick={() => { setAdding(true); setMode('text'); }} className="flex-1">새 기록</Button>
+          <Button icon={Camera} variant="soft" onClick={() => { setAdding(true); setMode('kakao'); }} className="flex-1">카톡 캡처</Button>
+        </div>
       )}
-      {adding && (
+      {adding && mode === 'text' && (
         <div className="rounded-2xl p-3 space-y-2" style={{ backgroundColor: theme.cardAlt, border: `1px solid ${theme.line}` }}>
           <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          <TextArea value={text} onChange={(e) => setText(e.target.value)} placeholder="회원에 대해 남길 메모 (상담 내용, 변경 사항, 관찰 등)" />
+          <TextArea value={text} onChange={(e) => setText(e.target.value)} placeholder="수업 내용, 회원 컨디션, 변경 사항, 상담 내용 등" />
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => { setAdding(false); setText(''); }}>취소</Button>
             <Button icon={Check} onClick={add}>저장</Button>
           </div>
         </div>
       )}
+      {adding && mode === 'kakao' && (
+        <div className="rounded-2xl p-3 space-y-2" style={{ backgroundColor: '#FFF8E8', border: `1px solid #C8A366` }}>
+          <div className="text-[12px] font-medium" style={{ color: '#5E4520' }}>📱 카톡 캡처 업로드</div>
+          <div className="text-[10px]" style={{ color: '#8B6F30' }}>
+            카톡 대화 캡처를 올리면 AI가 대화를 정리해서 저장해줘요.
+          </div>
+          
+          {!kakaoParsed ? (
+            <>
+              <input ref={fileRef} type="file" accept="image/*" multiple
+                onChange={(e) => handleKakaoFiles(e.target.files)} style={{ display: 'none' }} />
+              <Button variant="soft" icon={Upload} onClick={() => fileRef.current?.click()} className="w-full">
+                캡처 선택 ({kakaoImages.length}개)
+              </Button>
+              {kakaoImages.length > 0 && (
+                <div className="grid grid-cols-3 gap-1.5">
+                  {kakaoImages.map(img => (
+                    <div key={img.id} className="relative">
+                      <img src={img.dataUrl} className="w-full aspect-square object-cover rounded-md" />
+                      <button onClick={() => setKakaoImages(kakaoImages.filter(x => x.id !== img.id))}
+                        className="absolute top-1 right-1 w-5 h-5 rounded-full flex items-center justify-center"
+                        style={{ backgroundColor: theme.danger, color: '#FFF' }}>
+                        <X size={10} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" onClick={() => { setAdding(false); setKakaoImages([]); }}>취소</Button>
+                <Button icon={Sparkles} onClick={analyzeKakao} disabled={kakaoLoading || kakaoImages.length === 0}>
+                  {kakaoLoading ? '분석 중...' : 'AI 분석'}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="rounded-lg p-2" style={{ backgroundColor: '#FFF', border: `1px solid ${theme.line}` }}>
+                <div className="text-[11px] font-bold mb-1" style={{ color: theme.accent }}>분석 결과</div>
+                {kakaoParsed.date && <div className="text-[11px] mb-1" style={{ color: theme.inkMute }}>날짜: {kakaoParsed.date}</div>}
+                <div className="text-[12px] mb-2" style={{ color: theme.ink }}>{kakaoParsed.summary}</div>
+                {(kakaoParsed.messages || []).length > 0 && (
+                  <div className="space-y-1 mb-2 max-h-32 overflow-y-auto text-[11px]">
+                    {kakaoParsed.messages.map((m, i) => (
+                      <div key={i} style={{ color: m.from === '강사' ? theme.accent : theme.ink }}>
+                        <span style={{ fontWeight: 600 }}>{m.from}</span>
+                        {m.time && <span style={{ color: theme.inkMute, fontSize: 10 }}> · {m.time}</span>}
+                        <span style={{ marginLeft: 4 }}>{m.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {(kakaoParsed.actionItems || []).length > 0 && (
+                  <div className="text-[11px] mt-2 p-2 rounded" style={{ backgroundColor: theme.warnBg, color: '#5E4520' }}>
+                    <div style={{ fontWeight: 600, marginBottom: 2 }}>📌 처리 필요</div>
+                    {kakaoParsed.actionItems.map((a, i) => <div key={i}>· {a}</div>)}
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" onClick={() => { setKakaoParsed(null); }}>다시 분석</Button>
+                <Button icon={Check} onClick={saveKakao}>저장</Button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
       {items.length === 0 ? (
-        <EmptyState icon={FileText} title="아직 메모가 없어요" />
+        <EmptyState icon={FileText} title="아직 수업 기록이 없어요" />
       ) : (
         <div className="space-y-2">
           {items.map(m => (
             <div key={m.id} className="rounded-2xl p-3" style={{ backgroundColor: theme.card, border: `1px solid ${theme.lineLight}` }}>
               <div className="flex justify-between items-baseline mb-1">
-                <div className="text-[12px] font-medium tabular-nums" style={{ color: theme.accent }}>{m.date}</div>
+                <div className="text-[12px] font-medium tabular-nums flex items-center gap-1" style={{ color: theme.accent }}>
+                  {m.date}
+                  {m.source === 'kakao' && <span style={{ fontSize: 10, color: '#C8A366' }}>📱 카톡</span>}
+                </div>
                 <button onClick={() => del(m.id)} className="p-1" style={{ color: theme.inkMute }}>
                   <Trash2 size={12} />
                 </button>
