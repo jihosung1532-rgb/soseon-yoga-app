@@ -5186,7 +5186,8 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
   const [editing, setEditing] = useState(null);
   const [bulkImporting, setBulkImporting] = useState(false);
   const [textImporting, setTextImporting] = useState(false);
-  const [filter, setFilter] = useState('all');
+  const [filterTime, setFilterTime] = useState('confirmed'); // confirmed(예약확정) | all(전체)
+  const [filterReg, setFilterReg] = useState('all'); // all | converted | not_converted
   const [search, setSearch] = useState('');
 
   const saveTrials = async (list) => {
@@ -5279,16 +5280,24 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
     return 'neutral';
   };
 
+  const todayStr = toYMD(new Date());
   const convertedCount = trials.filter(t => t.status === '회원전환').length;
   const notConvertedCount = trials.filter(t => t.status !== '회원전환').length;
+  
+  // 시간 필터 카운트
+  const confirmedCount = trials.filter(t => t.status === '예약확정').length;
+  
   const filteredTrials = trials
     .filter(t => {
-      const filterOk = filter === 'all' ? true :
-        filter === 'converted' ? t.status === '회원전환' :
+      // 시간 필터: 예약확정 / 전체
+      const timeOk = filterTime === 'all' ? true : t.status === '예약확정';
+      // 등록 필터
+      const regOk = filterReg === 'all' ? true :
+        filterReg === 'converted' ? t.status === '회원전환' :
         t.status !== '회원전환';
       const q = search.trim();
       const searchOk = !q || (t.name || '').includes(q) || (t.phone || '').replace(/-/g, '').includes(q.replace(/-/g, ''));
-      return filterOk && searchOk;
+      return timeOk && regOk && searchOk;
     })
     .sort((a, b) => {
       const aUpcoming = a.status === '예약확정';
@@ -5320,43 +5329,64 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
           </button>
         )}
       </div>
-      <div className="flex items-center justify-between mb-3">
-        <div className="text-[13px]" style={{ color: theme.inkSoft }}>
-          전체 <span className="font-bold" style={{ color: theme.ink }}>{trials.length}명</span>
-          {trials.length > 0 && (
-            <span className="ml-2">· 전환률 <span className="font-bold" style={{ color: theme.accent }}>
-              {Math.round(convertedCount / trials.length * 100)}%
-            </span></span>
-          )}
-        </div>
-        <div className="flex gap-1.5">
-          <Button icon={FileText} variant="soft" size="sm" onClick={() => setTextImporting(true)}>텍스트</Button>
-          <Button icon={Camera} variant="soft" size="sm" onClick={() => setBulkImporting(true)}>사진</Button>
-          <Button icon={Plus} onClick={() => setAdding(true)}>추가</Button>
-        </div>
+      <div className="flex items-center gap-1.5 mb-3">
+        {/* 시간 필터 - 유효(기본)/완료/전체 */}
+        <select
+          value={filterTime}
+          onChange={e => setFilterTime(e.target.value)}
+          className="px-2 py-1.5 rounded-lg text-[12px] shrink-0"
+          style={{
+            backgroundColor: theme.accent,
+            color: theme.card,
+            border: `1px solid ${theme.accent}`,
+            fontWeight: 600,
+            outline: 'none', appearance: 'none',
+            paddingRight: 22,
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
+            backgroundRepeat: 'no-repeat',
+            backgroundPosition: 'right 5px center',
+          }}>
+          <option value="confirmed">예약확정</option>
+          <option value="all">전체</option>
+        </select>
+
+        {/* 등록 필터 - 전체/등록/미등록 */}
+        <select
+          value={filterReg}
+          onChange={e => setFilterReg(e.target.value)}
+          className="px-2 py-1.5 rounded-lg text-[12px] shrink-0"
+          style={{
+            backgroundColor: filterReg !== 'all' ? theme.accent : theme.card,
+            color: filterReg !== 'all' ? theme.card : theme.inkSoft,
+            border: `1px solid ${filterReg !== 'all' ? theme.accent : theme.line}`,
+            fontWeight: filterReg !== 'all' ? 600 : 500,
+            outline: 'none', appearance: 'none',
+            paddingRight: 22,
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='${filterReg !== 'all' ? '%23ffffff' : '%238A9088'}' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
+            backgroundRepeat: 'no-repeat',
+            backgroundPosition: 'right 5px center',
+          }}>
+          <option value="all">전환 결과</option>
+          <option value="converted">등록</option>
+          <option value="not_converted">미등록</option>
+        </select>
+
+        <div className="flex-1" />
+        <Button icon={FileText} variant="soft" size="sm" onClick={() => setTextImporting(true)}>텍스트</Button>
+        <Button icon={Camera} variant="soft" size="sm" onClick={() => setBulkImporting(true)}>사진</Button>
+        <Button icon={Plus} onClick={() => setAdding(true)}>추가</Button>
       </div>
 
-      {/* Filter tabs */}
-      {trials.length > 0 && (
-        <div className="flex gap-1 mb-3">
-          {[
-            { id: 'all', label: '전체', count: trials.length },
-            { id: 'converted', label: '등록', count: convertedCount },
-            { id: 'not_converted', label: '미등록', count: notConvertedCount },
-          ].map(f => (
-            <button key={f.id} onClick={() => setFilter(f.id)}
-              className="flex-1 py-1.5 rounded-lg text-[12px] transition-all"
-              style={{
-                backgroundColor: filter === f.id ? theme.accent : 'transparent',
-                color: filter === f.id ? theme.card : theme.inkSoft,
-                border: `1px solid ${filter === f.id ? theme.accent : theme.line}`,
-                fontWeight: filter === f.id ? 600 : 500,
-              }}>
-              {f.label} <span className="ml-0.5 opacity-70">({f.count})</span>
-            </button>
-          ))}
-        </div>
-      )}
+      {/* 카운트 표시 */}
+      <div className="text-[12px] mb-3 px-1" style={{ color: theme.inkSoft }}>
+        {filterTime === 'confirmed' && <span>예약확정 <strong style={{ color: theme.ink }}>{confirmedCount}명</strong></span>}
+        {filterTime === 'all' && <span>전체 <strong style={{ color: theme.ink }}>{trials.length}명</strong></span>}
+        {trials.length > 0 && (
+          <span className="ml-2">· 전환률 <strong style={{ color: theme.accent }}>
+            {Math.round(convertedCount / trials.length * 100)}%
+          </strong></span>
+        )}
+      </div>
 
       {filteredTrials.length === 0 ? (
         <EmptyState icon={UserPlus} title={trials.length === 0 ? '아직 체험자가 없어요' : '해당 체험자가 없어요'} hint={trials.length === 0 ? '체험 예약을 여기서 관리하세요' : null} />
@@ -6112,7 +6142,7 @@ function AnalysisView({ members, setMembers, toast }) {
 /* =========================================================
    Stats View — revenue + trial conversion
    ========================================================= */
-function StatsView({ members, trials }) {
+function StatsView({ members, trials, sessions }) {
   const now = new Date();
   const [monthOffset, setMonthOffset] = useState(0);
 
@@ -6120,7 +6150,6 @@ function StatsView({ members, trials }) {
   const targetYM = `${targetMonth.getFullYear()}-${pad(targetMonth.getMonth() + 1)}`;
 
   const stats = useMemo(() => {
-    // Revenue: sum pass.price where paymentDate is in target month
     let revenue = 0, count = 0, refundTotal = 0;
     const byCat = { group: 0, private: 0, trial: 0, other: 0 };
     members.forEach(m => {
@@ -6136,16 +6165,268 @@ function StatsView({ members, trials }) {
       });
     });
 
-    // Trial conversion: trials created in target month
     const monthTrials = trials.filter(t => (t.date || t.createdAt || '').startsWith(targetYM));
     const converted = monthTrials.filter(t => t.status === '회원전환').length;
     const conversionRate = monthTrials.length > 0 ? Math.round(converted / monthTrials.length * 100) : 0;
+    
+    // 체험 수익: 미전환 + 입금완료 = 1만원
+    const trialRevenue = monthTrials.filter(t => 
+      t.status !== '회원전환' && t.paid === true
+    ).length * 10000;
+    revenue += trialRevenue;
+    byCat.trial = (byCat.trial || 0) + trialRevenue;
+    count += monthTrials.filter(t => t.status !== '회원전환' && t.paid === true).length;
 
-    return { revenue, count, refundTotal, net: revenue - refundTotal, byCat, trialTotal: monthTrials.length, converted, conversionRate };
+    return { revenue, count, refundTotal, net: revenue - refundTotal, byCat, trialTotal: monthTrials.length, converted, conversionRate, trialRevenue };
   }, [members, trials, targetYM]);
 
-  // Active members count
+  // 수업 통계
+  const classStats = useMemo(() => {
+    if (!sessions) return { total: 0, group: 0, private: 0, weekAvg: 0, weeks: 0 };
+    let total = 0, group = 0, privateClass = 0;
+    const todayStr = toYMD(new Date());
+    Object.entries(sessions).forEach(([key, s]) => {
+      if (!s?.date?.startsWith(targetYM)) return;
+      // 미래 수업은 제외
+      if (s.date > todayStr) return;
+      // 출석한 사람이 있는 수업만 카운트 (취소/노쇼 빼고)
+      const hasAttended = s.participants?.some(p => 
+        !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'no_show'
+      );
+      if (!hasAttended) return;
+      total++;
+      // 카테고리 판단
+      const hasPrivate = s.participants?.some(p => p.classType === '개인');
+      if (hasPrivate) privateClass++;
+      else group++;
+    });
+    
+    // 해당 월의 주 수 (현재 월이면 지난 주까지만)
+    const monthStart = new Date(targetMonth);
+    const monthEnd = new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 0);
+    const isCurrentMonth = monthOffset === 0;
+    const lastDay = isCurrentMonth ? new Date() : monthEnd;
+    const daysElapsed = Math.ceil((lastDay - monthStart) / (1000*60*60*24)) + 1;
+    const weeks = Math.max(1, Math.ceil(daysElapsed / 7));
+    const weekAvg = (total / weeks).toFixed(1);
+    
+    return { total, group, private: privateClass, weekAvg, weeks };
+  }, [sessions, targetYM, monthOffset, targetMonth]);
+  
+  // 출석률 통계
+  const attendanceStats = useMemo(() => {
+    if (!sessions) return { total: 0, attend: 0, cancel: 0, noShow: 0, attendRate: 0 };
+    let attend = 0, cancel = 0, noShow = 0;
+    const todayStr = toYMD(new Date());
+    Object.values(sessions).forEach(s => {
+      if (!s?.date?.startsWith(targetYM)) return;
+      if (s.date > todayStr) return; // 미래 제외
+      (s.participants || []).forEach(p => {
+        if (p.isTrial) return; // 체험자 제외 (회원만)
+        // status 또는 cancelled 필드 보고 분류
+        if (p.status === 'no_show' || p.cancelled === 'no_show') {
+          noShow++;
+        } else if (p.status === 'cancelled_advance' || p.status === 'cancelled_sameday' || p.cancelled) {
+          cancel++;
+        } else if (p.status === 'reserved') {
+          // 미래 예약 — 제외
+        } else {
+          attend++; // 출석 (default)
+        }
+      });
+    });
+    const total = attend + cancel + noShow;
+    const attendRate = total > 0 ? Math.round(attend / total * 100) : 0;
+    const cancelRate = total > 0 ? Math.round(cancel / total * 100) : 0;
+    const noShowRate = total > 0 ? Math.round(noShow / total * 100) : 0;
+    return { total, attend, cancel, noShow, attendRate, cancelRate, noShowRate };
+  }, [sessions, targetYM]);
+
   const activeMembers = members.filter(m => activePass(m)).length;
+  
+  const [expanded, setExpanded] = useState(null);
+  
+  // 수익 인사이트
+  const revenueInsight = useMemo(() => {
+    // 전월 수익
+    const prevMonth = new Date(targetMonth.getFullYear(), targetMonth.getMonth() - 1, 1);
+    const prevYM = `${prevMonth.getFullYear()}-${pad(prevMonth.getMonth() + 1)}`;
+    let prevRevenue = 0;
+    members.forEach(m => {
+      (m.passes || []).forEach(p => {
+        if (p.paymentDate?.startsWith(prevYM) && p.price > 0) prevRevenue += p.price;
+      });
+    });
+    const prevTrials = trials.filter(t => (t.date || t.createdAt || '').startsWith(prevYM) && t.status !== '회원전환' && t.paid === true);
+    prevRevenue += prevTrials.length * 10000;
+    
+    const prevMonthDelta = prevRevenue > 0 ? Math.round(((stats.revenue - prevRevenue) / prevRevenue) * 100) : null;
+    const avgPerMember = activeMembers > 0 ? Math.round(stats.revenue / activeMembers / 1000) * 1000 : 0;
+    
+    // 시작예정 수강권 (다음달 예상)
+    const nextMonth = new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 1);
+    const nextYM = `${nextMonth.getFullYear()}-${pad(nextMonth.getMonth() + 1)}`;
+    let expectedNextMonth = 0;
+    let expectedCount = 0;
+    members.forEach(m => {
+      (m.passes || []).forEach(p => {
+        if (p.startDate?.startsWith(nextYM) && p.price > 0 && !p.archived) {
+          expectedNextMonth += p.price;
+          expectedCount++;
+        }
+      });
+    });
+    
+    const trialPaidCount = trials.filter(t => 
+      (t.date || t.createdAt || '').startsWith(targetYM) && t.status !== '회원전환' && t.paid === true
+    ).length;
+    
+    return {
+      prevMonthDelta,
+      prevMonthRevenue: prevRevenue,
+      prevMonthLabel: `${prevMonth.getMonth() + 1}월`,
+      avgPerMember,
+      expectedNextMonth,
+      expectedCount,
+      trialPaidCount,
+    };
+  }, [members, trials, targetYM, targetMonth, stats.revenue, activeMembers]);
+  
+  // 회원 인사이트
+  const memberInsight = useMemo(() => {
+    const todayStr = toYMD(new Date());
+    
+    // 재등록률: 만료 회원 중 새 수강권 등록한 비율
+    let expiredCount = 0, reEnrolledCount = 0;
+    members.forEach(m => {
+      const passes = m.passes || [];
+      const expiredPasses = passes.filter(p => p.expiryDate && p.expiryDate < todayStr && !p.archived);
+      if (expiredPasses.length === 0) return;
+      expiredCount++;
+      // 만료 후 새 수강권이 있으면 재등록
+      const lastExpiry = expiredPasses.reduce((max, p) => p.expiryDate > max ? p.expiryDate : max, '');
+      const hasNewer = passes.some(p => p.startDate >= lastExpiry && p.startDate <= todayStr && !p.archived && !expiredPasses.includes(p));
+      if (hasNewer || activePass(m)) reEnrolledCount++;
+    });
+    const reEnrollRate = expiredCount > 0 ? Math.round((reEnrolledCount / expiredCount) * 100) : 0;
+    
+    // 회원별 출석률 + 도전중
+    const memberAtt = {};
+    Object.values(sessions || {}).forEach(s => {
+      if (s.date > todayStr) return;
+      (s.participants || []).forEach(p => {
+        if (!p.memberId || p.isTrial) return;
+        if (!memberAtt[p.memberId]) memberAtt[p.memberId] = { attend: 0, total: 0, lastDate: '' };
+        const isAttended = !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'no_show';
+        if (p.status !== 'reserved') {
+          memberAtt[p.memberId].total++;
+          if (isAttended) {
+            memberAtt[p.memberId].attend++;
+            if (s.date > memberAtt[p.memberId].lastDate) memberAtt[p.memberId].lastDate = s.date;
+          }
+        }
+      });
+    });
+    
+    const consistent = [];
+    const needAttention = [];
+    let challengingCount = 0;
+    
+    members.forEach(m => {
+      const pass = activePass(m);
+      if (!pass) return;
+      const att = memberAtt[m.id] || { attend: 0, total: 0, lastDate: '' };
+      const attRate = att.total > 0 ? Math.round((att.attend / att.total) * 100) : 0;
+      const rs = rhythmStatus(pass);
+      
+      if (rs?.challenging) challengingCount++;
+      
+      // 꾸준한 회원: 출석률 80%+ 또는 리듬 도전중/대상자
+      if (rs?.achieved) {
+        consistent.push({ id: m.id, name: m.name, badge: '🏆', note: rs.message || '대상자' });
+      } else if (rs?.challenging && attRate >= 80) {
+        consistent.push({ id: m.id, name: m.name, badge: '🌿', note: `출석 ${attRate}% · ${rs.elapsedDays}/${rs.limitDays}일` });
+      } else if (attRate >= 80 && att.total >= 3) {
+        consistent.push({ id: m.id, name: m.name, badge: '', note: `출석 ${attRate}% · ${pass.usedSessions}/${pass.totalSessions}회` });
+      }
+      
+      // 관심 필요: 만료 임박 (D-7 이내) 또는 2주+ 미참석
+      const ps = passStatus(pass);
+      if (ps && !ps.notStarted && ps.daysLeft !== undefined && ps.daysLeft <= 7 && ps.daysLeft >= 0) {
+        needAttention.push({ id: m.id, name: m.name, note: `만료 임박 D-${ps.daysLeft} · 마지막 ${att.lastDate || '없음'}` });
+      } else if (att.lastDate) {
+        const daysAgo = Math.floor((new Date(todayStr) - new Date(att.lastDate)) / (1000*60*60*24));
+        if (daysAgo >= 14) {
+          needAttention.push({ id: m.id, name: m.name, note: `${daysAgo}일 미방문 · 마지막 ${att.lastDate}` });
+        }
+      }
+    });
+    
+    // 정렬 + 상위 N개만
+    consistent.sort((a, b) => (b.badge === '🏆' ? 1 : 0) - (a.badge === '🏆' ? 1 : 0));
+    
+    return {
+      reEnrollRate,
+      expiredCount,
+      reEnrolledCount,
+      consistent: consistent.slice(0, 5),
+      needAttention: needAttention.slice(0, 5),
+      challengingCount,
+    };
+  }, [members, sessions]);
+  
+  // 신규 유입 경로
+  const sourceStats = useMemo(() => {
+    const monthTrials = trials.filter(t => (t.date || t.createdAt || '').startsWith(targetYM));
+    const sources = {};
+    monthTrials.forEach(t => {
+      const src = t.source || '기타';
+      if (!sources[src]) sources[src] = { source: src, count: 0, converted: 0, icon: '·' };
+      sources[src].count++;
+      if (t.status === '회원전환') sources[src].converted++;
+    });
+    // 아이콘 매핑
+    const iconMap = {
+      '인스타': '📷',
+      '인스타그램': '📷',
+      '카카오채널': '💬',
+      '카카오 채널': '💬',
+      '카채널': '💬',
+      '당근': '🥕',
+      '지인소개': '🤝',
+      '지인 소개': '🤝',
+      '소개': '🤝',
+    };
+    return Object.values(sources).map(s => ({
+      ...s,
+      icon: iconMap[s.source] || '·',
+      rate: s.count > 0 ? Math.round((s.converted / s.count) * 100) : 0,
+    })).sort((a, b) => b.count - a.count);
+  }, [trials, targetYM]);
+  
+  // 인기 시간대
+  const timeSlotStats = useMemo(() => {
+    if (!sessions) return [];
+    const todayStr = toYMD(new Date());
+    const slots = {};
+    Object.values(sessions).forEach(s => {
+      if (!s?.date?.startsWith(targetYM) || s.date > todayStr) return;
+      const hasAttended = s.participants?.some(p => 
+        !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'no_show'
+      );
+      if (!hasAttended) return;
+      if (!slots[s.time]) slots[s.time] = { time: s.time, count: 0, totalPpl: 0 };
+      slots[s.time].count++;
+      const ppl = s.participants?.filter(p => 
+        !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'no_show'
+      ).length || 0;
+      slots[s.time].totalPpl += ppl;
+    });
+    return Object.values(slots).map(s => ({
+      ...s,
+      avgPpl: s.count > 0 ? Math.round(s.totalPpl / s.count * 10) / 10 : 0,
+    })).sort((a, b) => b.count - a.count);
+  }, [sessions, targetYM]);
 
   return (
     <div className="px-3 pb-28 pt-2 space-y-4">
@@ -6184,6 +6465,72 @@ function StatsView({ members, trials }) {
           <Stat label="소그룹" value={Math.round(stats.byCat.group / 10000) + '만'} color={theme.accent} />
           <Stat label="개인" value={Math.round(stats.byCat.private / 10000) + '만'} color={theme.accent2} />
           <Stat label="체험" value={Math.round((stats.byCat.trial + stats.byCat.other) / 10000) + '만'} color={theme.inkSoft} />
+        </div>
+      </div>
+
+      {/* 수업 통계 */}
+      <div className="rounded-2xl p-4" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
+        <div className="text-[11px] font-semibold mb-2" style={{ color: theme.accent }}>이번 달 수업</div>
+        <div className="flex items-baseline gap-2">
+          <div className="text-3xl font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif }}>
+            {classStats.total}
+          </div>
+          <div className="text-sm" style={{ color: theme.inkMute }}>회</div>
+          <div className="ml-auto text-[12px]" style={{ color: theme.inkMute }}>
+            주 평균 <span style={{ color: theme.accent, fontWeight: 600 }}>{classStats.weekAvg}회</span>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2 mt-4">
+          <Stat label="소그룹" value={classStats.group + '회'} color={theme.accent} />
+          <Stat label="개인레슨" value={classStats.private + '회'} color={theme.accent2} />
+        </div>
+      </div>
+
+      {/* 출석률 */}
+      <div className="rounded-2xl p-4" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
+        <div className="text-[11px] font-semibold mb-2" style={{ color: theme.accent }}>출석률</div>
+        <div className="flex items-baseline gap-2">
+          <div className="text-3xl font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif }}>
+            {attendanceStats.attendRate}
+          </div>
+          <div className="text-sm" style={{ color: theme.inkMute }}>%</div>
+          <div className="ml-auto text-[12px]" style={{ color: theme.inkMute }}>
+            총 예약 <span style={{ color: theme.ink, fontWeight: 600 }}>{attendanceStats.total}건</span>
+          </div>
+        </div>
+        <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>
+          출석 {attendanceStats.attend}건 · 취소 {attendanceStats.cancel}건 · 노쇼 {attendanceStats.noShow}건
+        </div>
+        
+        {/* 진행 바 */}
+        {attendanceStats.total > 0 && (
+          <>
+            <div className="h-2 rounded-full overflow-hidden mt-3 flex" style={{ backgroundColor: theme.cardAlt }}>
+              <div style={{ width: `${attendanceStats.attendRate}%`, backgroundColor: theme.accent }} />
+              <div style={{ width: `${attendanceStats.cancelRate}%`, backgroundColor: theme.warn }} />
+              <div style={{ width: `${attendanceStats.noShowRate}%`, backgroundColor: theme.danger }} />
+            </div>
+            <div className="flex gap-3 mt-2 text-[10px] flex-wrap" style={{ color: theme.inkSoft }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: theme.accent }} />
+                출석 {attendanceStats.attendRate}%
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: theme.warn }} />
+                취소 {attendanceStats.cancelRate}%
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: theme.danger }} />
+                노쇼 {attendanceStats.noShowRate}%
+              </span>
+            </div>
+          </>
+        )}
+        
+        <div className="grid grid-cols-3 gap-2 mt-4">
+          <Stat label="출석" value={attendanceStats.attend} color={theme.accent} />
+          <Stat label="취소" value={attendanceStats.cancel} color={theme.warn} />
+          <Stat label="노쇼" value={attendanceStats.noShow} color={theme.danger} />
         </div>
       </div>
 
@@ -6851,7 +7198,7 @@ export default function App() {
         <ClassLogView classLog={classLog} setClassLog={setClassLog} sessions={sessions} toast={toast} />
       )}
       {tab === 'stats' && (
-        <StatsView members={members} trials={trials} />
+        <StatsView members={members} trials={trials} sessions={sessions} />
       )}
       <Toast msg={toastMsg} onDone={() => setToastMsg('')} />
       {settingsOpen && (
