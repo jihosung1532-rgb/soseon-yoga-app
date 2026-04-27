@@ -271,6 +271,15 @@ const fmtKR = (d) => `${d.getMonth() + 1}월 ${d.getDate()}일 (${WEEK_KR[d.getD
 const fmtKRShort = (ymd) => { const d = fromYMD(ymd); return `${d.getMonth() + 1}/${d.getDate()}`; };
 const daysBetween = (a, b) => Math.round((fromYMD(b) - fromYMD(a)) / 86400000);
 
+// 친밀한 호칭: 이름 두 글자 + 님 (예: 김재영 → 재영님, 이은조 → 은조님)
+// 두 글자 이름은 그대로 (예: 박민 → 박민님)
+const friendlyName = (name) => {
+  if (!name) return '';
+  if (name.length <= 2) return `${name}님`;
+  // 3글자 이상 → 마지막 2글자 + 님
+  return `${name.slice(-2)}님`;
+};
+
 /* =========================================================
    Korean public holidays 2026
    ========================================================= */
@@ -335,7 +344,7 @@ const TIME_PRESETS = ['11:00', '12:30', '15:00', '19:20', '20:50'];
 const SMS_TEMPLATES = {
   expiring: (member, pass) => ({
     title: '수강권 소진 안내',
-    body: `안녕하세요 ${member.name}님 ☺️
+    body: `안녕하세요 ${friendlyName(member.name)} ☺️
 소선요가입니다
 
 수강권이 ${pass.totalSessions - pass.usedSessions}회 남았어요.
@@ -348,7 +357,7 @@ ${fmtKRShort(pass.expiryDate)}까지 이용 가능합니다.
   }),
   expired: (member, pass) => ({
     title: '수강권 종료 안내',
-    body: `안녕하세요 ${member.name}님 ☺️
+    body: `안녕하세요 ${friendlyName(member.name)} ☺️
 소선요가입니다
 
 수강권이 종료되어 안내드려요.
@@ -361,7 +370,7 @@ ${fmtKRShort(pass.expiryDate)}까지 이용 가능합니다.
   }),
   registered: (member, pass) => ({
     title: '수강권 등록 안내',
-    body: `안녕하세요 ${member.name}님 ☺️
+    body: `안녕하세요 ${friendlyName(member.name)} ☺️
 소선요가입니다
 
 수강권 등록 완료되었어요.
@@ -376,7 +385,7 @@ ${fmtKRShort(pass.expiryDate)}까지 이용 가능합니다.
   }),
   hold: (member, pass, holdStart, holdEnd) => ({
     title: '홀딩 안내',
-    body: `안녕하세요 ${member.name}님 ☺️
+    body: `안녕하세요 ${friendlyName(member.name)} ☺️
 소선요가입니다
 
 요청하신 휴회 처리 완료되었어요.
@@ -390,7 +399,7 @@ ${fmtKRShort(pass.expiryDate)}까지 이용 가능합니다.
   }),
   trial: (trial) => ({
     title: '체험 예약 안내',
-    body: `안녕하세요 ${trial.name}님 ☺️
+    body: `안녕하세요 ${friendlyName(trial.name)} ☺️
 소선요가입니다
 
 ${fmtKRShort(trial.date)} ${trial.time} 체험 수업 예약되어 있어요.
@@ -403,7 +412,7 @@ ${fmtKRShort(trial.date)} ${trial.time} 체험 수업 예약되어 있어요.
   }),
   upcomingStart: (member, pass) => ({
     title: '수강권 시작 안내',
-    body: `안녕하세요 ${member.name}님 ☺️
+    body: `안녕하세요 ${friendlyName(member.name)} ☺️
 소선요가입니다
 
 ${fmtKRShort(pass.startDate)}부터
@@ -417,7 +426,7 @@ ${fmtKRShort(pass.startDate)}부터
   }),
   privateLessonSchedule: (member, schedule) => ({
     title: '개인레슨 일정 안내',
-    body: `안녕하세요 ${member.name}님 ☺️
+    body: `안녕하세요 ${friendlyName(member.name)} ☺️
 소선요가입니다
 
 협의해주신 개인레슨 일정
@@ -3584,7 +3593,10 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
             {/* Summary block: key point + latest session */}
             {(() => {
               const activePassSum = activePass(member);
-              const latestSession = history.length > 0 ? history.find(h => !h.cancelled) : null;
+              const todayStr = toYMD(new Date());
+              const latestSession = history.length > 0 
+                ? history.find(h => !h.cancelled && h.date <= todayStr && h.status !== 'reserved' && h.status !== 'cancelled_advance' && h.status !== 'cancelled_sameday')
+                : null;
               return (
                 <div className="rounded-2xl p-3" style={{ backgroundColor: theme.accentSoft, border: `1px solid ${theme.accent}44` }}>
                   {member.keyPoint && (
@@ -3802,13 +3814,17 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
                     statusChip = <Chip tone="success" size="sm">출석</Chip>;
                   }
                   
+                  // 옛 시스템이 자동으로 넣은 cancelNote는 표시 안 함
+                  const legacyAutoNotes = ['오늘 수업 빠짐', '미차감 취소', '차감 취소', '취소'];
+                  const showCancelNote = h.cancelNote && !legacyAutoNotes.includes(h.cancelNote.trim());
+                  
                   return (
                     <div key={i} className="px-3 py-2 rounded-lg flex items-center gap-3"
                       style={{ backgroundColor: bgColor, border: `1px solid ${borderColor}` }}>
                       <span className="text-[12px] tabular-nums shrink-0" style={{ color: theme.inkMute }}>{h.date}</span>
                       <span className="text-[12px] font-medium tabular-nums shrink-0" style={{ color: timeColor, fontFamily: theme.serif, fontSize: 13 }}>{h.time}</span>
-                      {h.cancelNote && <span className="text-[10px] flex-1" style={{ color: theme.inkMute }}>· {h.cancelNote}</span>}
-                      {!h.cancelNote && <div className="flex-1"></div>}
+                      {showCancelNote && <span className="text-[10px] flex-1" style={{ color: theme.inkMute }}>· {h.cancelNote}</span>}
+                      {!showCancelNote && <div className="flex-1"></div>}
                       <div className="flex items-center gap-1.5 shrink-0">
                         {h.classType === '개인' && <Chip tone="accent" size="sm">개인</Chip>}
                         {h.sessionNumber && h.totalSessions && !h.cancelled && h.status !== 'cancelled_advance' && h.status !== 'reserved' && !isFuture && (
@@ -6396,7 +6412,57 @@ export default function App() {
     
     const sc = await loadKey(K.smsConfirmed, {});
     const gs = await loadKey(K.groupSlots, DEFAULT_GROUP_SLOTS);
-    setMembers(finalM); setSessions(finalS); setClassLog(finalC); setTrials(finalT);
+    
+    // 마이그레이션: 미래 날짜 sessions의 차감을 되돌리고 status를 'reserved'로 설정
+    const migrationFlag = await loadKey({ lkey: 'sosun:migration:reserved-fix:v1', table: 'settings', id: 'migration_reserved_fix_v1' }, false);
+    let migratedM = finalM;
+    let migratedS = finalS;
+    if (!migrationFlag) {
+      const todayStr = toYMD(new Date());
+      const adjustments = {}; // { memberId|passId: 되돌릴 회수 }
+      const sessionsCopy = { ...finalS };
+      
+      Object.keys(sessionsCopy).forEach(key => {
+        const sess = sessionsCopy[key];
+        if (!sess || !sess.participants) return;
+        if (sess.date <= todayStr) return; // 과거/오늘은 건드리지 않음
+        
+        // 미래 날짜 - 참석자들 status를 reserved로 (없으면)
+        const newParts = sess.participants.map(p => {
+          if (p.status) return p; // 이미 status 있으면 패스
+          if (p.cancelled) return p; // 취소 처리된 것도 패스
+          // 차감된 회원 (memberId + passId 있음) → 차감 되돌림
+          if (p.memberId && p.passId) {
+            const k = `${p.memberId}|${p.passId}`;
+            adjustments[k] = (adjustments[k] || 0) + 1;
+          }
+          return { ...p, status: 'reserved' };
+        });
+        sessionsCopy[key] = { ...sess, participants: newParts };
+      });
+      
+      // 회원 데이터 보정
+      if (Object.keys(adjustments).length > 0) {
+        migratedM = finalM.map(m => ({
+          ...m,
+          passes: (m.passes || []).map(p => {
+            const k = `${m.id}|${p.id}`;
+            if (!(k in adjustments)) return p;
+            const newUsed = Math.max(0, p.usedSessions - adjustments[k]);
+            // 미래 날짜는 sessionDates에서 제거
+            const sessionDates = (p.sessionDates || []).filter(d => d <= toYMD(new Date()));
+            return { ...p, usedSessions: newUsed, sessionDates };
+          }),
+        }));
+        migratedS = sessionsCopy;
+        await saveKey(K.members, migratedM);
+        await saveKey(K.sessions, migratedS);
+        console.log('[migration] 미래 예약 차감 보정 완료', adjustments);
+      }
+      await saveKey({ lkey: 'sosun:migration:reserved-fix:v1', table: 'settings', id: 'migration_reserved_fix_v1' }, true);
+    }
+    
+    setMembers(migratedM); setSessions(migratedS); setClassLog(finalC); setTrials(finalT);
     setDashDismiss(dd); setSmsConfirmed(sc);
     setGroupSlots(Array.isArray(gs) && gs.length ? gs : DEFAULT_GROUP_SLOTS);
     setReady(true);
