@@ -5420,46 +5420,94 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
 
 function TrialTextImport({ onClose, onSave, toast }) {
   const [text, setText] = useState('');
-  const [loading, setLoading] = useState(false);
   const [parsed, setParsed] = useState(null);
 
-  const analyze = async () => {
-    if (!text.trim()) { toast('텍스트를 입력해주세요'); return; }
-    setLoading(true);
-    try {
-      const system = `당신은 한국 요가원 체험자 정보를 JSON으로 정리하는 어시스턴트입니다.
-
-각 체험자당 아래 필드로 추출:
-- name (이름, 필수)
-- phone (전화번호, 010-xxxx-xxxx 형식으로 정규화)
-- date (체험 날짜, YYYY-MM-DD 형식. 연도는 2026)
-- time (체험 시간, HH:MM 형식. 11:00, 19:20, 20:50 등)
-- experience (요가 경험: '있음' | '없음' | 구체 내용. "유"는 있음, "무"는 없음)
-- painPoints (불편한 부위나 몸 상태 메모)
-- paid (입금 여부: true | false | null. "입완"="입금완료"=true, "미입금"=false)
-- status: "예약확정" (기본값)
-- source: 방문 경로 (인스타, 카채널, 카카오채널, 당근, 지인소개 등)
-- memo: 그 외 메모 (입금 상태 등)
-
-날짜는 텍스트 맨 위에 공통으로 적혀있을 수 있음 ("4/28 11:00 체험" 같이). 모든 체험자에 적용.
-
-반드시 JSON만 출력:
-{"trials": [{...}, {...}]}
-
-코드펜스 금지, 설명 금지.`;
-
-      const resp = await callClaude([{ role: 'user', content: text }], system);
-      const result = tryParseJSON(resp);
-      if (result?.trials?.length) {
-        setParsed(result.trials);
-      } else {
-        toast('읽을 수 없었어요. 형식을 확인해주세요');
-      }
-    } catch (e) {
-      toast('분석 실패: ' + (e.message || ''));
-    } finally {
-      setLoading(false);
+  const parseText = (raw) => {
+    // 공통 헤더에서 날짜/시간 추출 (예: "4/28 11:00 체험")
+    let commonDate = '';
+    let commonTime = '';
+    const headerMatch = raw.match(/(\d{1,2})\s*[\/\.\-]\s*(\d{1,2})[^\n]*?(\d{1,2})\s*[:시]\s*(\d{0,2})/);
+    if (headerMatch) {
+      const [, m, d, h, min] = headerMatch;
+      commonDate = `2026-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      commonTime = `${String(h).padStart(2,'0')}:${(min || '00').padStart(2,'0')}`;
     }
+
+    const phoneRegex = /(\d{3}[\-\s]?\d{3,4}[\-\s]?\d{4})/g;
+    const phones = [...raw.matchAll(phoneRegex)];
+    if (phones.length === 0) return [];
+
+    const trials = [];
+    for (let i = 0; i < phones.length; i++) {
+      const phoneMatch = phones[i];
+      const phoneIdx = phoneMatch.index;
+      const phone = phoneMatch[1].replace(/\s/g, '-').replace(/(\d{3})-?(\d{3,4})-?(\d{4})/, '$1-$2-$3');
+      const startIdx = i === 0 ? 0 : phones[i-1].index + phones[i-1][0].length;
+      const beforePhone = raw.slice(startIdx, phoneIdx);
+      const endIdx = i + 1 < phones.length ? phones[i+1].index : raw.length;
+      const afterPhone = raw.slice(phoneMatch.index + phoneMatch[0].length, endIdx);
+
+      // 이름 + 괄호 정보
+      const nameLine = beforePhone.split('\n').reverse().find(l => /[가-힣]{2,4}/.test(l)) || '';
+      const nameMatch = nameLine.match(/([가-힣]{2,4})\s*(?:\(([^)]+)\))?/);
+      const name = nameMatch ? nameMatch[1] : '';
+      const parenInfo = nameMatch?.[2] || '';
+
+      let source = '';
+      let paid = null;
+      const memoParts = [];
+      if (parenInfo) {
+        const tokens = parenInfo.split(/[\/,·]/).map(s => s.trim()).filter(Boolean);
+        for (const tk of tokens) {
+          if (/인스타/.test(tk)) source = '인스타';
+          else if (/카채널|카카오|카톡채널/.test(tk)) source = '카카오채널';
+          else if (/당근/.test(tk)) source = '당근';
+          else if (/지인|소개/.test(tk)) source = '지인소개';
+          else if (/입완|입금완료|완료/.test(tk)) paid = true;
+          else if (/미입금|입금전|미수/.test(tk)) paid = false;
+          else memoParts.push(tk);
+        }
+      }
+
+      const lines = afterPhone.split('\n').map(l => l.trim()).filter(Boolean);
+      let painPoints = [];
+      let experience = '';
+      for (const line of lines) {
+        if (/요가\s*경험|요가\s*해본|운동\s*경험/.test(line)) {
+          if (/없|무|안\s*해|처음/.test(line)) experience = '없음';
+          else if (/유|있|함|많/.test(line)) experience = '있음';
+          else experience = line;
+        } else if (line === '유' || line === '무') {
+          experience = line === '유' ? '있음' : '없음';
+        } else if (line.length > 0 && line.length < 100) {
+          painPoints.push(line);
+        }
+      }
+
+      if (name) {
+        trials.push({
+          name, phone,
+          date: commonDate, time: commonTime,
+          experience,
+          painPoints: painPoints.join(', '),
+          source,
+          paid,
+          memo: memoParts.join(', '),
+          status: '예약확정',
+        });
+      }
+    }
+    return trials;
+  };
+
+  const analyze = () => {
+    if (!text.trim()) { toast('텍스트를 입력해주세요'); return; }
+    const result = parseText(text);
+    if (result.length === 0) {
+      toast('전화번호를 찾을 수 없어요. 형식을 확인해주세요');
+      return;
+    }
+    setParsed(result);
   };
 
   const save = () => {
@@ -5467,10 +5515,7 @@ function TrialTextImport({ onClose, onSave, toast }) {
     onSave(parsed);
   };
 
-  const removeParsed = (idx) => {
-    setParsed(parsed.filter((_, i) => i !== idx));
-  };
-
+  const removeParsed = (idx) => setParsed(parsed.filter((_, i) => i !== idx));
   const updateParsed = (idx, field, value) => {
     setParsed(parsed.map((p, i) => i === idx ? { ...p, [field]: value } : p));
   };
@@ -5482,29 +5527,19 @@ function TrialTextImport({ onClose, onSave, toast }) {
           <>
             <div className="text-[12px]" style={{ color: theme.inkSoft, lineHeight: 1.6 }}>
               카톡/문자 메모 그대로 붙여넣으세요.<br/>
-              날짜·시간·이름·전화번호·메모를 자동 추출해서 일정에도 등록해줘요.
+              날짜·시간은 맨 위에 한 번만 적으면 모든 사람에게 적용돼요.
             </div>
             <TextArea
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder={`예시:
-4/28 11:00 체험
-장다연 (인스타/미입금)
-010-3573-0912
-발목이 잘 휘고 삐어요
-요가 경험 없습니다
-
-나주연 (카채널/입완)
-010-9821-7914
-무릎이 구부리면 아파요
-유`}
+              placeholder={'4/28 11:00 체험\n장다연(인스타/미입금)\n010-3573-0912\n발목이 잘 휘고 삐어요\n요가 경험 없습니다\n\n나주연(카채널/입완)\n010-9821-7914\n무릎이 구부리면 아파요\n유'}
               rows={12}
               style={{ fontFamily: 'monospace', fontSize: 12 }}
             />
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={onClose}>취소</Button>
-              <Button icon={Sparkles} onClick={analyze} disabled={loading || !text.trim()}>
-                {loading ? '분석 중...' : 'AI 분석'}
+              <Button icon={Sparkles} onClick={analyze} disabled={!text.trim()}>
+                분석
               </Button>
             </div>
           </>
@@ -5512,19 +5547,19 @@ function TrialTextImport({ onClose, onSave, toast }) {
         {parsed && (
           <>
             <div className="text-[12px] mb-2" style={{ color: theme.inkSoft }}>
-              <strong>{parsed.length}명</strong> 추출됨. 확인 후 저장하세요.
+              <strong>{parsed.length}명</strong> 추출됨. 잘못된 부분은 수정 가능.
             </div>
             <div className="space-y-2 max-h-[400px] overflow-y-auto">
               {parsed.map((t, i) => (
                 <div key={i} className="rounded-xl p-3" style={{ backgroundColor: theme.cardAlt, border: `1px solid ${theme.line}` }}>
-                  <div className="flex justify-between items-start mb-2">
+                  <div className="flex justify-between items-start mb-2 gap-2">
                     <input
                       value={t.name || ''}
                       onChange={(e) => updateParsed(i, 'name', e.target.value)}
-                      className="font-bold text-sm bg-transparent border-b"
-                      style={{ borderColor: theme.line, color: theme.ink }}
+                      className="font-bold text-sm bg-transparent border-b flex-1"
+                      style={{ borderColor: theme.line, color: theme.ink, padding: '2px 0' }}
                     />
-                    <button onClick={() => removeParsed(i)} className="text-xs" style={{ color: theme.danger }}>제거</button>
+                    <button onClick={() => removeParsed(i)} className="text-[11px] flex-shrink-0" style={{ color: theme.danger }}>제거</button>
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-[11px]">
                     <div>
@@ -5550,8 +5585,12 @@ function TrialTextImport({ onClose, onSave, toast }) {
                       ⚠ {t.painPoints}
                     </div>
                   )}
-                  {t.memo && (
-                    <div className="text-[10px] mt-1" style={{ color: theme.inkMute }}>{t.memo}</div>
+                  {(t.memo || t.paid !== null) && (
+                    <div className="text-[10px] mt-1" style={{ color: theme.inkMute }}>
+                      {t.paid === true && '입금완료'}
+                      {t.paid === false && '미입금'}
+                      {t.memo && (t.paid !== null ? ' · ' : '') + t.memo}
+                    </div>
                   )}
                 </div>
               ))}
@@ -5566,6 +5605,7 @@ function TrialTextImport({ onClose, onSave, toast }) {
     </Modal>
   );
 }
+
 
 function TrialBulkImport({ onClose, onSave, toast }) {
   const [images, setImages] = useState([]);
