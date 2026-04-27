@@ -335,97 +335,100 @@ const TIME_PRESETS = ['11:00', '12:30', '15:00', '19:20', '20:50'];
 const SMS_TEMPLATES = {
   expiring: (member, pass) => ({
     title: '수강권 소진 안내',
-    body: `안녕하세요 😊 소선요가입니다
+    body: `안녕하세요 ${member.name}님 ☺️
+소선요가입니다
 
-현재 회원님의 수련권이
-${fmtKRShort(pass.expiryDate)} / ${pass.totalSessions - pass.usedSessions}회 남음 상태로
-마무리되어가고 있습니다 🌿
+수강권이 ${pass.totalSessions - pass.usedSessions}회 남았어요.
+${fmtKRShort(pass.expiryDate)}까지 이용 가능합니다.
 
 편하게 이어서 수련하실 수 있도록
-미리 안내드려요 😊
+미리 안내드려요.
 
-원하시면 재등록도 도와드릴게요 🌱`,
+좋은 하루 보내세요 🌿`,
   }),
   expired: (member, pass) => ({
     title: '수강권 종료 안내',
-    body: `안녕하세요 😊 소선요가입니다
+    body: `안녕하세요 ${member.name}님 ☺️
+소선요가입니다
 
-회원님의 수련권이 종료되어
-안내드려요 🌿
+수강권이 종료되어 안내드려요.
 
-그동안 수련 함께해주셔서 감사드립니다 🙏
-
+그동안 수련 함께해주셔서 감사드립니다.
 다시 몸이 필요하실 때
-편하게 언제든 찾아주세요 😊`,
+편하게 언제든 찾아주세요.
+
+좋은 하루 보내세요 🌿`,
   }),
   registered: (member, pass) => ({
-    title: '수강권 등록 완료',
-    body: `안녕하세요 😊 소선요가입니다
+    title: '수강권 등록 안내',
+    body: `안녕하세요 ${member.name}님 ☺️
+소선요가입니다
 
-회원권 등록 완료 안내드립니다 🌿
+수강권 등록 완료되었어요.
 
-▪ 이용 기간
-${fmtKRShort(pass.startDate)} ~ ${fmtKRShort(pass.expiryDate)}
+· 이용 기간: ${fmtKRShort(pass.startDate)} ~ ${fmtKRShort(pass.expiryDate)}
+· 총 ${pass.totalSessions}회
 
-▪ 총 횟수
-${pass.totalSessions}회
+예약 후 이용 가능하며
+당일 취소는 차감될 수 있어요.
 
-▪ 이용 안내
-예약 후 이용 가능하며,
-당일 취소는 차감될 수 있습니다 🙏
-
-편하게 수련 이어가시면 됩니다 😊`,
+편하게 수련 이어가시면 됩니다 🌿`,
   }),
   hold: (member, pass, holdStart, holdEnd) => ({
     title: '홀딩 안내',
-    body: `안녕하세요 😊 소선요가입니다
+    body: `안녕하세요 ${member.name}님 ☺️
+소선요가입니다
 
-요청해주신 휴회 처리 완료되었습니다 🌿
+요청하신 휴회 처리 완료되었어요.
 
-▪ 휴회 기간
-${fmtKRShort(holdStart)} ~ ${fmtKRShort(holdEnd)}
+· 휴회 기간: ${fmtKRShort(holdStart)} ~ ${fmtKRShort(holdEnd)}
 
-해당 기간 동안은 수련 이용이 중단되며,
-이후 자동으로 이어서 사용 가능합니다 😊
+해당 기간 동안은 수련이 중단되고
+이후 자동으로 이어서 사용 가능합니다.
 
-변동사항 있으시면 편하게 말씀 주세요 🌱`,
+변동사항 있으시면 편하게 말씀 주세요 🌿`,
   }),
   trial: (trial) => ({
     title: '체험 예약 안내',
-    body: `안녕하세요 😊 소선요가입니다
+    body: `안녕하세요 ${trial.name}님 ☺️
+소선요가입니다
 
-${fmtKRShort(trial.date)} ${trial.time} 수련 예약되어 있습니다 🌿
+${fmtKRShort(trial.date)} ${trial.time} 체험 수업 예약되어 있어요.
 
 편안한 복장으로
-5분 전 도착 부탁드립니다 😊
+5분 전 도착 부탁드려요.
 
-혹시 일정 변동 시
-미리 연락 부탁드립니다 🙏`,
+혹시 변동사항 생기시면
+미리 말씀 주세요 🌿`,
   }),
   upcomingStart: (member, pass) => ({
     title: '수강권 시작 안내',
-    body: `안녕하세요 😊 소선요가입니다
+    body: `안녕하세요 ${member.name}님 ☺️
+소선요가입니다
 
-${member.name}님 수강권 시작일이
-${fmtKRShort(pass.startDate)}로 다가왔습니다 🌿
+${fmtKRShort(pass.startDate)}부터
+수강권이 시작됩니다.
 
 편안한 복장으로
-5분 전 도착 부탁드립니다 😊
+5분 전 도착 부탁드려요.
 
 변동사항 있으시면
-미리 연락 부탁드립니다 🙏`,
+미리 말씀 주세요 🌿`,
   }),
   privateLessonSchedule: (member, schedule) => ({
     title: '개인레슨 일정 안내',
-    body: `안녕하세요 😊 소선요가입니다
+    body: `안녕하세요 ${member.name}님 ☺️
+소선요가입니다
 
-${member.name}님 현재 협의된
-개인레슨 일정 안내드립니다 🌿
+협의해주신 개인레슨 일정
+정리해서 보내드려요!
 
 ${schedule}
 
-변동사항 있으시면
-미리 연락 부탁드립니다 🙏`,
+혹시 변동사항 생기시면
+편하게 미리 말씀 주세요 🙏🏻
+
+좋은 하루 보내세요 🌿`,
   }),
 };
 
@@ -3327,7 +3330,7 @@ function MemberEditor({ member, onClose, onSave }) {
           </div>
         </div>
 
-        <Field label="고정 메모">
+        <Field label="특이사항">
           <TextArea value={data.notes || ''} onChange={(e) => setData({ ...data, notes: e.target.value })} placeholder="회원 특이사항 (변하지 않는 정보)" />
         </Field>
 
@@ -3530,7 +3533,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
             { id: 'passes', label: '수강권' },
             { id: 'overview', label: '정보' },
             { id: 'history', label: '수강이력' },
-            { id: 'memo', label: '수업 기록' },
+            { id: 'memo', label: '메모' },
             { id: 'progress', label: '경과' },
             { id: 'assessment', label: '분석' },
           ].map(t => (
@@ -3552,7 +3555,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
             <InfoRow label="직업" value={member.job} />
             <InfoRow label="요가·운동 경험" value={member.yogaExperience} />
             <InfoRow label="고정 수업" value={member.fixedSlots?.map(fs => `${WEEK_KR[fs.dow]}요일 ${fs.time}`).join(', ')} />
-            <InfoRow label="고정 메모" value={member.notes} multiline />
+            <InfoRow label="특이사항" value={member.notes} multiline />
             <InfoRow label="등록일" value={member.createdAt} />
             {member.refunds?.length > 0 && (
               <div>
@@ -3800,17 +3803,18 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
                   }
                   
                   return (
-                    <div key={i} className="px-3 py-2 rounded-lg flex items-start gap-3"
+                    <div key={i} className="px-3 py-2 rounded-lg flex items-center gap-3"
                       style={{ backgroundColor: bgColor, border: `1px solid ${borderColor}` }}>
                       <span className="text-[12px] tabular-nums shrink-0" style={{ color: theme.inkMute }}>{h.date}</span>
-                      <span className="text-[12px] font-medium tabular-nums" style={{ color: timeColor, fontFamily: theme.serif, fontSize: 13 }}>{h.time}</span>
-                      <div className="flex-1 flex flex-wrap items-center gap-1">
+                      <span className="text-[12px] font-medium tabular-nums shrink-0" style={{ color: timeColor, fontFamily: theme.serif, fontSize: 13 }}>{h.time}</span>
+                      {h.cancelNote && <span className="text-[10px] flex-1" style={{ color: theme.inkMute }}>· {h.cancelNote}</span>}
+                      {!h.cancelNote && <div className="flex-1"></div>}
+                      <div className="flex items-center gap-1.5 shrink-0">
                         {h.classType === '개인' && <Chip tone="accent" size="sm">개인</Chip>}
-                        {statusChip}
                         {h.sessionNumber && h.totalSessions && !h.cancelled && h.status !== 'cancelled_advance' && h.status !== 'reserved' && !isFuture && (
-                          <span className="text-[11px]" style={{ color: theme.inkSoft }}>{h.sessionNumber}/{h.totalSessions}</span>
+                          <span className="text-[11px] tabular-nums" style={{ color: theme.inkSoft }}>{h.sessionNumber}/{h.totalSessions}</span>
                         )}
-                        {h.cancelNote && <span className="text-[10px]" style={{ color: theme.inkMute }}>· {h.cancelNote}</span>}
+                        {statusChip}
                       </div>
                     </div>
                   );
@@ -3894,7 +3898,7 @@ function MemoTimeline({ items, onUpdate, toast, memberName }) {
     const next = [{ id: uid(), date, text: text.trim() }, ...items]
       .sort((a, b) => b.date.localeCompare(a.date));
     await onUpdate(next);
-    setAdding(false); setText(''); toast('수업 기록 저장됨');
+    setAdding(false); setText(''); toast('메모 저장됨');
   };
 
   const del = async (id) => {
@@ -4048,7 +4052,7 @@ function MemoTimeline({ items, onUpdate, toast, memberName }) {
         </div>
       )}
       {items.length === 0 ? (
-        <EmptyState icon={FileText} title="아직 수업 기록이 없어요" />
+        <EmptyState icon={FileText} title="아직 메모가 없어요" />
       ) : (
         <div className="space-y-2">
           {items.map(m => (
