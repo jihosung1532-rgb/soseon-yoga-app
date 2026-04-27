@@ -1862,29 +1862,48 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
   return (
     <div className="px-3 pb-28 pt-2 space-y-3">
 
-      {/* 메인 카드: 멘트 + 수업 목록 */}
+      {/* 멘트 + 통계 한 카드 */}
       <div className="rounded-2xl p-4" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
         <div className="text-[11px]" style={{ color: theme.inkMute }}>{fmtKR(new Date())}</div>
-        <div className="flex items-center justify-between mt-0.5">
-          <div className="text-lg font-bold" style={{ color: theme.ink }}>
-            {isWeekend ? '오늘은 푹 쉬면서 충전 😴' : '오늘도 재밌게 수업하자 😘'}
-          </div>
-          {!isWeekend && (
-            <button onClick={() => goto('schedule')} className="text-[11px]" style={{ color: theme.accent }}>
-              전체 일정 →
-            </button>
-          )}
+        <div className="text-lg font-bold mt-0.5 mb-3" style={{ color: theme.ink }}>
+          {isWeekend ? '오늘은 푹 쉬면서 충전 😴' : '오늘도 재밌게 수업하자 😘'}
         </div>
+        {/* 통계 3칸 */}
+        <div className="grid grid-cols-3 gap-2">
+          <Stat label="활성 회원" value={activeMembers} color={theme.accent} />
+          <Stat label="만료 임박" value={expiringSoon} color={expiringSoon > 0 ? theme.accent2 : theme.accent} />
+          <Stat label="오늘 체험" value={todayTrials} color={todayTrials > 0 ? theme.accent2 : theme.accent} />
+        </div>
+      </div>
 
-        {!isWeekend && todaySessions.length > 0 && (
-          <>
-            <div className="text-[12px] mt-2 font-medium" style={{ color: theme.inkSoft }}>
-              오늘 수업 {todaySessions.length}개
+      {/* 오늘 수업 카드 - 클릭 시 일정 탭으로 */}
+      {!isWeekend && (
+        <div onClick={() => goto('schedule')}
+          className="rounded-2xl p-4 cursor-pointer transition-all active:scale-[0.99]"
+          style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-[13px] font-semibold flex items-center gap-1.5" style={{ color: theme.ink }}>
+              <Calendar size={14} style={{ color: theme.accent }} />
+              <span>오늘 수업</span>
+              {todaySessions.length > 0 && (
+                <span className="text-[11px] font-normal" style={{ color: theme.inkMute }}>{todaySessions.length}개</span>
+              )}
             </div>
-            <div className="mt-2 space-y-1.5 pt-2" style={{ borderTop: `1px solid ${theme.lineLight}` }}>
+            <ChevronRight size={14} style={{ color: theme.inkMute }} />
+          </div>
+          {todaySessions.length === 0 ? (
+            <div className="text-[12px]" style={{ color: theme.inkMute }}>오늘 예정된 수업이 없어요</div>
+          ) : (
+            <div className="space-y-1.5 pt-2" style={{ borderTop: `1px solid ${theme.lineLight}` }}>
               {todaySessions.map(s => {
                 const active = s.participants.filter(p => !p.cancelled);
                 const cancelled = s.participants.filter(p => p.cancelled);
+                // 회원 먼저, 체험자 뒤
+                const sortedActive = [...active].sort((a, b) => {
+                  if (a.isTrial && !b.isTrial) return 1;
+                  if (!a.isTrial && b.isTrial) return -1;
+                  return 0;
+                });
                 return (
                   <div key={s.date + s.time} className="flex items-start gap-2">
                     <span className="text-[13px] font-bold tabular-nums shrink-0"
@@ -1892,14 +1911,14 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
                       {s.time}
                     </span>
                     <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-                      {active.map((p, i) => (
-                        <span key={i} className="text-[12px]" style={{ color: theme.ink }}>
+                      {sortedActive.map((p, i) => (
+                        <span key={i} className="text-[12px]" style={{ color: p.isTrial ? theme.accent2 : theme.ink }}>
                           {p.memberName}
                           {p.sessionNumber && p.totalSessions && (
                             <span style={{ color: theme.inkMute }}> ({p.sessionNumber}/{p.totalSessions})</span>
                           )}
-                          {p.isTrial && <span style={{ color: theme.accent2 }}> ·체험</span>}
-                          {p.classType === '개인' && <span style={{ color: theme.accent }}> ·개인</span>}
+                          {p.isTrial && <span style={{ color: theme.inkMute, fontSize: 10 }}> 체험</span>}
+                          {p.classType === '개인' && <span style={{ color: theme.accent, fontSize: 10 }}> 개인</span>}
                         </span>
                       ))}
                       {cancelled.map((p, i) => (
@@ -1912,20 +1931,9 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
                 );
               })}
             </div>
-          </>
-        )}
-
-        {!isWeekend && todaySessions.length === 0 && (
-          <div className="text-[12px] mt-2" style={{ color: theme.inkMute }}>오늘 예정된 수업이 없어요</div>
-        )}
-      </div>
-
-      {/* 통계 3칸 */}
-      <div className="grid grid-cols-3 gap-2">
-        <Stat label="활성 회원" value={activeMembers} color={theme.accent} />
-        <Stat label="만료 임박" value={expiringSoon} color={expiringSoon > 0 ? theme.accent2 : theme.accent} />
-        <Stat label="오늘 체험" value={todayTrials} color={todayTrials > 0 ? theme.accent2 : theme.accent} />
-      </div>
+          )}
+        </div>
+      )}
 
       {/* 🏆 리듬 수련 대상자 */}
       {(() => {
