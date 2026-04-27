@@ -3904,6 +3904,9 @@ function MemoTimeline({ items, onUpdate, toast, memberName }) {
   const [mode, setMode] = useState('text'); // text | kakao
   const [date, setDate] = useState(toYMD(new Date()));
   const [text, setText] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editText, setEditText] = useState('');
+  const [editDate, setEditDate] = useState('');
   const [kakaoImages, setKakaoImages] = useState([]);
   const [kakaoLoading, setKakaoLoading] = useState(false);
   const [kakaoParsed, setKakaoParsed] = useState(null);
@@ -3915,6 +3918,22 @@ function MemoTimeline({ items, onUpdate, toast, memberName }) {
       .sort((a, b) => b.date.localeCompare(a.date));
     await onUpdate(next);
     setAdding(false); setText(''); toast('메모 저장됨');
+  };
+  
+  const startEdit = (m) => {
+    setEditingId(m.id);
+    setEditText(m.text);
+    setEditDate(m.date);
+  };
+  
+  const saveEdit = async () => {
+    if (!editText.trim()) return;
+    const next = items
+      .map(m => m.id === editingId ? { ...m, text: editText.trim(), date: editDate } : m)
+      .sort((a, b) => b.date.localeCompare(a.date));
+    await onUpdate(next);
+    setEditingId(null);
+    toast('수정 완료');
   };
 
   const del = async (id) => {
@@ -4073,16 +4092,34 @@ function MemoTimeline({ items, onUpdate, toast, memberName }) {
         <div className="space-y-2">
           {items.map(m => (
             <div key={m.id} className="rounded-2xl p-3" style={{ backgroundColor: theme.card, border: `1px solid ${theme.lineLight}` }}>
-              <div className="flex justify-between items-baseline mb-1">
-                <div className="text-[12px] font-medium tabular-nums flex items-center gap-1" style={{ color: theme.accent }}>
-                  {m.date}
-                  {m.source === 'kakao' && <span style={{ fontSize: 10, color: '#C8A366' }}>📱 카톡</span>}
+              {editingId === m.id ? (
+                <div className="space-y-2">
+                  <Input type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} />
+                  <TextArea value={editText} onChange={(e) => setEditText(e.target.value)} rows={4} />
+                  <div className="flex justify-end gap-2">
+                    <Button variant="ghost" size="sm" onClick={() => setEditingId(null)}>취소</Button>
+                    <Button icon={Check} size="sm" onClick={saveEdit}>저장</Button>
+                  </div>
                 </div>
-                <button onClick={() => del(m.id)} className="p-1" style={{ color: theme.inkMute }}>
-                  <Trash2 size={12} />
-                </button>
-              </div>
-              <div className="text-[13px] whitespace-pre-wrap" style={{ color: theme.ink }}>{m.text}</div>
+              ) : (
+                <>
+                  <div className="flex justify-between items-baseline mb-1">
+                    <div className="text-[12px] font-medium tabular-nums flex items-center gap-1" style={{ color: theme.accent }}>
+                      {m.date}
+                      {m.source === 'kakao' && <span style={{ fontSize: 10, color: '#C8A366' }}>📱 카톡</span>}
+                    </div>
+                    <div className="flex gap-1">
+                      <button onClick={() => startEdit(m)} className="p-1" style={{ color: theme.inkMute }} title="수정">
+                        <Edit3 size={12} />
+                      </button>
+                      <button onClick={() => del(m.id)} className="p-1" style={{ color: theme.inkMute }} title="삭제">
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-[13px] whitespace-pre-wrap" style={{ color: theme.ink }}>{m.text}</div>
+                </>
+              )}
             </div>
           ))}
         </div>
@@ -5139,10 +5176,11 @@ function DayLogEditor({ date, entries, sessions, onClose, onSave }) {
 /* =========================================================
    Trials View — separate tab for trial members
    ========================================================= */
-function TrialsView({ trials, setTrials, members, setMembers, toast, onSendSMS }) {
+function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessions, toast, onSendSMS }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(null);
   const [bulkImporting, setBulkImporting] = useState(false);
+  const [textImporting, setTextImporting] = useState(false);
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
 
@@ -5161,8 +5199,31 @@ function TrialsView({ trials, setTrials, members, setMembers, toast, onSendSMS }
     }));
     const next = [...withIds, ...trials];
     await saveTrials(next);
+    
+    // 일정에도 자동 등록
+    if (sessions && setSessions) {
+      const sessionsCopy = { ...sessions };
+      withIds.forEach(t => {
+        if (!t.date || !t.time) return;
+        const key = `${t.date}_${t.time}`;
+        const existingSess = sessionsCopy[key] || { date: t.date, time: t.time, participants: [] };
+        // 중복 체크
+        if (!existingSess.participants.some(p => p.memberName === t.name && p.isTrial)) {
+          existingSess.participants = [...existingSess.participants, {
+            memberName: t.name,
+            isTrial: true,
+            status: 'reserved',
+          }];
+        }
+        sessionsCopy[key] = existingSess;
+      });
+      setSessions(sessionsCopy);
+      await saveKey(K.sessions, sessionsCopy);
+    }
+    
     setBulkImporting(false);
-    toast(`${withIds.length}명 추가 (중복 ${newList.length - filtered.length}명 제외)`);
+    setTextImporting(false);
+    toast(`${withIds.length}명 추가 + 일정 등록 완료 (중복 ${newList.length - filtered.length}명 제외)`);
   };
 
   const create = async (data) => {
@@ -5264,6 +5325,7 @@ function TrialsView({ trials, setTrials, members, setMembers, toast, onSendSMS }
           )}
         </div>
         <div className="flex gap-1.5">
+          <Button icon={FileText} variant="soft" size="sm" onClick={() => setTextImporting(true)}>텍스트</Button>
           <Button icon={Camera} variant="soft" size="sm" onClick={() => setBulkImporting(true)}>사진</Button>
           <Button icon={Plus} onClick={() => setAdding(true)}>추가</Button>
         </div>
@@ -5335,6 +5397,13 @@ function TrialsView({ trials, setTrials, members, setMembers, toast, onSendSMS }
           toast={toast}
         />
       )}
+      {textImporting && (
+        <TrialTextImport
+          onClose={() => setTextImporting(false)}
+          onSave={addManyTrials}
+          toast={toast}
+        />
+      )}
       {editing && (
         <TrialDetail
           trial={editing}
@@ -5346,6 +5415,155 @@ function TrialsView({ trials, setTrials, members, setMembers, toast, onSendSMS }
         />
       )}
     </div>
+  );
+}
+
+function TrialTextImport({ onClose, onSave, toast }) {
+  const [text, setText] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [parsed, setParsed] = useState(null);
+
+  const analyze = async () => {
+    if (!text.trim()) { toast('텍스트를 입력해주세요'); return; }
+    setLoading(true);
+    try {
+      const system = `당신은 한국 요가원 체험자 정보를 JSON으로 정리하는 어시스턴트입니다.
+
+각 체험자당 아래 필드로 추출:
+- name (이름, 필수)
+- phone (전화번호, 010-xxxx-xxxx 형식으로 정규화)
+- date (체험 날짜, YYYY-MM-DD 형식. 연도는 2026)
+- time (체험 시간, HH:MM 형식. 11:00, 19:20, 20:50 등)
+- experience (요가 경험: '있음' | '없음' | 구체 내용. "유"는 있음, "무"는 없음)
+- painPoints (불편한 부위나 몸 상태 메모)
+- paid (입금 여부: true | false | null. "입완"="입금완료"=true, "미입금"=false)
+- status: "예약확정" (기본값)
+- source: 방문 경로 (인스타, 카채널, 카카오채널, 당근, 지인소개 등)
+- memo: 그 외 메모 (입금 상태 등)
+
+날짜는 텍스트 맨 위에 공통으로 적혀있을 수 있음 ("4/28 11:00 체험" 같이). 모든 체험자에 적용.
+
+반드시 JSON만 출력:
+{"trials": [{...}, {...}]}
+
+코드펜스 금지, 설명 금지.`;
+
+      const resp = await callClaude([{ role: 'user', content: text }], system);
+      const result = tryParseJSON(resp);
+      if (result?.trials?.length) {
+        setParsed(result.trials);
+      } else {
+        toast('읽을 수 없었어요. 형식을 확인해주세요');
+      }
+    } catch (e) {
+      toast('분석 실패: ' + (e.message || ''));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const save = () => {
+    if (!parsed?.length) return;
+    onSave(parsed);
+  };
+
+  const removeParsed = (idx) => {
+    setParsed(parsed.filter((_, i) => i !== idx));
+  };
+
+  const updateParsed = (idx, field, value) => {
+    setParsed(parsed.map((p, i) => i === idx ? { ...p, [field]: value } : p));
+  };
+
+  return (
+    <Modal open={true} onClose={onClose} title="체험자 텍스트로 일괄 추가" maxWidth="max-w-lg">
+      <div className="space-y-3">
+        {!parsed && (
+          <>
+            <div className="text-[12px]" style={{ color: theme.inkSoft, lineHeight: 1.6 }}>
+              카톡/문자 메모 그대로 붙여넣으세요.<br/>
+              날짜·시간·이름·전화번호·메모를 자동 추출해서 일정에도 등록해줘요.
+            </div>
+            <TextArea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder={`예시:
+4/28 11:00 체험
+장다연 (인스타/미입금)
+010-3573-0912
+발목이 잘 휘고 삐어요
+요가 경험 없습니다
+
+나주연 (카채널/입완)
+010-9821-7914
+무릎이 구부리면 아파요
+유`}
+              rows={12}
+              style={{ fontFamily: 'monospace', fontSize: 12 }}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={onClose}>취소</Button>
+              <Button icon={Sparkles} onClick={analyze} disabled={loading || !text.trim()}>
+                {loading ? '분석 중...' : 'AI 분석'}
+              </Button>
+            </div>
+          </>
+        )}
+        {parsed && (
+          <>
+            <div className="text-[12px] mb-2" style={{ color: theme.inkSoft }}>
+              <strong>{parsed.length}명</strong> 추출됨. 확인 후 저장하세요.
+            </div>
+            <div className="space-y-2 max-h-[400px] overflow-y-auto">
+              {parsed.map((t, i) => (
+                <div key={i} className="rounded-xl p-3" style={{ backgroundColor: theme.cardAlt, border: `1px solid ${theme.line}` }}>
+                  <div className="flex justify-between items-start mb-2">
+                    <input
+                      value={t.name || ''}
+                      onChange={(e) => updateParsed(i, 'name', e.target.value)}
+                      className="font-bold text-sm bg-transparent border-b"
+                      style={{ borderColor: theme.line, color: theme.ink }}
+                    />
+                    <button onClick={() => removeParsed(i)} className="text-xs" style={{ color: theme.danger }}>제거</button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div>
+                      <div style={{ color: theme.inkMute }}>전화번호</div>
+                      <input value={t.phone || ''} onChange={(e) => updateParsed(i, 'phone', e.target.value)}
+                        className="w-full bg-transparent" style={{ color: theme.ink }} />
+                    </div>
+                    <div>
+                      <div style={{ color: theme.inkMute }}>날짜 / 시간</div>
+                      <div style={{ color: theme.accent }}>{t.date} {t.time}</div>
+                    </div>
+                    <div>
+                      <div style={{ color: theme.inkMute }}>경험</div>
+                      <div style={{ color: theme.ink }}>{t.experience || '-'}</div>
+                    </div>
+                    <div>
+                      <div style={{ color: theme.inkMute }}>경로</div>
+                      <div style={{ color: theme.ink }}>{t.source || '-'}</div>
+                    </div>
+                  </div>
+                  {t.painPoints && (
+                    <div className="text-[11px] mt-2 p-2 rounded" style={{ backgroundColor: theme.warnBg, color: '#5E4520' }}>
+                      ⚠ {t.painPoints}
+                    </div>
+                  )}
+                  {t.memo && (
+                    <div className="text-[10px] mt-1" style={{ color: theme.inkMute }}>{t.memo}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="ghost" onClick={() => setParsed(null)}>다시 입력</Button>
+              <Button icon={Check} onClick={save}>{parsed.length}명 저장 + 일정 등록</Button>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -6581,6 +6799,7 @@ export default function App() {
       {tab === 'trials' && (
         <TrialsView trials={trials} setTrials={setTrials}
           members={members} setMembers={setMembers}
+          sessions={sessions} setSessions={setSessions}
           toast={toast} onSendSMS={onSendSMS} />
       )}
       {tab === 'classlog' && (
