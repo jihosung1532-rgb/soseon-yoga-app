@@ -1872,12 +1872,11 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
       const pass = activePass(m);
       if (!pass) return;
       if (pass.startDate === todayYMD) {
-        // 오늘 수업에 들어가있는지 확인
         const hasToday = todaySessions.some(s => 
           s.participants?.some(p => p.memberId === m.id && !p.cancelled)
         );
         if (hasToday) {
-          alerts.push({ icon: '🌱', text: <><strong>{m.name}</strong>님 첫 수업이에요</> });
+          alerts.push({ icon: '🌱', name: m.name, suffix: '님 첫 수업이에요' });
         }
       }
     });
@@ -1887,14 +1886,15 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
       if (!pass) return;
       const rs = rhythmStatus(pass);
       if (rs?.achieved) {
-        alerts.push({ icon: '🏆', text: <><strong>{m.name}</strong>님 리듬 수련 대상자에요</> });
+        alerts.push({ icon: '🏆', name: m.name, suffix: '님 리듬 수련 대상자에요' });
       }
     });
     // 만료 D-3 이내 (활성)
     expiringMembersList.filter(x => x.daysLeft <= 3).forEach(({ member, daysLeft }) => {
       alerts.push({ 
         icon: '⚠', 
-        text: <><strong>{member.name}</strong>님 만료 {daysLeft === 0 ? '오늘' : `D-${daysLeft}`}</> 
+        name: member.name,
+        suffix: `님 만료 ${daysLeft === 0 ? '오늘' : `D-${daysLeft}`}`
       });
     });
     return alerts;
@@ -2004,7 +2004,7 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
             {homeAlerts.map((alert, i) => (
               <div key={i} className="flex items-center gap-2 text-[12px] py-0.5" style={{ color: '#5E3A20' }}>
                 <span className="flex-shrink-0">{alert.icon}</span>
-                <span>{alert.text}</span>
+                <span><strong>{alert.name}</strong>{alert.suffix}</span>
               </div>
             ))}
           </div>
@@ -6811,36 +6811,6 @@ function InsightRow({ label, value, sub }) {
   );
 }
 
-function ExpandCard({ label, main, expand, isOpen, onToggle }) {
-  return (
-    <div className="rounded-2xl overflow-hidden" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
-      <div onClick={onToggle} className="p-4 cursor-pointer">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-[11px] font-semibold" style={{ color: theme.accent }}>{label}</span>
-          <span style={{ color: theme.inkMute, fontSize: 14, transition: 'transform 0.2s', display: 'inline-block', transform: isOpen ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
-        </div>
-        {main}
-      </div>
-      {isOpen && (
-        <div className="p-4" style={{ borderTop: `1px solid ${theme.cardAlt}`, background: theme.cardAlt }}>
-          {expand}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function InsightRow({ label, value, sub }) {
-  return (
-    <div className="flex justify-between items-center py-1.5 text-[12px]" style={{ borderBottom: `1px solid ${theme.line}` }}>
-      <span style={{ color: theme.ink, fontWeight: 500 }}>{label}</span>
-      <span style={{ color: theme.inkMute, textAlign: 'right' }}>
-        {value}
-        {sub && <div style={{ fontSize: 10, color: theme.inkMute, marginTop: 2 }}>{sub}</div>}
-      </span>
-    </div>
-  );
-}
 
 /* =========================================================
    Settings Modal — Backup & Restore
