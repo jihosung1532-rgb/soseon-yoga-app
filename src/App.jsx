@@ -7553,7 +7553,99 @@ export default function App() {
       console.log('[auto] 체험 자동 수업완료 처리');
     }
     
-    setMembers(migratedM); setSessions(migratedS); setClassLog(finalC); setTrials(migT);
+    // 매번 실행: 회원 수업 시간 + 1시간 지났는데 'reserved' 상태면 자동 출석 처리
+    let sessionsChanged = false;
+    const updatedSessions = { ...migratedS };
+    Object.keys(updatedSessions).forEach(key => {
+      const s = updatedSessions[key];
+      if (!s?.date || !s?.time || !s?.participants) return;
+      try {
+        const sessionEnd = new Date(`${s.date}T${s.time}:00`);
+        sessionEnd.setHours(sessionEnd.getHours() + 1);
+        if (now <= sessionEnd) return; // 아직 안 지남
+        
+        // status가 'reserved'인 참석자 → 출석으로 변경
+        let participantsChanged = false;
+        const newParts = s.participants.map(p => {
+          if (p.cancelled) return p;
+          if (p.status !== 'reserved') return p;
+          if (p.isTrial) return p; // 체험자는 별도 처리
+          if (!p.memberId || !p.passId) return p;
+          
+          // 다음 sn 계산: 같은 passId의 sn 최대값 + 1
+          // (마이그레이션이 처리하므로 그냥 status만 변경)
+          participantsChanged = true;
+          return { ...p, status: 'attended', sessionNumber: p.sessionNumber || null };
+        });
+        if (participantsChanged) {
+          updatedSessions[key] = { ...s, participants: newParts };
+          sessionsChanged = true;
+        }
+      } catch (e) {}
+    });
+    
+    let migS = migratedS;
+    if (sessionsChanged) {
+      migS = updatedSessions;
+      // 수강권 회수 재계산
+      const usageMap = {};
+      Object.values(migS).forEach(s => {
+        if (!s.date || s.date > toYMD(new Date())) return;
+        (s.participants || []).forEach(p => {
+          if (!p.memberId || !p.passId || p.isTrial) return;
+          if (p.cancelled || p.status === 'cancelled_advance' || p.status === 'cancelled_sameday') return;
+          // 출석 또는 노쇼만 카운트
+          const isAttended = p.status === 'attended' || p.sessionNumber || p.status === '출석';
+          const isNoShow = p.status === 'no_show';
+          if (!isAttended && !isNoShow) return;
+          const k = `${p.memberId}|${p.passId}`;
+          if (!usageMap[k]) usageMap[k] = { count: 0, dates: [] };
+          usageMap[k].count++;
+          usageMap[k].dates.push(s.date);
+        });
+      });
+      
+      // sn 부여 (출석 순서대로)
+      Object.keys(usageMap).forEach(k => {
+        usageMap[k].dates.sort();
+        let sn = 1;
+        Object.values(migS).forEach(s => {
+          (s.participants || []).forEach(p => {
+            if (`${p.memberId}|${p.passId}` !== k) return;
+            if (p.cancelled || p.isTrial) return;
+            const isAttended = p.status === 'attended' || p.sessionNumber || p.status === '출석' || p.status === 'no_show';
+            if (!isAttended) return;
+            // sn이 없으면 부여
+            if (!p.sessionNumber) p.sessionNumber = sn;
+            sn = Math.max(sn, p.sessionNumber) + 1;
+          });
+        });
+      });
+      
+      // 회원 수강권 업데이트
+      let updated = 0;
+      const newMembers2 = migratedM.map(m => {
+        if (!m.passes || m.passes.length === 0) return m;
+        const newPasses = m.passes.map(p => {
+          const key = `${m.id}|${p.id}`;
+          const usage = usageMap[key];
+          if (!usage) return p;
+          if (usage.count === p.usedSessions) return p;
+          updated++;
+          return { ...p, usedSessions: usage.count, sessionDates: usage.dates.sort() };
+        });
+        return { ...m, passes: newPasses };
+      });
+      
+      if (updated > 0) {
+        migratedM = newMembers2;
+        await saveKey(K.members, migratedM);
+      }
+      await saveKey(K.sessions, migS);
+      console.log('[auto] 자동 출석 처리');
+    }
+    
+    setMembers(migratedM); setSessions(migS); setClassLog(finalC); setTrials(migT);
     setDashDismiss(dd); setSmsConfirmed(sc);
     setGroupSlots(Array.isArray(gs) && gs.length ? gs : DEFAULT_GROUP_SLOTS);
     setReady(true);
