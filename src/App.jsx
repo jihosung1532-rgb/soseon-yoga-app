@@ -7476,7 +7476,84 @@ export default function App() {
       await saveKey({ lkey: 'sosun:migration:trials-to-sessions:v1', table: 'settings', id: 'migration_trials_to_sessions_v1' }, true);
     }
     
-    setMembers(migratedM); setSessions(migratedS); setClassLog(finalC); setTrials(finalT);
+    // 마이그레이션 v3: 수강권 사용 회수 sessions와 동기화
+    const passSyncFlag = await loadKey({ lkey: 'sosun:migration:pass-sync:v1', table: 'settings', id: 'migration_pass_sync_v1' }, false);
+    if (!passSyncFlag) {
+      const todayStr = toYMD(new Date());
+      // 회원별 / 수강권별로 sessions에서 사용된 회수 카운트
+      const usageMap = {}; // { 'memberId|passId': { count, dates: [] } }
+      Object.values(migratedS).forEach(s => {
+        if (s.date > todayStr) return; // 미래 X
+        (s.participants || []).forEach(p => {
+          if (!p.memberId || !p.passId) return;
+          if (p.isTrial) return;
+          // 출석으로 인정되는 것만 (sn 있음 = 차감됨, 또는 명시 attended)
+          const isAttended = !p.cancelled 
+            && p.status !== 'cancelled_advance' 
+            && p.status !== 'cancelled_sameday'
+            && (p.sessionNumber || p.status === 'attended' || p.status === '출석');
+          // 노쇼는 차감되어야 함
+          const isNoShow = p.status === 'no_show';
+          if (!isAttended && !isNoShow) return;
+          
+          const key = `${p.memberId}|${p.passId}`;
+          if (!usageMap[key]) usageMap[key] = { count: 0, dates: [] };
+          usageMap[key].count++;
+          usageMap[key].dates.push(s.date);
+        });
+      });
+      
+      // 회원별로 수강권 업데이트
+      let updated = 0;
+      const newMembers = migratedM.map(m => {
+        if (!m.passes || m.passes.length === 0) return m;
+        const newPasses = m.passes.map(p => {
+          const key = `${m.id}|${p.id}`;
+          const usage = usageMap[key];
+          if (!usage) return p;
+          if (usage.count === p.usedSessions) return p; // 이미 맞음
+          updated++;
+          return {
+            ...p,
+            usedSessions: usage.count,
+            sessionDates: usage.dates.sort(),
+          };
+        });
+        return { ...m, passes: newPasses };
+      });
+      
+      if (updated > 0) {
+        migratedM = newMembers;
+        await saveKey(K.members, migratedM);
+        console.log('[migration] 수강권 동기화', updated, '건');
+      }
+      await saveKey({ lkey: 'sosun:migration:pass-sync:v1', table: 'settings', id: 'migration_pass_sync_v1' }, true);
+    }
+    
+    // 매번 실행: 체험 시간 + 1시간 지났는데 '예약확정' 상태면 '수업완료'로 자동 변경
+    const now = new Date();
+    let trialsChanged = false;
+    const updatedTrials = finalT.map(t => {
+      if (t.status !== '예약확정') return t;
+      if (!t.date || !t.time) return t;
+      try {
+        const trialEnd = new Date(`${t.date}T${t.time}:00`);
+        trialEnd.setHours(trialEnd.getHours() + 1);
+        if (now > trialEnd) {
+          trialsChanged = true;
+          return { ...t, status: '수업완료' };
+        }
+      } catch (e) {}
+      return t;
+    });
+    let migT = finalT;
+    if (trialsChanged) {
+      migT = updatedTrials;
+      await saveKey(K.trials, migT);
+      console.log('[auto] 체험 자동 수업완료 처리');
+    }
+    
+    setMembers(migratedM); setSessions(migratedS); setClassLog(finalC); setTrials(migT);
     setDashDismiss(dd); setSmsConfirmed(sc);
     setGroupSlots(Array.isArray(gs) && gs.length ? gs : DEFAULT_GROUP_SLOTS);
     setReady(true);
