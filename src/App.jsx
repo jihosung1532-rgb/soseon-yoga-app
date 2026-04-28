@@ -7405,6 +7405,34 @@ export default function App() {
       await saveKey({ lkey: 'sosun:migration:reserved-fix:v1', table: 'settings', id: 'migration_reserved_fix_v1' }, true);
     }
     
+    // 마이그레이션 v2: 체험자 일정 자동 등록 (이미 등록됐지만 sessions에 없는 체험자)
+    const trialsMigFlag = await loadKey({ lkey: 'sosun:migration:trials-to-sessions:v1', table: 'settings', id: 'migration_trials_to_sessions_v1' }, false);
+    if (!trialsMigFlag) {
+      const sessionsCopy2 = { ...migratedS };
+      let added = 0;
+      finalT.forEach(t => {
+        if (!t.date || !t.time) return;
+        if (t.status === '회원전환') return; // 회원 전환된 건 별도
+        const key = `${t.date}_${t.time}`;
+        const sess = sessionsCopy2[key] || { date: t.date, time: t.time, participants: [] };
+        const already = sess.participants?.some(p => p.memberName === t.name && p.isTrial);
+        if (already) return;
+        sess.participants = [...(sess.participants || []), {
+          memberName: t.name,
+          isTrial: true,
+          status: 'reserved',
+        }];
+        sessionsCopy2[key] = sess;
+        added++;
+      });
+      if (added > 0) {
+        migratedS = sessionsCopy2;
+        await saveKey(K.sessions, migratedS);
+        console.log('[migration] 체험자 일정 등록', added, '명');
+      }
+      await saveKey({ lkey: 'sosun:migration:trials-to-sessions:v1', table: 'settings', id: 'migration_trials_to_sessions_v1' }, true);
+    }
+    
     setMembers(migratedM); setSessions(migratedS); setClassLog(finalC); setTrials(finalT);
     setDashDismiss(dd); setSmsConfirmed(sc);
     setGroupSlots(Array.isArray(gs) && gs.length ? gs : DEFAULT_GROUP_SLOTS);
