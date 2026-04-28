@@ -1850,89 +1850,196 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
   };
 
   const activeMembers = members.filter(m => activePass(m)).length;
-  const expiringSoon = members.filter(m => {
+  const expiringMembersList = members.map(m => {
     const p = activePass(m);
-    if (!p) return false;
+    if (!p) return null;
     const d = daysBetween(todayYMD, p.expiryDate);
-    return d <= 7 && d >= 0;
-  }).length;
+    if (d > 7 || d < 0) return null;
+    return { member: m, pass: p, daysLeft: d };
+  }).filter(Boolean).sort((a, b) => a.daysLeft - b.daysLeft);
+  const expiringSoon = expiringMembersList.length;
   const isWeekend = new Date().getDay() === 0 || new Date().getDay() === 6;
   const todayTrials = trials.filter(t => t.date === todayYMD && t.status === '예약확정').length;
+  
+  // 모달 state
+  const [showExpiringModal, setShowExpiringModal] = useState(false);
+  
+  // 자동 알림 데이터
+  const homeAlerts = useMemo(() => {
+    const alerts = [];
+    // 오늘 첫 수업 (시작일 = 오늘인 회원 + 오늘 수업 있음)
+    members.forEach(m => {
+      const pass = activePass(m);
+      if (!pass) return;
+      if (pass.startDate === todayYMD) {
+        // 오늘 수업에 들어가있는지 확인
+        const hasToday = todaySessions.some(s => 
+          s.participants?.some(p => p.memberId === m.id && !p.cancelled)
+        );
+        if (hasToday) {
+          alerts.push({ icon: '🌱', text: <><strong>{m.name}</strong>님 첫 수업이에요</> });
+        }
+      }
+    });
+    // 리듬 수련 대상자
+    members.forEach(m => {
+      const pass = activePass(m);
+      if (!pass) return;
+      const rs = rhythmStatus(pass);
+      if (rs?.achieved) {
+        alerts.push({ icon: '🏆', text: <><strong>{m.name}</strong>님 리듬 수련 대상자에요</> });
+      }
+    });
+    // 만료 D-3 이내 (활성)
+    expiringMembersList.filter(x => x.daysLeft <= 3).forEach(({ member, daysLeft }) => {
+      alerts.push({ 
+        icon: '⚠', 
+        text: <><strong>{member.name}</strong>님 만료 {daysLeft === 0 ? '오늘' : `D-${daysLeft}`}</> 
+      });
+    });
+    return alerts;
+  }, [members, todayYMD, todaySessions, expiringMembersList]);
 
   return (
     <div className="px-3 pb-28 pt-2 space-y-3">
 
-      {/* 멘트 + 통계 한 카드 */}
-      <div className="rounded-2xl p-4" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
-        <div className="text-[11px]" style={{ color: theme.inkMute }}>{fmtKR(new Date())}</div>
-        <div className="text-lg font-bold mt-0.5 mb-3" style={{ color: theme.ink }}>
-          {isWeekend ? '오늘은 푹 쉬면서 충전 😴' : '오늘도 재밌게 수업하자 😘'}
+      {/* 통합 카드: 인사 + 통계 + 오늘 수업 + 알림 */}
+      <div className="rounded-2xl overflow-hidden" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
+        {/* 인사 + 통계 */}
+        <div className="p-4">
+          <div className="text-[11px]" style={{ color: theme.inkMute }}>{fmtKR(new Date())}</div>
+          <div className="text-lg font-bold mt-0.5 mb-3" style={{ color: theme.ink }}>
+            {isWeekend ? '오늘은 푹 쉬면서 충전 😴' : '오늘도 재밌게 수업하자 😘'}
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <button onClick={() => goto('members')} className="rounded-xl p-3 text-center transition-all active:scale-95"
+              style={{ backgroundColor: theme.cardAlt2, border: 'none', cursor: 'pointer' }}>
+              <div className="font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif, fontSize: 26, lineHeight: 1 }}>
+                {activeMembers}
+              </div>
+              <div className="text-[10px] mt-1.5" style={{ color: theme.inkMute }}>활성 회원</div>
+            </button>
+            <button 
+              onClick={() => expiringSoon > 0 && setShowExpiringModal(true)}
+              disabled={expiringSoon === 0}
+              className="rounded-xl p-3 text-center transition-all active:scale-95 disabled:opacity-60"
+              style={{ backgroundColor: theme.cardAlt2, border: 'none', cursor: expiringSoon > 0 ? 'pointer' : 'default' }}>
+              <div className="font-bold tabular-nums" style={{ color: expiringSoon > 0 ? theme.accent2 : theme.accent, fontFamily: theme.serif, fontSize: 26, lineHeight: 1 }}>
+                {expiringSoon}
+              </div>
+              <div className="text-[10px] mt-1.5" style={{ color: theme.inkMute }}>만료 임박</div>
+            </button>
+            <button onClick={() => goto('trials')} className="rounded-xl p-3 text-center transition-all active:scale-95"
+              style={{ backgroundColor: theme.cardAlt2, border: 'none', cursor: 'pointer' }}>
+              <div className="font-bold tabular-nums" style={{ color: todayTrials > 0 ? theme.accent2 : theme.accent, fontFamily: theme.serif, fontSize: 26, lineHeight: 1 }}>
+                {todayTrials}
+              </div>
+              <div className="text-[10px] mt-1.5" style={{ color: theme.inkMute }}>오늘 체험</div>
+            </button>
+          </div>
         </div>
-        {/* 통계 3칸 */}
-        <div className="grid grid-cols-3 gap-2">
-          <Stat label="활성 회원" value={activeMembers} color={theme.accent} />
-          <Stat label="만료 임박" value={expiringSoon} color={expiringSoon > 0 ? theme.accent2 : theme.accent} />
-          <Stat label="오늘 체험" value={todayTrials} color={todayTrials > 0 ? theme.accent2 : theme.accent} />
-        </div>
-      </div>
 
-      {/* 오늘 수업 카드 - 클릭 시 일정 탭으로 */}
-      {!isWeekend && (
-        <div onClick={() => goto('schedule')}
-          className="rounded-2xl p-4 cursor-pointer transition-all active:scale-[0.99]"
-          style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-[13px] font-semibold flex items-center gap-1.5" style={{ color: theme.ink }}>
-              <Calendar size={14} style={{ color: theme.accent }} />
-              <span>오늘 수업</span>
-              {todaySessions.length > 0 && (
-                <span className="text-[11px] font-normal" style={{ color: theme.inkMute }}>{todaySessions.length}개</span>
+        {/* 오늘 수업 */}
+        {!isWeekend && (
+          <>
+            <div style={{ height: 1, background: theme.cardAlt }} />
+            <div onClick={() => goto('schedule')} className="p-4 cursor-pointer">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[13px] font-semibold flex items-center gap-1.5" style={{ color: theme.ink }}>
+                  <Calendar size={14} style={{ color: theme.accent }} />
+                  <span>오늘 수업</span>
+                  {todaySessions.length > 0 && (
+                    <span className="text-[11px] font-normal" style={{ color: theme.inkMute }}>{todaySessions.length}개</span>
+                  )}
+                </div>
+                <ChevronRight size={14} style={{ color: theme.inkMute }} />
+              </div>
+              {todaySessions.length === 0 ? (
+                <div className="text-[12px]" style={{ color: theme.inkMute }}>오늘 예정된 수업이 없어요</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {todaySessions.map(s => {
+                    const active = s.participants.filter(p => !p.cancelled);
+                    const cancelled = s.participants.filter(p => p.cancelled);
+                    const sortedActive = [...active].sort((a, b) => {
+                      if (a.isTrial && !b.isTrial) return 1;
+                      if (!a.isTrial && b.isTrial) return -1;
+                      return 0;
+                    });
+                    return (
+                      <div key={s.date + s.time} className="flex items-start gap-2">
+                        <span className="text-[13px] font-bold tabular-nums shrink-0"
+                          style={{ color: theme.accent, fontFamily: theme.serif, minWidth: 44 }}>
+                          {s.time}
+                        </span>
+                        <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+                          {sortedActive.map((p, i) => (
+                            <span key={i} className="text-[12px]" style={{ color: p.isTrial ? theme.accent2 : theme.ink }}>
+                              {p.memberName}
+                              {p.sessionNumber && p.totalSessions && (
+                                <span style={{ color: theme.inkMute }}> ({p.sessionNumber}/{p.totalSessions})</span>
+                              )}
+                              {p.isTrial && <span style={{ color: theme.inkMute, fontSize: 10 }}> 체험</span>}
+                              {p.classType === '개인' && <span style={{ color: theme.accent, fontSize: 10 }}> 개인</span>}
+                            </span>
+                          ))}
+                          {cancelled.map((p, i) => (
+                            <span key={'c'+i} className="text-[11px] line-through" style={{ color: theme.inkMute }}>
+                              {p.memberName}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
-            <ChevronRight size={14} style={{ color: theme.inkMute }} />
+          </>
+        )}
+        
+        {/* 알림 (자동) */}
+        {homeAlerts.length > 0 && (
+          <div className="px-4 py-3" style={{ backgroundColor: theme.terraSoft, borderTop: '1px solid #F0D6CB' }}>
+            {homeAlerts.map((alert, i) => (
+              <div key={i} className="flex items-center gap-2 text-[12px] py-0.5" style={{ color: '#5E3A20' }}>
+                <span className="flex-shrink-0">{alert.icon}</span>
+                <span>{alert.text}</span>
+              </div>
+            ))}
           </div>
-          {todaySessions.length === 0 ? (
-            <div className="text-[12px]" style={{ color: theme.inkMute }}>오늘 예정된 수업이 없어요</div>
-          ) : (
-            <div className="space-y-1.5 pt-2" style={{ borderTop: `1px solid ${theme.lineLight}` }}>
-              {todaySessions.map(s => {
-                const active = s.participants.filter(p => !p.cancelled);
-                const cancelled = s.participants.filter(p => p.cancelled);
-                // 회원 먼저, 체험자 뒤
-                const sortedActive = [...active].sort((a, b) => {
-                  if (a.isTrial && !b.isTrial) return 1;
-                  if (!a.isTrial && b.isTrial) return -1;
-                  return 0;
-                });
-                return (
-                  <div key={s.date + s.time} className="flex items-start gap-2">
-                    <span className="text-[13px] font-bold tabular-nums shrink-0"
-                      style={{ color: theme.accent, fontFamily: theme.serif, minWidth: 44 }}>
-                      {s.time}
-                    </span>
-                    <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-                      {sortedActive.map((p, i) => (
-                        <span key={i} className="text-[12px]" style={{ color: p.isTrial ? theme.accent2 : theme.ink }}>
-                          {p.memberName}
-                          {p.sessionNumber && p.totalSessions && (
-                            <span style={{ color: theme.inkMute }}> ({p.sessionNumber}/{p.totalSessions})</span>
-                          )}
-                          {p.isTrial && <span style={{ color: theme.inkMute, fontSize: 10 }}> 체험</span>}
-                          {p.classType === '개인' && <span style={{ color: theme.accent, fontSize: 10 }}> 개인</span>}
-                        </span>
-                      ))}
-                      {cancelled.map((p, i) => (
-                        <span key={'c'+i} className="text-[11px] line-through" style={{ color: theme.inkMute }}>
-                          {p.memberName}
-                        </span>
-                      ))}
+        )}
+      </div>
+
+      {/* 만료 임박 모달 */}
+      {showExpiringModal && (
+        <Modal open={true} onClose={() => setShowExpiringModal(false)} title="⚠ 만료 임박 회원" sub="D-7 이내 만료 예정">
+          <div className="space-y-2">
+            {expiringMembersList.map(({ member, pass, daysLeft }) => (
+              <button key={member.id}
+                onClick={() => { setShowExpiringModal(false); goto('members', { openId: member.id }); }}
+                className="w-full rounded-xl p-3 text-left transition-all active:scale-[0.99]"
+                style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
+                <div className="flex justify-between items-start">
+                  <div className="flex-1">
+                    <div className="font-bold text-[14px]" style={{ color: theme.ink }}>{member.name}</div>
+                    <div className="text-[11px] mt-0.5" style={{ color: theme.inkMute }}>
+                      {pass.type} · {pass.usedSessions}/{pass.totalSessions}회 사용
+                    </div>
+                    <div className="text-[11px] mt-0.5" style={{ color: theme.inkMute }}>
+                      만료: {pass.expiryDate}
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+                  <div className="text-right">
+                    <div className="text-[13px] font-bold" style={{ color: daysLeft <= 3 ? theme.danger : theme.accent2 }}>
+                      D-{daysLeft}
+                    </div>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </Modal>
       )}
 
       {/* 🏆 리듬 수련 대상자 */}
@@ -6429,14 +6536,14 @@ function StatsView({ members, trials, sessions }) {
   }, [sessions, targetYM]);
 
   return (
-    <div className="px-3 pb-28 pt-2 space-y-4">
+    <div className="px-3 pb-28 pt-2 space-y-3">
       {/* Month nav */}
       <div className="flex items-center justify-between">
         <button onClick={() => setMonthOffset(monthOffset - 1)} className="p-1.5 rounded-lg" style={{ color: theme.ink, backgroundColor: theme.cardAlt }}>
           <ChevronLeft size={16} />
         </button>
         <div className="text-center">
-          <div className="text-[11px]" style={{ color: theme.inkMute }}>{targetMonth.getFullYear()}</div>
+          <div className="text-[11px]" style={{ color: theme.inkMute, fontFamily: theme.serif, fontStyle: 'italic' }}>{targetMonth.getFullYear()}</div>
           <div className="font-bold text-lg" style={{ color: theme.ink }}>{targetMonth.getMonth() + 1}월 통계</div>
         </div>
         <button onClick={() => setMonthOffset(Math.min(0, monthOffset + 1))} disabled={monthOffset >= 0}
@@ -6445,118 +6552,292 @@ function StatsView({ members, trials, sessions }) {
         </button>
       </div>
 
-      {/* Revenue */}
-      <div className="rounded-2xl p-4" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
-        <div className="text-[11px] font-semibold mb-2" style={{ color: theme.accent }}>이번 달 수익</div>
-        <div className="flex items-baseline gap-2">
-          <div className="text-3xl font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif }}>
-            {stats.net.toLocaleString()}
-          </div>
-          <div className="text-sm" style={{ color: theme.inkMute }}>원</div>
-        </div>
-        <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>
-          매출 {stats.revenue.toLocaleString()}원
-          {stats.refundTotal > 0 && <span style={{ color: theme.accent2 }}> · 환불 -{stats.refundTotal.toLocaleString()}원</span>}
-          <span> · 결제 {stats.count}건</span>
-        </div>
-
-        {/* Category breakdown */}
-        <div className="grid grid-cols-3 gap-2 mt-4">
-          <Stat label="소그룹" value={Math.round(stats.byCat.group / 10000) + '만'} color={theme.accent} />
-          <Stat label="개인" value={Math.round(stats.byCat.private / 10000) + '만'} color={theme.accent2} />
-          <Stat label="체험" value={Math.round((stats.byCat.trial + stats.byCat.other) / 10000) + '만'} color={theme.inkSoft} />
-        </div>
-      </div>
-
-      {/* 수업 통계 */}
-      <div className="rounded-2xl p-4" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
-        <div className="text-[11px] font-semibold mb-2" style={{ color: theme.accent }}>이번 달 수업</div>
-        <div className="flex items-baseline gap-2">
-          <div className="text-3xl font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif }}>
-            {classStats.total}
-          </div>
-          <div className="text-sm" style={{ color: theme.inkMute }}>회</div>
-          <div className="ml-auto text-[12px]" style={{ color: theme.inkMute }}>
-            주 평균 <span style={{ color: theme.accent, fontWeight: 600 }}>{classStats.weekAvg}회</span>
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-2 mt-4">
-          <Stat label="소그룹" value={classStats.group + '회'} color={theme.accent} />
-          <Stat label="개인레슨" value={classStats.private + '회'} color={theme.accent2} />
-        </div>
-      </div>
-
-      {/* 출석률 */}
-      <div className="rounded-2xl p-4" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
-        <div className="text-[11px] font-semibold mb-2" style={{ color: theme.accent }}>출석률</div>
-        <div className="flex items-baseline gap-2">
-          <div className="text-3xl font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif }}>
-            {attendanceStats.attendRate}
-          </div>
-          <div className="text-sm" style={{ color: theme.inkMute }}>%</div>
-          <div className="ml-auto text-[12px]" style={{ color: theme.inkMute }}>
-            총 예약 <span style={{ color: theme.ink, fontWeight: 600 }}>{attendanceStats.total}건</span>
-          </div>
-        </div>
-        <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>
-          출석 {attendanceStats.attend}건 · 취소 {attendanceStats.cancel}건 · 노쇼 {attendanceStats.noShow}건
-        </div>
-        
-        {/* 진행 바 */}
-        {attendanceStats.total > 0 && (
+      {/* 1. 💰 수익 */}
+      <ExpandCard
+        label="💰 이번 달 수익"
+        isOpen={expanded === 'revenue'}
+        onToggle={() => setExpanded(expanded === 'revenue' ? null : 'revenue')}
+        main={
           <>
-            <div className="h-2 rounded-full overflow-hidden mt-3 flex" style={{ backgroundColor: theme.cardAlt }}>
+            <div className="flex items-baseline gap-2">
+              <div className="text-3xl font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif }}>
+                {stats.net.toLocaleString()}
+              </div>
+              <div className="text-sm" style={{ color: theme.inkMute }}>원</div>
+            </div>
+            <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>
+              매출 {stats.revenue.toLocaleString()}원
+              {stats.refundTotal > 0 && <span style={{ color: theme.accent2 }}> · 환불 -{stats.refundTotal.toLocaleString()}원</span>}
+              <span> · 결제 {stats.count}건</span>
+            </div>
+            <div className="flex gap-3 mt-3 text-[11px]" style={{ color: theme.inkSoft }}>
+              <span>소그룹 <strong style={{ color: theme.ink }}>{Math.round(stats.byCat.group / 10000)}만</strong></span>
+              <span>개인 <strong style={{ color: theme.ink }}>{Math.round(stats.byCat.private / 10000)}만</strong></span>
+              <span>체험 <strong style={{ color: theme.ink }}>{Math.round((stats.byCat.trial + stats.byCat.other + (stats.trialRevenue || 0)) / 10000)}만</strong></span>
+            </div>
+          </>
+        }
+        expand={
+          <>
+            <div className="text-[11px] font-bold mb-2" style={{ color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.05em' }}>수익 인사이트</div>
+            {revenueInsight.prevMonthDelta !== null && (
+              <InsightRow label="전월 대비"
+                value={
+                  <span>
+                    <strong style={{ color: revenueInsight.prevMonthDelta >= 0 ? theme.accent : theme.danger }}>
+                      {revenueInsight.prevMonthDelta >= 0 ? '+' : ''}{revenueInsight.prevMonthDelta}%
+                    </strong>
+                    <span style={{ color: theme.inkMute, fontSize: 10 }}> ({revenueInsight.prevMonthLabel} {revenueInsight.prevMonthRevenue.toLocaleString()}원)</span>
+                  </span>
+                }
+              />
+            )}
+            <InsightRow label="회원당 평균 객단가" value={<strong>{revenueInsight.avgPerMember.toLocaleString()}원</strong>} />
+            <InsightRow label="체험 수익" value={<strong>{(stats.trialRevenue || 0).toLocaleString()}원</strong>} sub={`미전환 입금 ${revenueInsight.trialPaidCount}명 × 1만원`} />
+            {revenueInsight.expectedNextMonth > 0 && (
+              <InsightRow label="예상 다음달 수익" value={<strong>{revenueInsight.expectedNextMonth.toLocaleString()}원</strong>} sub={`시작예정 ${revenueInsight.expectedCount}건`} />
+            )}
+          </>
+        }
+      />
+
+      {/* 2. 👥 회원 */}
+      <ExpandCard
+        label="👥 회원"
+        isOpen={expanded === 'members'}
+        onToggle={() => setExpanded(expanded === 'members' ? null : 'members')}
+        main={
+          <>
+            <div className="flex items-baseline gap-2">
+              <div className="text-3xl font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif }}>
+                {activeMembers}
+              </div>
+              <div className="text-sm" style={{ color: theme.inkMute }}>명 활성</div>
+              <div className="ml-auto text-[12px]" style={{ color: theme.inkMute }}>
+                전체 <strong style={{ color: theme.ink }}>{members.length}명</strong>
+              </div>
+            </div>
+            <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>
+              재등록률 <strong style={{ color: theme.accent }}>{memberInsight.reEnrollRate}%</strong>
+              {memberInsight.challengingCount > 0 && <span> · 도전중 {memberInsight.challengingCount}명</span>}
+            </div>
+          </>
+        }
+        expand={
+          <>
+            <div className="text-[11px] font-bold mb-2" style={{ color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.05em' }}>재등록률</div>
+            <div className="flex items-baseline gap-2">
+              <div className="text-2xl font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif }}>
+                {memberInsight.reEnrollRate}%
+              </div>
+              <div className="text-[11px] ml-auto" style={{ color: theme.inkMute }}>
+                만료 {memberInsight.expiredCount}명 중 {memberInsight.reEnrolledCount}명 재등록
+              </div>
+            </div>
+            <div className="h-1.5 rounded-full overflow-hidden mt-2 mb-4" style={{ backgroundColor: theme.cardAlt }}>
+              <div style={{ width: `${memberInsight.reEnrollRate}%`, height: '100%', backgroundColor: theme.accent }} />
+            </div>
+            
+            {memberInsight.consistent.length > 0 && (
+              <>
+                <div className="text-[11px] font-bold mb-1 mt-3" style={{ color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.05em' }}>🌿 꾸준한 회원</div>
+                <div className="text-[10px] mb-2" style={{ color: theme.inkMute }}>출석률 80% 이상 또는 리듬 도전중</div>
+                {memberInsight.consistent.map(m => (
+                  <InsightRow key={m.id} label={(m.badge ? m.badge + ' ' : '') + m.name} value={<span style={{ fontSize: 11 }}>{m.note}</span>} />
+                ))}
+              </>
+            )}
+            
+            {memberInsight.needAttention.length > 0 && (
+              <>
+                <div className="text-[11px] font-bold mb-1 mt-3" style={{ color: theme.accent2, textTransform: 'uppercase', letterSpacing: '0.05em' }}>⚠ 관심이 필요한 회원</div>
+                <div className="text-[10px] mb-2" style={{ color: theme.inkMute }}>2주 이상 미참석 또는 만료 임박</div>
+                {memberInsight.needAttention.map(m => (
+                  <InsightRow key={m.id} label={m.name} value={<span style={{ fontSize: 11 }}>{m.note}</span>} />
+                ))}
+              </>
+            )}
+          </>
+        }
+      />
+
+      {/* 3. ✨ 체험 → 회원 전환 */}
+      <ExpandCard
+        label="✨ 체험 → 회원 전환"
+        isOpen={expanded === 'conversion'}
+        onToggle={() => setExpanded(expanded === 'conversion' ? null : 'conversion')}
+        main={
+          <>
+            <div className="flex items-baseline gap-2">
+              <div className="text-3xl font-bold tabular-nums" style={{ color: theme.accent2, fontFamily: theme.serif }}>
+                {stats.conversionRate}
+              </div>
+              <div className="text-sm" style={{ color: theme.inkMute }}>%</div>
+              <div className="ml-auto text-[12px]" style={{ color: theme.inkMute }}>
+                체험 <strong style={{ color: theme.accent2 }}>{stats.trialTotal}명</strong> 중 <strong style={{ color: theme.accent2 }}>{stats.converted}명</strong>
+              </div>
+            </div>
+          </>
+        }
+        expand={
+          <>
+            <div className="text-[11px] font-bold mb-2" style={{ color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.05em' }}>신규 유입 경로</div>
+            {sourceStats.length === 0 ? (
+              <div className="text-[12px] py-2" style={{ color: theme.inkMute }}>이번 달 체험자가 없어요</div>
+            ) : sourceStats.map(s => (
+              <div key={s.source} className="mb-2">
+                <div className="flex justify-between text-[11px] mb-1">
+                  <span>{s.icon} {s.source}</span>
+                  <span style={{ color: theme.inkMute }}>
+                    <strong style={{ color: theme.ink }}>{s.count}명</strong> · 전환 {s.converted}명 ({s.rate}%)
+                  </span>
+                </div>
+                <div className="h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: theme.cardAlt }}>
+                  <div style={{ width: `${(s.count / Math.max(...sourceStats.map(x => x.count))) * 100}%`, height: '100%', backgroundColor: theme.accent }} />
+                </div>
+              </div>
+            ))}
+          </>
+        }
+      />
+
+      {/* 4. 📅 수업 */}
+      <ExpandCard
+        label="📅 이번 달 수업"
+        isOpen={expanded === 'classes'}
+        onToggle={() => setExpanded(expanded === 'classes' ? null : 'classes')}
+        main={
+          <>
+            <div className="flex items-baseline gap-2">
+              <div className="text-3xl font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif }}>
+                {classStats.total}
+              </div>
+              <div className="text-sm" style={{ color: theme.inkMute }}>회</div>
+              <div className="ml-auto text-[12px]" style={{ color: theme.inkMute }}>
+                주 평균 <strong style={{ color: theme.accent }}>{classStats.weekAvg}회</strong>
+              </div>
+            </div>
+            <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>
+              출석률 <strong style={{ color: theme.accent }}>{attendanceStats.attendRate}%</strong>
+              <span> · 소그룹 {classStats.group}회 · 개인 {classStats.private}회</span>
+            </div>
+          </>
+        }
+        expand={
+          <>
+            <div className="text-[11px] font-bold mb-2" style={{ color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.05em' }}>출석률</div>
+            <div className="flex items-baseline gap-2">
+              <div className="text-2xl font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif }}>
+                {attendanceStats.attendRate}%
+              </div>
+              <div className="text-[11px] ml-auto" style={{ color: theme.inkMute }}>
+                총 예약 <strong style={{ color: theme.ink }}>{attendanceStats.total}건</strong>
+              </div>
+            </div>
+            <div className="h-2 rounded-full overflow-hidden mt-2 flex" style={{ backgroundColor: theme.cardAlt }}>
               <div style={{ width: `${attendanceStats.attendRate}%`, backgroundColor: theme.accent }} />
               <div style={{ width: `${attendanceStats.cancelRate}%`, backgroundColor: theme.warn }} />
               <div style={{ width: `${attendanceStats.noShowRate}%`, backgroundColor: theme.danger }} />
             </div>
-            <div className="flex gap-3 mt-2 text-[10px] flex-wrap" style={{ color: theme.inkSoft }}>
+            <div className="flex gap-3 mt-2 text-[10px] flex-wrap mb-3" style={{ color: theme.inkSoft }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: theme.accent }} />
-                출석 {attendanceStats.attendRate}%
+                출석 {attendanceStats.attend}
               </span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: theme.warn }} />
-                취소 {attendanceStats.cancelRate}%
+                취소 {attendanceStats.cancel}
               </span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: theme.danger }} />
-                노쇼 {attendanceStats.noShowRate}%
+                노쇼 {attendanceStats.noShow}
               </span>
             </div>
+            
+            {timeSlotStats.length > 0 && (
+              <>
+                <div className="text-[11px] font-bold mb-2 mt-3" style={{ color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.05em' }}>인기 시간대</div>
+                {timeSlotStats.map(t => (
+                  <div key={t.time} className="mb-2">
+                    <div className="flex justify-between text-[11px] mb-1">
+                      <span>{t.time}</span>
+                      <span style={{ color: theme.inkMute }}>
+                        <strong style={{ color: theme.ink }}>{t.count}회</strong>
+                        {t.avgPpl > 0 && <span> · 평균 {t.avgPpl}명</span>}
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: theme.cardAlt }}>
+                      <div style={{ width: `${(t.count / timeSlotStats[0].count) * 100}%`, height: '100%', backgroundColor: theme.accent }} />
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
           </>
-        )}
-        
-        <div className="grid grid-cols-3 gap-2 mt-4">
-          <Stat label="출석" value={attendanceStats.attend} color={theme.accent} />
-          <Stat label="취소" value={attendanceStats.cancel} color={theme.warn} />
-          <Stat label="노쇼" value={attendanceStats.noShow} color={theme.danger} />
-        </div>
-      </div>
+        }
+      />
+    </div>
+  );
+}
 
-      {/* Trial conversion */}
-      <div className="rounded-2xl p-4" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
-        <div className="text-[11px] font-semibold mb-2" style={{ color: theme.accent }}>체험 → 회원 전환</div>
-        <div className="flex items-baseline gap-2">
-          <div className="text-3xl font-bold tabular-nums" style={{ color: theme.accent2, fontFamily: theme.serif }}>
-            {stats.conversionRate}
-          </div>
-          <div className="text-sm" style={{ color: theme.inkMute }}>%</div>
+function ExpandCard({ label, main, expand, isOpen, onToggle }) {
+  return (
+    <div className="rounded-2xl overflow-hidden" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
+      <div onClick={onToggle} className="p-4 cursor-pointer">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[11px] font-semibold" style={{ color: theme.accent }}>{label}</span>
+          <span style={{ color: theme.inkMute, fontSize: 10, transition: 'transform 0.2s', transform: isOpen ? 'rotate(180deg)' : 'rotate(0)', display: 'inline-block' }}>▼</span>
         </div>
-        <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>
-          체험 {stats.trialTotal}명 중 {stats.converted}명 전환
-        </div>
+        {main}
       </div>
+      {isOpen && (
+        <div className="p-4" style={{ borderTop: `1px solid ${theme.cardAlt}`, backgroundColor: theme.cardAlt2 || theme.cardAlt }}>
+          {expand}
+        </div>
+      )}
+    </div>
+  );
+}
 
-      {/* Active members */}
-      <div className="rounded-2xl p-4" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
-        <div className="text-[11px] font-semibold mb-2" style={{ color: theme.accent }}>전체 현황</div>
-        <div className="grid grid-cols-3 gap-2">
-          <Stat label="전체 회원" value={members.length} color={theme.ink} />
-          <Stat label="활성 회원" value={activeMembers} color={theme.accent} />
-          <Stat label="전체 체험자" value={trials.length} color={theme.accent2} />
+function InsightRow({ label, value, sub }) {
+  return (
+    <div className="flex justify-between items-center py-1.5 text-[12px]" style={{ borderBottom: `1px solid ${theme.cardAlt}` }}>
+      <span style={{ color: theme.ink, fontWeight: 500 }}>{label}</span>
+      <span style={{ color: theme.inkMute, textAlign: 'right' }}>
+        {value}
+        {sub && <div style={{ fontSize: 10, color: theme.inkMute, marginTop: 2 }}>{sub}</div>}
+      </span>
+    </div>
+  );
+}
+
+function ExpandCard({ label, main, expand, isOpen, onToggle }) {
+  return (
+    <div className="rounded-2xl overflow-hidden" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
+      <div onClick={onToggle} className="p-4 cursor-pointer">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[11px] font-semibold" style={{ color: theme.accent }}>{label}</span>
+          <span style={{ color: theme.inkMute, fontSize: 14, transition: 'transform 0.2s', display: 'inline-block', transform: isOpen ? 'rotate(180deg)' : 'rotate(0)' }}>▼</span>
         </div>
+        {main}
       </div>
+      {isOpen && (
+        <div className="p-4" style={{ borderTop: `1px solid ${theme.cardAlt}`, background: theme.cardAlt }}>
+          {expand}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InsightRow({ label, value, sub }) {
+  return (
+    <div className="flex justify-between items-center py-1.5 text-[12px]" style={{ borderBottom: `1px solid ${theme.line}` }}>
+      <span style={{ color: theme.ink, fontWeight: 500 }}>{label}</span>
+      <span style={{ color: theme.inkMute, textAlign: 'right' }}>
+        {value}
+        {sub && <div style={{ fontSize: 10, color: theme.inkMute, marginTop: 2 }}>{sub}</div>}
+      </span>
     </div>
   );
 }
