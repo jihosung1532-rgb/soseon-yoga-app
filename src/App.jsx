@@ -2554,13 +2554,20 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
                                 {trials.length > 0 && (
                                   <div className="text-[11.5px] leading-snug mt-0.5"
                                     style={{ color: theme.accent2 }}>
-                                    {trials.map((p, j) => (
-                                      <span key={j}>
-                                        <span style={{ fontWeight: 500 }}>{p.memberName}</span>
-                                        <span style={{ color: theme.inkMute, fontSize: 10, marginLeft: 3 }}>체험</span>
-                                        {j < trials.length - 1 && <span style={{ color: theme.inkMute }}> · </span>}
-                                      </span>
-                                    ))}
+                                    {trials.map((p, j) => {
+                                      const isCancelled = !!p.cancelled;
+                                      const isCharged = p.cancelled === 'charged';
+                                      return (
+                                        <span key={j} style={{
+                                          color: isCharged ? theme.danger : isCancelled ? theme.inkMute : theme.accent2,
+                                          textDecoration: isCancelled ? 'line-through' : 'none',
+                                        }}>
+                                          <span style={{ fontWeight: 500 }}>{p.memberName}</span>
+                                          <span style={{ color: theme.inkMute, fontSize: 10, marginLeft: 3 }}>체험</span>
+                                          {j < trials.length - 1 && <span style={{ color: theme.inkMute }}> · </span>}
+                                        </span>
+                                      );
+                                    })}
                                   </div>
                                 )}
                               </>
@@ -6026,7 +6033,7 @@ function TrialEditor({ trial, onClose, onSave }) {
           </Field>
           <Field label="시간">
             <Select value={data.time} onChange={(e) => setData({ ...data, time: e.target.value })}
-              options={TIME_PRESETS.map(t => ({ value: t, label: t }))} />
+              options={['11:00', '19:20', '20:50'].map(t => ({ value: t, label: t }))} />
           </Field>
         </div>
         <Field label="요가·운동 경험">
@@ -6035,6 +6042,36 @@ function TrialEditor({ trial, onClose, onSave }) {
         <Field label="몸의 불편한 부분">
           <TextArea value={data.painPoints} onChange={(e) => setData({ ...data, painPoints: e.target.value })}
             placeholder="예: 허리 통증, 거북목, 어깨 뭉침" style={{ minHeight: 60 }} />
+        </Field>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="유입 경로">
+            <Select value={data.source || ''} onChange={(e) => setData({ ...data, source: e.target.value })}
+              options={[
+                { value: '', label: '선택' },
+                { value: '인스타', label: '인스타' },
+                { value: '카카오채널', label: '카카오채널' },
+                { value: '당근', label: '당근' },
+                { value: '지인소개', label: '지인소개' },
+                { value: 'open class', label: 'open class' },
+                { value: '기타', label: '기타' },
+              ]} />
+          </Field>
+          <Field label="입금 여부">
+            <Select value={data.paid === true ? 'paid' : data.paid === false ? 'unpaid' : ''}
+              onChange={(e) => {
+                const v = e.target.value;
+                setData({ ...data, paid: v === 'paid' ? true : v === 'unpaid' ? false : null });
+              }}
+              options={[
+                { value: '', label: '선택' },
+                { value: 'paid', label: '입금완료' },
+                { value: 'unpaid', label: '미입금' },
+              ]} />
+          </Field>
+        </div>
+        <Field label="메모">
+          <TextArea value={data.memo || ''} onChange={(e) => setData({ ...data, memo: e.target.value })}
+            placeholder="기타 메모" style={{ minHeight: 50 }} />
         </Field>
         <Field label="상태">
           <Select value={data.status} onChange={(e) => setData({ ...data, status: e.target.value })}
