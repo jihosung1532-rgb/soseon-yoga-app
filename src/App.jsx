@@ -5466,7 +5466,7 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
     if (s === '회원전환') return 'success';   // 초록
     if (s === '수업완료') return 'neutral';   // 회색
     if (s === '예약확정') return 'warn';      // 노랑
-    if (s === '취소') return 'danger';        // 빨강
+    if (s === '취소' || s === '미참석') return 'danger';        // 빨강
     return 'neutral';
   };
 
@@ -5480,7 +5480,11 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
   const filteredTrials = trials
     .filter(t => {
       // 시간 필터: 예약확정 / 전체
-      const timeOk = filterTime === 'all' ? true : t.status === '예약확정';
+      const timeOk = filterTime === 'all' ? true 
+        : filterTime === 'confirmed' ? t.status === '예약확정'
+        : filterTime === 'completed' ? t.status === '수업완료'
+        : filterTime === 'cancelled' ? (t.status === '취소' || t.status === '미참석')
+        : true;
       // 등록 필터
       const regOk = filterReg === 'all' ? true :
         filterReg === 'converted' ? t.status === '회원전환' :
@@ -5537,6 +5541,8 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
             backgroundPosition: 'right 5px center',
           }}>
           <option value="confirmed">예약확정</option>
+          <option value="completed">수업완료</option>
+          <option value="cancelled">취소</option>
           <option value="all">전체</option>
         </select>
 
@@ -5570,6 +5576,8 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
       {/* 카운트 표시 */}
       <div className="text-[12px] mb-3 px-1" style={{ color: theme.inkSoft }}>
         {filterTime === 'confirmed' && <span>예약확정 <strong style={{ color: theme.ink }}>{confirmedCount}명</strong></span>}
+        {filterTime === 'completed' && <span>수업완료 <strong style={{ color: theme.ink }}>{trials.filter(t => t.status === '수업완료').length}명</strong></span>}
+        {filterTime === 'cancelled' && <span>취소 <strong style={{ color: theme.danger }}>{trials.filter(t => t.status === '취소' || t.status === '미참석').length}명</strong></span>}
         {filterTime === 'all' && <span>전체 <strong style={{ color: theme.ink }}>{trials.length}명</strong></span>}
         {trials.length > 0 && (
           <span className="ml-2">· 전환률 <strong style={{ color: theme.accent }}>
@@ -6053,7 +6061,7 @@ function TrialEditor({ trial, onClose, onSave }) {
                 { value: '당근', label: '당근' },
                 { value: '지인소개', label: '지인소개' },
                 { value: 'open class', label: 'open class' },
-                { value: '기타', label: '기타' },
+                { value: '전화/문자', label: '전화/문자' },
               ]} />
           </Field>
           <Field label="입금 여부">
@@ -6079,7 +6087,7 @@ function TrialEditor({ trial, onClose, onSave }) {
               { value: '문의', label: '문의' },
               { value: '예약확정', label: '예약확정' },
               { value: '수업완료', label: '수업완료' },
-              { value: '미참석', label: '미참석 (노쇼)' },
+              { value: '취소', label: '취소' },
               { value: '회원전환', label: '회원전환' },
               { value: '미전환', label: '미전환' },
             ]} />
@@ -6105,7 +6113,11 @@ function TrialDetail({ trial, onClose, onUpdate, onDelete, onConvert, onSendSMS 
     <Modal open={true} onClose={onClose} title={trial.name} maxWidth="max-w-md">
       <div className="space-y-3">
         <div className="flex flex-wrap gap-1">
-          <Chip tone={trial.status === '회원전환' ? 'success' : 'warn'} size="sm">{trial.status}</Chip>
+          <Chip tone={
+            trial.status === '회원전환' ? 'success' :
+            trial.status === '취소' || trial.status === '미참석' ? 'danger' :
+            'warn'
+          } size="sm">{trial.status}</Chip>
           {trial.date && <Chip tone="accent" size="sm">{trial.date} {trial.time}</Chip>}
         </div>
         <div className="space-y-2 text-sm">
@@ -6135,16 +6147,16 @@ function TrialDetail({ trial, onClose, onUpdate, onDelete, onConvert, onSendSMS 
           </button>
         )}
         
-        {/* 노쇼/미참석 버튼 (수업완료 또는 예약확정에서 표시) */}
+        {/* 취소 버튼 (수업완료 또는 예약확정에서 표시) */}
         {(trial.status === '수업완료' || trial.status === '예약확정') && (
           <button 
             onClick={async () => {
-              if (!confirm('미참석(노쇼)으로 처리할까요?')) return;
-              await onUpdate(trial.id, { ...trial, status: '미참석' });
+              if (!confirm('취소로 처리할까요?')) return;
+              await onUpdate(trial.id, { ...trial, status: '취소' });
             }}
             className="w-full py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5"
             style={{ backgroundColor: 'transparent', color: theme.danger, border: `1px solid ${theme.danger}` }}>
-            <X size={14} /> 미참석 (노쇼)
+            <X size={14} /> 취소
           </button>
         )}
 
@@ -7567,7 +7579,7 @@ export default function App() {
       console.log('[auto] 체험 자동 수업완료 처리');
     }
     
-    // 미참석 체험자 sessions 동기화
+    // 취소 체험자 sessions 동기화
     let trialSessionsSynced = false;
     const syncedSessions = { ...migratedS };
     Object.keys(syncedSessions).forEach(key => {
@@ -7575,17 +7587,16 @@ export default function App() {
       if (!s?.participants) return;
       const newParts = s.participants.map(p => {
         if (!p.isTrial) return p;
-        // 해당 trial 찾기
         const matchedTrial = migT.find(t => 
           t.name === p.memberName && t.date === s.date && t.time === s.time
         );
         if (!matchedTrial) return p;
-        // 미참석이면 cancelled, 아니면 그대로
-        if (matchedTrial.status === '미참석' && !p.cancelled) {
+        // 취소면 cancelled, 아니면 그대로
+        if ((matchedTrial.status === '취소' || matchedTrial.status === '미참석') && !p.cancelled) {
           trialSessionsSynced = true;
-          return { ...p, cancelled: 'no_show' };
+          return { ...p, cancelled: 'cancelled' };
         }
-        if (matchedTrial.status !== '미참석' && p.cancelled === 'no_show') {
+        if (matchedTrial.status !== '취소' && matchedTrial.status !== '미참석' && p.cancelled) {
           trialSessionsSynced = true;
           const { cancelled, ...rest } = p;
           return rest;
@@ -7600,7 +7611,7 @@ export default function App() {
     }
     
     // 마이그레이션 v4: 김은화 스타터→개인레슨5 전환 시 출석 이력 옮기기
-    const kuhMigFlag = await loadKey({ lkey: 'sosun:migration:kuh-pass-merge:v1', table: 'settings', id: 'migration_kuh_pass_merge_v1' }, false);
+    const kuhMigFlag = await loadKey({ lkey: 'sosun:migration:kuh-pass-merge:v2', table: 'settings', id: 'migration_kuh_pass_merge_v2' }, false);
     if (!kuhMigFlag) {
       const kuhSessions = { ...migratedS };
       let changed = false;
@@ -7619,9 +7630,26 @@ export default function App() {
       if (changed) {
         migratedS = kuhSessions;
         await saveKey(K.sessions, migratedS);
-        console.log('[migration] 김은화 수강권 통합');
+        console.log('[migration] 김은화 수강권 통합 v2');
       }
-      await saveKey({ lkey: 'sosun:migration:kuh-pass-merge:v1', table: 'settings', id: 'migration_kuh_pass_merge_v1' }, true);
+      
+      // 김은화 수강권 직접 보정 (4/5회로)
+      const newMembers = migratedM.map(m => {
+        if (m.id !== 'm_kimunhwa') return m;
+        const newPasses = (m.passes || []).map(p => {
+          if (p.id !== 'p_kuh_private5') return p;
+          return {
+            ...p,
+            usedSessions: 4,
+            sessionDates: ['2026-04-02', '2026-04-07', '2026-04-21', '2026-04-28'],
+          };
+        });
+        return { ...m, passes: newPasses };
+      });
+      migratedM = newMembers;
+      await saveKey(K.members, migratedM);
+      
+      await saveKey({ lkey: 'sosun:migration:kuh-pass-merge:v2', table: 'settings', id: 'migration_kuh_pass_merge_v2' }, true);
     }
     
     // 매번 실행: 회원 수업 시간 + 1시간 지났는데 'reserved' 상태면 자동 출석 처리
