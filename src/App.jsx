@@ -1859,7 +1859,10 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
   }).filter(Boolean).sort((a, b) => a.daysLeft - b.daysLeft);
   const expiringSoon = expiringMembersList.length;
   const isWeekend = new Date().getDay() === 0 || new Date().getDay() === 6;
-  const todayTrials = trials.filter(t => t.date === todayYMD && t.status === '예약확정').length;
+  const todayTrials = trials.filter(t => 
+    t.date === todayYMD && 
+    (t.status === '예약확정' || t.status === '회원전환')
+  ).length;
   
   // 모달 state
   const [showExpiringModal, setShowExpiringModal] = useState(false);
@@ -2910,7 +2913,7 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
 /* =========================================================
    Members View + Detail
    ========================================================= */
-function MembersView({ members, setMembers, sessions, toast, onSendSMS }) {
+function MembersView({ members, setMembers, sessions, groupSlots, toast, onSendSMS }) {
   const [openId, setOpenId] = useState(null);
   const [adding, setAdding] = useState(false);
   const [photoImporting, setPhotoImporting] = useState(false);
@@ -3106,7 +3109,7 @@ function MembersView({ members, setMembers, sessions, toast, onSendSMS }) {
           {sorted.map(m => <MemberCard key={m.id} member={m} onClick={() => setOpenId(m.id)} />)}
         </div>
       )}
-      {adding && <MemberEditor onClose={() => setAdding(false)} onSave={createMember} />}
+      {adding && <MemberEditor onClose={() => setAdding(false)} onSave={createMember} groupSlots={groupSlots} />}
       {photoImporting && (
         <MemberPhotoImport
           onClose={() => setPhotoImporting(false)}
@@ -3120,7 +3123,7 @@ function MembersView({ members, setMembers, sessions, toast, onSendSMS }) {
           onClose={() => setOpenId(null)}
           onUpdate={updateMember}
           onDelete={() => deleteMember(openMember.id)}
-          sessions={sessions} toast={toast} onSendSMS={onSendSMS}
+          sessions={sessions} groupSlots={groupSlots} toast={toast} onSendSMS={onSendSMS}
         />
       )}
     </div>
@@ -3367,7 +3370,7 @@ function MemberPhotoImport({ onClose, onSave, toast }) {
   );
 }
 
-function MemberEditor({ member, onClose, onSave }) {
+function MemberEditor({ member, onClose, onSave, groupSlots }) {
   const [data, setData] = useState(member || {
     name: '', birthYear: '', gender: '', phone: '', job: '', yogaExperience: '',
     keyPoint: '', notes: '', fixedSlots: [],
@@ -3415,29 +3418,25 @@ function MemberEditor({ member, onClose, onSave }) {
 
         <div>
           <div className="text-xs font-medium mb-1.5" style={{ color: theme.inkSoft }}>
-            고정 수업 시간 <span style={{ color: theme.inkMute, fontWeight: 400 }}>· 일정에 자동으로 표시돼요</span>
+            고정 수업 시간 <span style={{ color: theme.inkMute, fontWeight: 400 }}>· 소그룹 시간만 표시 · 일정에 자동으로 표시돼요</span>
           </div>
           <div className="rounded-2xl p-2" style={{ backgroundColor: theme.cardAlt, border: `1px solid ${theme.line}` }}>
             <div className="grid gap-1">
-              <div className="grid grid-cols-6 text-center text-[10px] font-semibold">
+              <div className="grid grid-cols-3 text-center text-[10px] font-semibold">
                 <div></div>
-                {[1, 2, 3, 4, 5].map(dow => (
-                  <div key={dow} style={{ color: (dow === 2 || dow === 4) ? theme.accent2 : theme.inkSoft }}>
-                    {WEEK_KR[dow]}
-                  </div>
-                ))}
+                <div style={{ color: theme.accent2 }}>{WEEK_KR[2]}</div>
+                <div style={{ color: theme.accent2 }}>{WEEK_KR[4]}</div>
               </div>
-              {TIME_PRESETS.map(time => (
-                <div key={time} className="grid grid-cols-6 gap-0.5 items-center">
+              {(groupSlots || ['11:00', '19:20', '20:50']).map(time => (
+                <div key={time} className="grid grid-cols-3 gap-0.5 items-center">
                   <div className="text-[10px] text-right pr-1 font-medium tabular-nums" style={{ color: theme.inkSoft }}>{time}</div>
-                  {[1, 2, 3, 4, 5].map(dow => {
+                  {[2, 4].map(dow => {
                     const on = data.fixedSlots?.some(s => s.dow === dow && s.time === time);
-                    const smDay = dow === 2 || dow === 4;
                     return (
                       <button key={dow} onClick={() => toggleSlot(dow, time)}
                         className="h-7 rounded-md text-[11px] transition-all"
                         style={{
-                          backgroundColor: on ? theme.accent : (smDay ? theme.accentSoft : theme.card),
+                          backgroundColor: on ? theme.accent : theme.accentSoft,
                           color: on ? theme.card : theme.inkMute,
                           border: `1px solid ${on ? theme.accent : theme.line}`,
                         }}>
@@ -3467,7 +3466,7 @@ function MemberEditor({ member, onClose, onSave }) {
 /* =========================================================
    Member Detail — passes + history + memo + progress + assessment
    ========================================================= */
-function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, onSendSMS }) {
+function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlots, toast, onSendSMS }) {
   const [tab, setTab] = useState('passes');
   const [editing, setEditing] = useState(false);
   const [addingPass, setAddingPass] = useState(false);
@@ -3967,6 +3966,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, toast, on
         {editing && (
           <MemberEditor
             member={member} onClose={() => setEditing(false)}
+            groupSlots={groupSlots}
             onSave={async (d) => { await onUpdate({ ...member, ...d }); setEditing(false); toast('수정되었어요'); }}
           />
         )}
@@ -5343,22 +5343,98 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
     const t = { id: uid(), ...data, createdAt: toYMD(new Date()), status: data.status || '예약확정' };
     const next = [t, ...trials];
     await saveTrials(next);
+    
+    // 일정에 자동 등록
+    if (sessions && setSessions && t.date && t.time) {
+      const key = `${t.date}_${t.time}`;
+      const existingSess = sessions[key] || { date: t.date, time: t.time, participants: [] };
+      const alreadyIn = existingSess.participants?.some(p => p.memberName === t.name && p.isTrial);
+      if (!alreadyIn) {
+        const newSess = {
+          ...existingSess,
+          participants: [...(existingSess.participants || []), {
+            memberName: t.name,
+            isTrial: true,
+            status: 'reserved',
+          }],
+        };
+        const newSessions = { ...sessions, [key]: newSess };
+        setSessions(newSessions);
+        await saveKey(K.sessions, newSessions);
+      }
+    }
+    
     setAdding(false);
-    toast('체험자 등록됨');
+    toast('체험자 등록됨 (일정 등록 완료)');
     if (data.sendSMS && data.phone && data.date && data.time) {
       onSendSMS({ phone: data.phone, name: data.name, template: SMS_TEMPLATES.trial(t) });
     }
   };
 
   const update = async (id, data) => {
+    const oldTrial = trials.find(t => t.id === id);
     await saveTrials(trials.map(t => t.id === id ? { ...t, ...data } : t));
+    
+    // 시간/날짜 변경 시 일정도 업데이트
+    if (sessions && setSessions && oldTrial && (oldTrial.date !== data.date || oldTrial.time !== data.time)) {
+      const sessionsCopy = { ...sessions };
+      // 옛 슬롯에서 제거
+      if (oldTrial.date && oldTrial.time) {
+        const oldKey = `${oldTrial.date}_${oldTrial.time}`;
+        if (sessionsCopy[oldKey]) {
+          sessionsCopy[oldKey] = {
+            ...sessionsCopy[oldKey],
+            participants: (sessionsCopy[oldKey].participants || []).filter(p => 
+              !(p.memberName === oldTrial.name && p.isTrial)
+            ),
+          };
+        }
+      }
+      // 새 슬롯에 추가
+      if (data.date && data.time) {
+        const newKey = `${data.date}_${data.time}`;
+        const existingSess = sessionsCopy[newKey] || { date: data.date, time: data.time, participants: [] };
+        const alreadyIn = existingSess.participants?.some(p => p.memberName === data.name && p.isTrial);
+        if (!alreadyIn) {
+          sessionsCopy[newKey] = {
+            ...existingSess,
+            participants: [...(existingSess.participants || []), {
+              memberName: data.name,
+              isTrial: true,
+              status: 'reserved',
+            }],
+          };
+        }
+      }
+      setSessions(sessionsCopy);
+      await saveKey(K.sessions, sessionsCopy);
+    }
+    
     setEditing(null);
     toast('수정됨');
   };
 
   const del = async (id) => {
     if (!confirm('이 체험자를 삭제할까요?')) return;
+    const trial = trials.find(t => t.id === id);
     await saveTrials(trials.filter(t => t.id !== id));
+    
+    // 일정에서도 제거
+    if (sessions && setSessions && trial?.date && trial?.time) {
+      const key = `${trial.date}_${trial.time}`;
+      if (sessions[key]) {
+        const newSess = {
+          ...sessions[key],
+          participants: (sessions[key].participants || []).filter(p => 
+            !(p.memberName === trial.name && p.isTrial)
+          ),
+        };
+        const newSessions = { ...sessions, [key]: newSess };
+        setSessions(newSessions);
+        await saveKey(K.sessions, newSessions);
+      }
+    }
+    
     setEditing(null);
   };
 
@@ -6420,17 +6496,22 @@ function StatsView({ members, trials, sessions }) {
     // 회원별 출석률 + 도전중
     const memberAtt = {};
     Object.values(sessions || {}).forEach(s => {
-      if (s.date > todayStr) return;
+      if (s.date >= todayStr) return; // 오늘 포함 미래는 카운트 X
       (s.participants || []).forEach(p => {
         if (!p.memberId || p.isTrial) return;
         if (!memberAtt[p.memberId]) memberAtt[p.memberId] = { attend: 0, total: 0, lastDate: '' };
-        const isAttended = !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'no_show';
-        if (p.status !== 'reserved') {
-          memberAtt[p.memberId].total++;
-          if (isAttended) {
-            memberAtt[p.memberId].attend++;
-            if (s.date > memberAtt[p.memberId].lastDate) memberAtt[p.memberId].lastDate = s.date;
-          }
+        // 명시적으로 'reserved'면 카운트 X
+        if (p.status === 'reserved') return;
+        // 명시적인 결과 status (출석/취소/노쇼)만 total에 카운트
+        // status가 없으면 옛 데이터 → 출석으로 간주 (cancelled 플래그 우선)
+        const isAttended = !p.cancelled 
+          && p.status !== 'cancelled_advance' 
+          && p.status !== 'cancelled_sameday' 
+          && p.status !== 'no_show';
+        memberAtt[p.memberId].total++;
+        if (isAttended) {
+          memberAtt[p.memberId].attend++;
+          if (s.date > memberAtt[p.memberId].lastDate) memberAtt[p.memberId].lastDate = s.date;
         }
       });
     });
@@ -6449,11 +6530,12 @@ function StatsView({ members, trials, sessions }) {
       if (rs?.challenging) challengingCount++;
       
       // 꾸준한 회원: 출석률 80%+ 또는 리듬 도전중/대상자
+      // 단, 실제 출석 1회 이상이어야 함
       if (rs?.achieved) {
         consistent.push({ id: m.id, name: m.name, badge: '🏆', note: rs.message || '대상자' });
-      } else if (rs?.challenging && attRate >= 80) {
+      } else if (rs?.challenging && attRate >= 80 && att.attend >= 1) {
         consistent.push({ id: m.id, name: m.name, badge: '🌿', note: `출석 ${attRate}% · ${rs.elapsedDays}/${rs.limitDays}일` });
-      } else if (attRate >= 80 && att.total >= 3) {
+      } else if (attRate >= 80 && att.total >= 3 && att.attend >= 3) {
         consistent.push({ id: m.id, name: m.name, badge: '', note: `출석 ${attRate}% · ${pass.usedSessions}/${pass.totalSessions}회` });
       }
       
@@ -7437,7 +7519,7 @@ export default function App() {
       )}
       {tab === 'members' && (
         <MembersView members={members} setMembers={setMembers}
-          sessions={sessions} toast={toast} onSendSMS={onSendSMS} />
+          sessions={sessions} groupSlots={groupSlots} toast={toast} onSendSMS={onSendSMS} />
       )}
       {tab === 'trials' && (
         <TrialsView trials={trials} setTrials={setTrials}
