@@ -6079,6 +6079,7 @@ function TrialEditor({ trial, onClose, onSave }) {
               { value: '문의', label: '문의' },
               { value: '예약확정', label: '예약확정' },
               { value: '수업완료', label: '수업완료' },
+              { value: '미참석', label: '미참석 (노쇼)' },
               { value: '회원전환', label: '회원전환' },
               { value: '미전환', label: '미전환' },
             ]} />
@@ -6131,6 +6132,19 @@ function TrialDetail({ trial, onClose, onUpdate, onDelete, onConvert, onSendSMS 
             className="w-full py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5"
             style={{ backgroundColor: theme.accent2, color: '#FFF' }}>
             <UserPlus size={14} /> 정식 회원으로 전환
+          </button>
+        )}
+        
+        {/* 노쇼/미참석 버튼 (수업완료 또는 예약확정에서 표시) */}
+        {(trial.status === '수업완료' || trial.status === '예약확정') && (
+          <button 
+            onClick={async () => {
+              if (!confirm('미참석(노쇼)으로 처리할까요?')) return;
+              await onUpdate(trial.id, { ...trial, status: '미참석' });
+            }}
+            className="w-full py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5"
+            style={{ backgroundColor: 'transparent', color: theme.danger, border: `1px solid ${theme.danger}` }}>
+            <X size={14} /> 미참석 (노쇼)
           </button>
         )}
 
@@ -7551,6 +7565,63 @@ export default function App() {
       migT = updatedTrials;
       await saveKey(K.trials, migT);
       console.log('[auto] 체험 자동 수업완료 처리');
+    }
+    
+    // 미참석 체험자 sessions 동기화
+    let trialSessionsSynced = false;
+    const syncedSessions = { ...migratedS };
+    Object.keys(syncedSessions).forEach(key => {
+      const s = syncedSessions[key];
+      if (!s?.participants) return;
+      const newParts = s.participants.map(p => {
+        if (!p.isTrial) return p;
+        // 해당 trial 찾기
+        const matchedTrial = migT.find(t => 
+          t.name === p.memberName && t.date === s.date && t.time === s.time
+        );
+        if (!matchedTrial) return p;
+        // 미참석이면 cancelled, 아니면 그대로
+        if (matchedTrial.status === '미참석' && !p.cancelled) {
+          trialSessionsSynced = true;
+          return { ...p, cancelled: 'no_show' };
+        }
+        if (matchedTrial.status !== '미참석' && p.cancelled === 'no_show') {
+          trialSessionsSynced = true;
+          const { cancelled, ...rest } = p;
+          return rest;
+        }
+        return p;
+      });
+      syncedSessions[key] = { ...s, participants: newParts };
+    });
+    if (trialSessionsSynced) {
+      migratedS = syncedSessions;
+      await saveKey(K.sessions, migratedS);
+    }
+    
+    // 마이그레이션 v4: 김은화 스타터→개인레슨5 전환 시 출석 이력 옮기기
+    const kuhMigFlag = await loadKey({ lkey: 'sosun:migration:kuh-pass-merge:v1', table: 'settings', id: 'migration_kuh_pass_merge_v1' }, false);
+    if (!kuhMigFlag) {
+      const kuhSessions = { ...migratedS };
+      let changed = false;
+      Object.keys(kuhSessions).forEach(key => {
+        const s = kuhSessions[key];
+        if (!s?.participants) return;
+        const newParts = s.participants.map(p => {
+          if (p.memberId === 'm_kimunhwa' && p.passId === 'p_kuh_starter') {
+            changed = true;
+            return { ...p, passId: 'p_kuh_private5', totalSessions: 5 };
+          }
+          return p;
+        });
+        if (changed) kuhSessions[key] = { ...s, participants: newParts };
+      });
+      if (changed) {
+        migratedS = kuhSessions;
+        await saveKey(K.sessions, migratedS);
+        console.log('[migration] 김은화 수강권 통합');
+      }
+      await saveKey({ lkey: 'sosun:migration:kuh-pass-merge:v1', table: 'settings', id: 'migration_kuh_pass_merge_v1' }, true);
     }
     
     // 매번 실행: 회원 수업 시간 + 1시간 지났는데 'reserved' 상태면 자동 출석 처리
