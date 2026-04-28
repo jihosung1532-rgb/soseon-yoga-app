@@ -6499,15 +6499,21 @@ function StatsView({ members, trials, sessions }) {
       if (s.date >= todayStr) return; // 오늘 포함 미래는 카운트 X
       (s.participants || []).forEach(p => {
         if (!p.memberId || p.isTrial) return;
+        // status가 명시적이지 않으면 옛 데이터 → sessionNumber 있으면 출석으로 본다
+        const status = p.status;
+        const isReserved = status === 'reserved' || status === '예약확정';
+        if (isReserved) return; // 예약만 잡힌 건 카운트 X
+        
+        const isCancelledOrNoShow = p.cancelled 
+          || status === 'cancelled_advance' 
+          || status === 'cancelled_sameday' 
+          || status === 'no_show';
+        const isAttended = !isCancelledOrNoShow && (p.sessionNumber || status === 'attended' || status === '출석');
+        
+        // 진짜 결과가 나온 것만 (출석/취소/노쇼) total 카운트
+        if (!isAttended && !isCancelledOrNoShow) return;
+        
         if (!memberAtt[p.memberId]) memberAtt[p.memberId] = { attend: 0, total: 0, lastDate: '' };
-        // 명시적으로 'reserved'면 카운트 X
-        if (p.status === 'reserved') return;
-        // 명시적인 결과 status (출석/취소/노쇼)만 total에 카운트
-        // status가 없으면 옛 데이터 → 출석으로 간주 (cancelled 플래그 우선)
-        const isAttended = !p.cancelled 
-          && p.status !== 'cancelled_advance' 
-          && p.status !== 'cancelled_sameday' 
-          && p.status !== 'no_show';
         memberAtt[p.memberId].total++;
         if (isAttended) {
           memberAtt[p.memberId].attend++;
@@ -6533,10 +6539,10 @@ function StatsView({ members, trials, sessions }) {
       // 단, 실제 출석 1회 이상이어야 함
       if (rs?.achieved) {
         consistent.push({ id: m.id, name: m.name, badge: '🏆', note: rs.message || '대상자' });
-      } else if (rs?.challenging && attRate >= 80 && att.attend >= 1) {
-        consistent.push({ id: m.id, name: m.name, badge: '🌿', note: `출석 ${attRate}% · ${rs.elapsedDays}/${rs.limitDays}일` });
+      } else if (rs?.challenging && att.attend >= 1) {
+        consistent.push({ id: m.id, name: m.name, badge: '🌿', note: `출석 ${pass.usedSessions}/${pass.totalSessions}회` });
       } else if (attRate >= 80 && att.total >= 3 && att.attend >= 3) {
-        consistent.push({ id: m.id, name: m.name, badge: '', note: `출석 ${attRate}% · ${pass.usedSessions}/${pass.totalSessions}회` });
+        consistent.push({ id: m.id, name: m.name, badge: '', note: `출석 ${pass.usedSessions}/${pass.totalSessions}회 · ${attRate}%` });
       }
       
       // 관심 필요: 만료 임박 (D-7 이내) 또는 2주+ 미참석
