@@ -199,6 +199,7 @@ const K = {
   smsConfirmed:{ lkey: 'sosun:smsConfirmed:v8',table: 'settings', id: 'smsConfirmed' },
   seeded:      { lkey: 'sosun:seeded:v8',      table: 'settings', id: 'seeded' },
   groupSlots:  { lkey: 'sosun:groupSlots:v8',  table: 'settings', id: 'groupSlots' },
+  closedDays:  { lkey: 'sosun:closedDays:v8',  table: 'settings', id: 'closedDays' },
 };
 
 async function loadKey(k, fallback) {
@@ -1241,31 +1242,47 @@ function passStatus(p) {
 
 /* =========================================================
    Rhythm Reward — 리듬 수련 보상 계산
-   1개월(8회): 30일 이내 8회 → +1회
-   3개월(24회): 12주(84일) + 홀딩일 이내 24회 → +3회
+   1개월(8회): 4주 동안 화·목 빠지지 않고 출석 → +1회
+   3개월(24회): 12주 동안 화·목 빠지지 않고 출석 → +3회
+   - 면제일 (공휴일 / 휴강일 / 회원 홀딩 기간): 카운트에서 제외
+   - 결석 (예약취소·당일취소·노쇼): 1회라도 있으면 탈락
    ========================================================= */
-function rhythmStatus(p) {
+// 두 날짜 사이의 화·목 날짜 목록 (시작일 포함, 종료일 포함)
+function tueThuDatesBetween(startYMD, endYMD) {
+  const dates = [];
+  let d = fromYMD(startYMD);
+  const end = fromYMD(endYMD);
+  while (d <= end) {
+    const dow = d.getDay();
+    if (dow === 2 || dow === 4) dates.push(toYMD(d));
+    d = addDays(d, 1);
+  }
+  return dates;
+}
+
+// 그날이 면제 대상인가? (공휴일 / 휴강일 / 홀딩 기간)
+function isExemptDay(ymd, pass, closedDays) {
+  if (HOLIDAYS.has(ymd)) return true;
+  if (Array.isArray(closedDays) && closedDays.some(c => c.date === ymd)) return true;
+  // 홀딩 기간 (pass.holdStart ~ pass.holdEnd 사이)
+  if (pass?.holdStart && pass?.holdEnd && ymd >= pass.holdStart && ymd <= pass.holdEnd) return true;
+  return false;
+}
+
+function rhythmStatus(p, closedDays = []) {
   if (!p) return null;
   if (p.archived) return null;
   if (p.category === 'trial') return null;
+  if (p.category === 'private') return null; // 개인레슨은 대상 X
   
   // 자격 대상 수강권 종류 판단
-  let targetSessions, baseDays, bonus;
-  if (p.totalSessions === 8 && p.category !== 'private') {
-    // 1개월 8회 (소그룹)
-    targetSessions = 8;
-    baseDays = 30;
-    bonus = 1;
-  } else if (p.totalSessions === 16 && p.category !== 'private') {
-    // 2개월 16회 (단종됐지만 기존 회원 보상 유지)
-    targetSessions = 16;
-    baseDays = 60;
-    bonus = 2;
+  let weeks, bonus;
+  if (p.totalSessions === 8) {
+    weeks = 4; bonus = 1; // 1개월 8회
+  } else if (p.totalSessions === 16) {
+    weeks = 8; bonus = 2; // 2개월 16회 (단종, 옛 회원만)
   } else if (p.totalSessions === 24) {
-    // 3개월 24회
-    targetSessions = 24;
-    baseDays = 84; // 12주
-    bonus = 3;
+    weeks = 12; bonus = 3; // 3개월 24회
   } else {
     return null; // 대상 아님
   }
@@ -1273,93 +1290,90 @@ function rhythmStatus(p) {
   if (!p.startDate) return null;
   const startMs = fromYMD(p.startDate).getTime();
   const todayMs = new Date().setHours(0,0,0,0);
+  const todayStr = toYMD(new Date());
   
-  // 홀딩일 더하기 (3개월권만, 2개월권은 홀딩 없음)
-  const holdDays = (p.canHold && p.holdUsed && p.holdDays) ? p.holdDays : 0;
-  const limitDays = baseDays + (targetSessions === 24 ? holdDays : 0);
+  // 도전 종료일 = 시작일 + (weeks * 7 - 1)일
+  const challengeEndYMD = toYMD(addDays(fromYMD(p.startDate), weeks * 7 - 1));
+  const challengeEndMs = fromYMD(challengeEndYMD).getTime();
   
-  // 경과 일수
+  // 시작 전이면 예고만
   const elapsedDays = Math.floor((todayMs - startMs) / (1000*60*60*24));
-  
-  // 시작 전이면 트래커 표시 안 함
   if (elapsedDays < 0) {
-    return { eligible: true, notStarted: true, targetSessions, baseDays, bonus, limitDays };
+    return { eligible: true, notStarted: true, weeks, bonus, challengeEndYMD };
   }
   
-  // 마지막 수업 날짜 (sessionDates 중 가장 최근)
-  const sessionDates = p.sessionDates || [];
-  const lastSessionMs = sessionDates.length 
-    ? Math.max(...sessionDates.map(d => fromYMD(d).getTime())) 
-    : null;
+  // 도전 기간 내의 모든 화·목 날짜
+  const allTueThu = tueThuDatesBetween(p.startDate, challengeEndYMD);
+  // 면제일 제외 → 진짜 와야 할 슬롯
+  const requiredDays = allTueThu.filter(d => !isExemptDay(d, p, closedDays));
   
-  // 완주 여부
-  const completed = p.usedSessions >= targetSessions;
+  // 출석한 날짜 (sessionDates 활용 — saveSession이 정확하게 관리)
+  const attendedSet = new Set(p.sessionDates || []);
   
-  if (completed) {
-    // 완주했음 - 마지막 수업까지 며칠 걸렸나
-    if (lastSessionMs) {
-      const completedDays = Math.floor((lastSessionMs - startMs) / (1000*60*60*24)) + 1;
-      const isAchieved = completedDays <= limitDays;
-      return {
-        eligible: true,
-        achieved: isAchieved,
-        completed: true,
-        targetSessions,
-        baseDays,
-        bonus,
-        holdDays,
-        limitDays,
-        completedDays,
-        elapsedDays,
-        message: isAchieved 
-          ? `${completedDays}일만에 ${targetSessions}회 완주`
-          : `${completedDays}일에 완주 (목표 ${limitDays}일 초과)`,
-      };
-    }
-    return null;
-  }
+  // 결석 검증: requiredDays 중 오늘까지 지나간 날들 점검
+  const passedDays = requiredDays.filter(d => d <= todayStr);
+  const futureDays = requiredDays.filter(d => d > todayStr);
+  const missedDays = passedDays.filter(d => !attendedSet.has(d));
   
-  // 진행 중 - 아직 도전 가능한가
-  const remaining = targetSessions - p.usedSessions;
-  const daysRemaining = limitDays - elapsedDays;
-  
-  if (daysRemaining <= 0) {
-    // 도전 기간 초과
+  // 도전 기간 종료 후 판정
+  if (todayMs > challengeEndMs) {
+    const allCovered = missedDays.length === 0;
     return {
       eligible: true,
-      achieved: false,
-      completed: false,
-      challenging: false,
-      expired: true,
-      targetSessions, baseDays, bonus, holdDays, limitDays, elapsedDays,
+      completed: true,
+      achieved: allCovered,
+      weeks, bonus,
+      challengeEndYMD,
+      requiredDays: requiredDays.length,
+      attendedDays: passedDays.length - missedDays.length,
+      missedDays,
+      message: allCovered 
+        ? `${weeks}주 빠짐없이 완주`
+        : `${missedDays.length}회 결석 (목표 미달)`,
     };
   }
   
-  // 도전중
+  // 진행 중 — 이미 결석이 있으면 탈락 확정
+  if (missedDays.length > 0) {
+    return {
+      eligible: true,
+      completed: false,
+      achieved: false,
+      challenging: false,
+      expired: true, // 더 이상 도전 불가능
+      weeks, bonus,
+      challengeEndYMD,
+      requiredDays: requiredDays.length,
+      attendedDays: passedDays.length - missedDays.length,
+      missedDays,
+      message: `${missedDays.length}회 결석으로 탈락`,
+    };
+  }
+  
+  // 도전 중 — 아직 결석 없음
   return {
     eligible: true,
-    achieved: false,
     completed: false,
+    achieved: false,
     challenging: true,
-    targetSessions,
-    baseDays,
-    bonus,
-    holdDays,
-    limitDays,
-    elapsedDays,
-    daysRemaining,
-    remaining,
-    message: `남은 ${remaining}회를 ${daysRemaining}일 안에`,
+    weeks, bonus,
+    challengeEndYMD,
+    requiredDays: requiredDays.length,
+    attendedDays: passedDays.length,
+    remaining: futureDays.length,
+    message: futureDays.length > 0 
+      ? `남은 ${futureDays.length}회 빠짐없이`
+      : `완주 직전`,
   };
 }
 
 // 회원의 활성 수강권 중 리듬 수련 상태
-function memberRhythmStatus(member) {
+function memberRhythmStatus(member, closedDays = []) {
   if (!member?.passes) return null;
-  // 활성 수강권 중에서
-  const active = member.passes.find(p => !p.archived && (p.category === 'group' || p.category === 'private') && p.totalSessions);
+  // 소그룹 활성 수강권만 (개인레슨은 대상 X)
+  const active = member.passes.find(p => !p.archived && p.category === 'group' && p.totalSessions);
   if (!active) return null;
-  return rhythmStatus(active);
+  return rhythmStatus(active, closedDays);
 }
 
 /* =========================================================
@@ -1722,7 +1736,7 @@ function SMSDialog({ open, onClose, phone, name, template, onConfirmed }) {
 /* =========================================================
    Home Dashboard — today's tasks with dismiss
    ========================================================= */
-function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDismiss, smsConfirmed = {}, toast, onSendSMS, goto, onOpenSettings }) {
+function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDismiss, smsConfirmed = {}, closedDays = [], toast, onSendSMS, goto, onOpenSettings }) {
   const todayYMD = toYMD(new Date());
   const dismissedToday = (dashDismiss[todayYMD] || []);
   const [daysSinceBackup, setDaysSinceBackup] = useState(null);
@@ -1912,7 +1926,7 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
     members.forEach(m => {
       const pass = activePass(m);
       if (!pass) return;
-      const rs = rhythmStatus(pass);
+      const rs = rhythmStatus(pass, closedDays);
       if (rs?.achieved) {
         alerts.push({ icon: '🏆', name: m.name, suffix: '님 리듬 수련 대상자에요' });
       }
@@ -1926,7 +1940,7 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
       });
     });
     return alerts;
-  }, [members, todayYMD, todaySessions, expiringMembersList]);
+  }, [members, todayYMD, todaySessions, expiringMembersList, closedDays]);
 
   return (
     <div className="px-3 pb-28 pt-2 space-y-3">
@@ -2075,7 +2089,7 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
         const achievers = members
           .map(m => {
             const pass = activePass(m);
-            const rs = pass ? rhythmStatus(pass) : null;
+            const rs = pass ? rhythmStatus(pass, closedDays) : null;
             return rs?.achieved ? { member: m, pass, rs } : null;
           })
           .filter(Boolean);
@@ -2192,10 +2206,27 @@ function Stat({ label, value, color }) {
 /* =========================================================
    Schedule View
    ========================================================= */
-function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, setGroupSlots, toast }) {
+function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, setGroupSlots, closedDays = [], setClosedDays, toast }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [slotModal, setSlotModal] = useState(null);
   const [slotsManagerOpen, setSlotsManagerOpen] = useState(false);
+
+  // 휴강일 토글
+  const toggleClosedDay = async (ymd) => {
+    const exists = closedDays.some(c => c.date === ymd);
+    let next;
+    if (exists) {
+      next = closedDays.filter(c => c.date !== ymd);
+      toast('휴강 표시를 해제했어요');
+    } else {
+      const reason = prompt('휴강 사유 (선택)', '') || '';
+      next = [...closedDays, { date: ymd, reason }].sort((a, b) => a.date.localeCompare(b.date));
+      toast('이날 휴강으로 표시했어요');
+    }
+    setClosedDays(next);
+    await saveKey(K.closedDays, next);
+  };
+  const isClosedDay = (ymd) => closedDays.some(c => c.date === ymd);
 
   const days = [0, 1, 2, 3, 4].map(i => addDays(weekStart, i));
 
@@ -2459,6 +2490,8 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
           const ymd = toYMD(d);
           const isToday = ymd === todayYMD;
           const isHol = HOLIDAYS.has(ymd);
+          const isClosed = isClosedDay(ymd);
+          const isTueThu = d.getDay() === 2 || d.getDay() === 4;
           const dayInfo = getDayClasses(d);
           
           return (
@@ -2468,15 +2501,15 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
                 style={{ borderBottom: `1px solid ${theme.line}` }}>
                 <div style={{
                   fontFamily: theme.serif, fontSize: 24, fontWeight: 600,
-                  color: isHol ? theme.danger : theme.ink, lineHeight: 1,
+                  color: isHol || isClosed ? theme.danger : theme.ink, lineHeight: 1,
                 }}>
                   {d.getDate()}
                 </div>
                 <div className="font-semibold text-[13px]"
-                  style={{ color: isHol ? theme.danger : isToday ? theme.accent2 : theme.inkSoft }}>
+                  style={{ color: isHol || isClosed ? theme.danger : isToday ? theme.accent2 : theme.inkSoft }}>
                   {WEEK_KR[d.getDay()]}요일
                 </div>
-                {isToday && (
+                {isToday && !isHol && !isClosed && (
                   <div className="ml-auto text-[11px]"
                     style={{ color: theme.accent2, fontFamily: theme.serif, fontStyle: 'italic', fontWeight: 500 }}>
                     오늘
@@ -2488,12 +2521,34 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
                     공휴일
                   </div>
                 )}
+                {isClosed && !isHol && (
+                  <div className="ml-auto text-[10px]"
+                    style={{ color: theme.danger, fontFamily: theme.serif, fontStyle: 'italic' }}>
+                    휴강
+                  </div>
+                )}
+                {/* 화/목 휴강 토글 (공휴일 아닐 때만) */}
+                {isTueThu && !isHol && (
+                  <button onClick={() => toggleClosedDay(ymd)}
+                    className={`text-[10px] px-2 py-0.5 rounded-full ${isToday || isClosed ? '' : 'ml-auto'}`}
+                    style={{
+                      color: isClosed ? theme.danger : theme.inkMute,
+                      border: `1px solid ${isClosed ? theme.danger + '60' : theme.line}`,
+                      backgroundColor: isClosed ? theme.dangerBg : 'transparent',
+                    }}>
+                    {isClosed ? '휴강 해제' : '휴강 표시'}
+                  </button>
+                )}
               </div>
 
               {/* Day content */}
               {isHol ? (
                 <div className="text-center py-3 italic" style={{ color: theme.inkMute, fontFamily: theme.serif }}>
                   — 공휴일 —
+                </div>
+              ) : isClosed ? (
+                <div className="text-center py-3 italic" style={{ color: theme.inkMute, fontFamily: theme.serif }}>
+                  — 휴강{closedDays.find(c => c.date === ymd)?.reason ? ` · ${closedDays.find(c => c.date === ymd).reason}` : ''} —
                 </div>
               ) : dayInfo.items.length === 0 ? (
                 <>
@@ -2978,7 +3033,7 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
 /* =========================================================
    Members View + Detail
    ========================================================= */
-function MembersView({ members, setMembers, sessions, setSessions, groupSlots, toast, onSendSMS }) {
+function MembersView({ members, setMembers, sessions, setSessions, groupSlots, closedDays = [], toast, onSendSMS }) {
   const [openId, setOpenId] = useState(null);
   const [adding, setAdding] = useState(false);
   const [photoImporting, setPhotoImporting] = useState(false);
@@ -3194,7 +3249,7 @@ function MembersView({ members, setMembers, sessions, setSessions, groupSlots, t
         <EmptyState icon={Users} title="해당 회원이 없어요" />
       ) : (
         <div className="space-y-2">
-          {sorted.map(m => <MemberCard key={m.id} member={m} onClick={() => setOpenId(m.id)} />)}
+          {sorted.map(m => <MemberCard key={m.id} member={m} onClick={() => setOpenId(m.id)} closedDays={closedDays} />)}
         </div>
       )}
       {adding && <MemberEditor onClose={() => setAdding(false)} onSave={createMember} groupSlots={groupSlots} />}
@@ -3211,17 +3266,17 @@ function MembersView({ members, setMembers, sessions, setSessions, groupSlots, t
           onClose={() => setOpenId(null)}
           onUpdate={updateMember}
           onDelete={() => deleteMember(openMember.id)}
-          sessions={sessions} groupSlots={groupSlots} toast={toast} onSendSMS={onSendSMS}
+          sessions={sessions} groupSlots={groupSlots} closedDays={closedDays} toast={toast} onSendSMS={onSendSMS}
         />
       )}
     </div>
   );
 }
 
-function MemberCard({ member, onClick }) {
+function MemberCard({ member, onClick, closedDays = [] }) {
   const pass = activePass(member);
   const ps = passStatus(pass);
-  const rs = pass ? rhythmStatus(pass) : null;
+  const rs = pass ? rhythmStatus(pass, closedDays) : null;
   const progress = pass ? (pass.usedSessions / pass.totalSessions) : 0;
   const fixedLabel = member.fixedSlots?.length
     ? member.fixedSlots.map(fs => `${WEEK_KR[fs.dow]}${fs.time}`).join(' · ')
@@ -3318,9 +3373,9 @@ function MemberCard({ member, onClick }) {
               style={{ backgroundColor: '#F5EBC8', color: '#6B5410', fontSize: 10 }}>
               <span style={{ fontWeight: 700, flexShrink: 0 }}>🏆 도전중</span>
               <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ backgroundColor: 'rgba(201,169,97,0.25)' }}>
-                <div className="h-full" style={{ width: `${Math.min(100, (rs.elapsedDays / rs.limitDays) * 100)}%`, backgroundColor: '#C9A961' }} />
+                <div className="h-full" style={{ width: `${Math.min(100, rs.requiredDays > 0 ? (rs.attendedDays / rs.requiredDays) * 100 : 0)}%`, backgroundColor: '#C9A961' }} />
               </div>
-              <span style={{ fontWeight: 600, flexShrink: 0 }}>{rs.elapsedDays}/{rs.limitDays}일</span>
+              <span style={{ fontWeight: 600, flexShrink: 0 }}>{rs.attendedDays}/{rs.requiredDays}회</span>
             </div>
           )}
         </div>
@@ -3554,7 +3609,7 @@ function MemberEditor({ member, onClose, onSave, groupSlots }) {
 /* =========================================================
    Member Detail — passes + history + memo + progress + assessment
    ========================================================= */
-function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlots, toast, onSendSMS }) {
+function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlots, closedDays = [], toast, onSendSMS }) {
   const [tab, setTab] = useState('passes');
   const [editing, setEditing] = useState(false);
   const [addingPass, setAddingPass] = useState(false);
@@ -3852,7 +3907,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                       {st && (() => {
                         if (st.label === '진행중') {
                           // 진행중일 땐 리듬 수련 칩으로
-                          const rsP = rhythmStatus(p);
+                          const rsP = rhythmStatus(p, closedDays);
                           if (rsP?.achieved) return <Chip tone="gold" size="sm">🏆 대상자</Chip>;
                           if (rsP?.challenging) return <Chip tone="goldSoft" size="sm">도전중</Chip>;
                           return null;
@@ -3875,21 +3930,21 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                   <div className="h-1.5 rounded-full overflow-hidden mb-2" style={{ backgroundColor: theme.card }}>
                     <div className="h-full rounded-full" style={{
                       width: `${progress * 100}%`,
-                      backgroundColor: rhythmStatus(p)?.achieved ? '#C9A961' : theme.accent,
-                      backgroundImage: rhythmStatus(p)?.achieved ? 'linear-gradient(90deg, #C9A961, #E5C870)' : 'none',
+                      backgroundColor: rhythmStatus(p, closedDays)?.achieved ? '#C9A961' : theme.accent,
+                      backgroundImage: rhythmStatus(p, closedDays)?.achieved ? 'linear-gradient(90deg, #C9A961, #E5C870)' : 'none',
                     }} />
                   </div>
                   
                   {/* 리듬 수련 트래커 박스 */}
                   {(() => {
-                    const rsP = rhythmStatus(p);
+                    const rsP = rhythmStatus(p, closedDays);
                     if (!rsP) return null;
                     if (rsP.achieved) {
                       return (
                         <div className="rounded-lg p-2 mb-2" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}>
                           <div className="flex justify-between items-center mb-1">
                             <span className="text-[11px] font-bold" style={{ color: '#6B5410' }}>🏆 리듬 수련 도전 성공</span>
-                            <span className="text-[10px]" style={{ color: '#8B6F30' }}>{rsP.completedDays} / {rsP.limitDays}일</span>
+                            <span className="text-[10px]" style={{ color: '#8B6F30' }}>{rsP.weeks}주 빠짐없이</span>
                           </div>
                           <div className="h-[3px] rounded-full overflow-hidden mb-1" style={{ backgroundColor: 'rgba(201,169,97,0.25)' }}>
                             <div className="h-full" style={{ width: '100%', backgroundColor: '#C9A961' }} />
@@ -3901,17 +3956,30 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                       );
                     }
                     if (rsP.challenging) {
+                      const pct = rsP.requiredDays > 0 ? (rsP.attendedDays / rsP.requiredDays) * 100 : 0;
                       return (
                         <div className="rounded-lg p-2 mb-2" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}>
                           <div className="flex justify-between items-center mb-1">
                             <span className="text-[11px] font-bold" style={{ color: '#6B5410' }}>리듬 수련 도전중</span>
-                            <span className="text-[10px]" style={{ color: '#8B6F30' }}>{rsP.elapsedDays} / {rsP.limitDays}일</span>
+                            <span className="text-[10px]" style={{ color: '#8B6F30' }}>{rsP.attendedDays} / {rsP.requiredDays}회</span>
                           </div>
                           <div className="h-[3px] rounded-full overflow-hidden mb-1" style={{ backgroundColor: 'rgba(201,169,97,0.25)' }}>
-                            <div className="h-full" style={{ width: `${(rsP.elapsedDays / rsP.limitDays) * 100}%`, backgroundColor: '#C9A961' }} />
+                            <div className="h-full" style={{ width: `${pct}%`, backgroundColor: '#C9A961' }} />
                           </div>
                           <div className="text-[10px]" style={{ color: '#8B6F30' }}>
-                            남은 {rsP.remaining}회를 {rsP.daysRemaining}일 안에 → <strong>+{rsP.bonus}회 보상</strong>
+                            {rsP.remaining > 0 
+                              ? <>남은 {rsP.remaining}회 빠짐없이 → <strong>+{rsP.bonus}회 보상</strong></>
+                              : <>완주 직전! → <strong>+{rsP.bonus}회 보상</strong></>}
+                          </div>
+                        </div>
+                      );
+                    }
+                    if (rsP.expired) {
+                      // 결석으로 탈락
+                      return (
+                        <div className="rounded-lg p-2 mb-2" style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }}>
+                          <div className="text-[10.5px]" style={{ color: theme.inkMute }}>
+                            리듬 수련 — {rsP.message || '도전 종료'}
                           </div>
                         </div>
                       );
@@ -4061,6 +4129,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
         {addingPass && (
           <PassEditor
             member={member}
+            closedDays={closedDays}
             onClose={() => setAddingPass(false)}
             onSave={async (data, rewardSourceId) => {
               await addPass(data, rewardSourceId);
@@ -4761,7 +4830,7 @@ function AssessmentPanel({ member, onUpdate, toast }) {
 /* =========================================================
    Pass Editor + Pass Converter
    ========================================================= */
-function PassEditor({ member, onClose, onSave }) {
+function PassEditor({ member, onClose, onSave, closedDays = [] }) {
   const [presetIdx, setPresetIdx] = useState(1);
   const preset = PASS_PRESETS[presetIdx];
   const [paymentDate, setPaymentDate] = useState(toYMD(new Date()));
@@ -4778,12 +4847,12 @@ function PassEditor({ member, onClose, onSave }) {
     // 가장 최근 완료된(대상자 + 보상 미사용) 수강권 찾기
     const candidates = member.passes
       .filter(p => !p.archived || p.archived) // 모든 수강권 (archived는 전환된 것)
-      .map(p => ({ p, rs: rhythmStatus(p) }))
+      .map(p => ({ p, rs: rhythmStatus(p, closedDays) }))
       .filter(({ rs }) => rs?.achieved && !rs?.bonusApplied);
     // p.rhythmRewardUsed === true 면 이미 적용됨
     const usable = candidates.find(({ p }) => !p.rhythmRewardUsed);
     return usable || null;
-  }, [member]);
+  }, [member, closedDays]);
   
   const [applyBonus, setApplyBonus] = useState(true);
   const bonus = (eligibleReward && applyBonus) ? eligibleReward.rs.bonus : 0;
@@ -4849,7 +4918,7 @@ function PassEditor({ member, onClose, onSave }) {
               🏆 리듬 수련 대상자!
             </div>
             <div className="text-[10.5px] mb-2" style={{ color: '#8B6F30' }}>
-              이전 {eligibleReward.p.type}을 {eligibleReward.rs.completedDays}일에 완주 → <strong>+{eligibleReward.rs.bonus}회 보상 가능</strong>
+              이전 {eligibleReward.p.type}을 {eligibleReward.rs.weeks}주 빠짐없이 완주 → <strong>+{eligibleReward.rs.bonus}회 보상 가능</strong>
             </div>
             <div className="flex justify-between items-center pt-2"
               style={{ borderTop: '1px dashed #C9A961' }}>
@@ -6469,7 +6538,7 @@ function AnalysisView({ members, setMembers, toast }) {
 /* =========================================================
    Stats View — revenue + trial conversion
    ========================================================= */
-function StatsView({ members, trials, sessions }) {
+function StatsView({ members, trials, sessions, closedDays = [] }) {
   const now = new Date();
   const [monthOffset, setMonthOffset] = useState(0);
 
@@ -6675,7 +6744,7 @@ function StatsView({ members, trials, sessions }) {
       if (!pass) return;
       const att = memberAtt[m.id] || { attend: 0, total: 0, lastDate: '' };
       const attRate = att.total > 0 ? Math.round((att.attend / att.total) * 100) : 0;
-      const rs = rhythmStatus(pass);
+      const rs = rhythmStatus(pass, closedDays);
       
       if (rs?.challenging) challengingCount++;
       
@@ -7455,6 +7524,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [smsConfirmed, setSmsConfirmed] = useState({});
   const [groupSlots, setGroupSlots] = useState(DEFAULT_GROUP_SLOTS);
+  const [closedDays, setClosedDays] = useState([]); // [{date: 'YYYY-MM-DD', reason: '...'}]
   const [ready, setReady] = useState(false);
   const [authed, setAuthed] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
@@ -7505,6 +7575,7 @@ export default function App() {
     
     const sc = await loadKey(K.smsConfirmed, {});
     const gs = await loadKey(K.groupSlots, DEFAULT_GROUP_SLOTS);
+    const cd = await loadKey(K.closedDays, []);
     
     // 마이그레이션: 미래 날짜 sessions의 차감을 되돌리고 status를 'reserved'로 설정
     const migrationFlag = await loadKey({ lkey: 'sosun:migration:reserved-fix:v1', table: 'settings', id: 'migration_reserved_fix_v1' }, false);
@@ -7820,6 +7891,7 @@ export default function App() {
     setMembers(migratedM); setSessions(migS); setClassLog(finalC); setTrials(migT);
     setDashDismiss(dd); setSmsConfirmed(sc);
     setGroupSlots(Array.isArray(gs) && gs.length ? gs : DEFAULT_GROUP_SLOTS);
+    setClosedDays(Array.isArray(cd) ? cd : []);
     setReady(true);
   };
 
@@ -7921,17 +7993,20 @@ export default function App() {
           classLog={classLog}
           dashDismiss={dashDismiss} setDashDismiss={setDashDismiss}
           smsConfirmed={smsConfirmed}
+          closedDays={closedDays}
           toast={toast} onSendSMS={onSendSMS} goto={setTab}
           onOpenSettings={() => setSettingsOpen(true)} />
       )}
       {tab === 'schedule' && (
         <ScheduleView members={members} setMembers={setMembers}
           sessions={sessions} setSessions={setSessions}
-          groupSlots={groupSlots} setGroupSlots={setGroupSlots} toast={toast} />
+          groupSlots={groupSlots} setGroupSlots={setGroupSlots}
+          closedDays={closedDays} setClosedDays={setClosedDays} toast={toast} />
       )}
       {tab === 'members' && (
         <MembersView members={members} setMembers={setMembers}
-          sessions={sessions} setSessions={setSessions} groupSlots={groupSlots} toast={toast} onSendSMS={onSendSMS} />
+          sessions={sessions} setSessions={setSessions} groupSlots={groupSlots}
+          closedDays={closedDays} toast={toast} onSendSMS={onSendSMS} />
       )}
       {tab === 'trials' && (
         <TrialsView trials={trials} setTrials={setTrials}
@@ -7943,7 +8018,7 @@ export default function App() {
         <ClassLogView classLog={classLog} setClassLog={setClassLog} sessions={sessions} toast={toast} />
       )}
       {tab === 'stats' && (
-        <StatsView members={members} trials={trials} sessions={sessions} />
+        <StatsView members={members} trials={trials} sessions={sessions} closedDays={closedDays} />
       )}
       <Toast msg={toastMsg} onDone={() => setToastMsg('')} />
       {settingsOpen && (
