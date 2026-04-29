@@ -67,8 +67,9 @@ const theme = {
 /* =========================================================
    Supabase 설정
    ========================================================= */
-const SUPABASE_URL = 'https://vcemcdzilelnoebupxyp.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZjZW1jZHppbGVsbm9lYnVweHlwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwMzE1MjAsImV4cCI6MjA5MjYwNzUyMH0._OQ1vEDNgNhyNgV70Ph6Pi6Bwn9fA3HcbZ9bVC6gsv8';
+// Vercel에 등록된 환경변수 우선 사용. 로컬 개발 / 환경변수 누락 시 fallback.
+const SUPABASE_URL = import.meta.env?.VITE_SUPABASE_URL || 'https://vcemcdzilelnoebupxyp.supabase.co';
+const SUPABASE_ANON_KEY = import.meta.env?.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZjZW1jZHppbGVsbm9lYnVweHlwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwMzE1MjAsImV4cCI6MjA5MjYwNzUyMH0._OQ1vEDNgNhyNgV70Ph6Pi6Bwn9fA3HcbZ9bVC6gsv8';
 
 // 인증 상태
 const sbAuth = { token: null, user: null };
@@ -256,6 +257,13 @@ const uid = () => Math.random().toString(36).slice(2, 11);
 const pad = (n) => String(n).padStart(2, '0');
 const toYMD = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const fromYMD = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+// 명시적 로컬 Date 생성 — iOS Safari의 시간대 모호성 회피
+// (ISO 형식 'YYYY-MM-DDTHH:MM'은 환경에 따라 UTC로 해석될 수 있어 위험)
+const fromYMDHM = (ymd, hm) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const [hh, mm] = (hm || '00:00').split(':').map(Number);
+  return new Date(y, m - 1, d, hh, mm, 0, 0);
+};
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 const startOfWeek = (d) => {
@@ -1175,6 +1183,23 @@ function activePass(member, category) {
   return active[0] || null;
 }
 
+// 차감 판정 - 모든 곳에서 이 함수 하나만 사용 (saveSession, 마이그레이션, 통계)
+// 차감 대상: 출석(기본), 노쇼, 당일취소(charged)
+// 차감 안 함: 예약확정(reserved), 사전취소, 당일취소(no_charge)
+function isPartCharged(p) {
+  if (!p) return false;
+  // 새 status 시스템
+  if (p.status === 'reserved') return false;
+  if (p.status === 'cancelled_advance') return false;
+  if (p.status === 'cancelled_sameday') return p.cancelled === 'charged';
+  if (p.status === 'no_show') return true;
+  // 옛 cancelled 시스템 호환
+  if (p.cancelled === 'no_charge') return false;
+  if (p.cancelled === 'charged') return true;
+  // 기본: 출석으로 간주 → 차감
+  return true;
+}
+
 function passStatus(p) {
   if (!p) return null;
   const today = toYMD(new Date());
@@ -1526,7 +1551,7 @@ function Section({ title, items, color, bullet = '·' }) {
       <div className="text-[11px] font-semibold mb-1" style={{ color }}>{title}</div>
       <ul className="space-y-1">
         {items.map((o, i) => (
-          <li key={i} className="text-[13px] flex gap-2" style={{ color: theme.ink }}>
+          <li key={`${i}-${typeof o === 'string' ? o.slice(0, 20) : ''}`} className="text-[13px] flex gap-2" style={{ color: theme.ink }}>
             <span style={{ color }}>{bullet}</span><span>{o}</span>
           </li>
         ))}
@@ -1977,7 +2002,7 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
                         </span>
                         <div className="flex flex-wrap gap-x-2 gap-y-0.5">
                           {sortedActive.map((p, i) => (
-                            <span key={i} className="text-[12px]" style={{ color: p.isTrial ? theme.accent2 : theme.ink }}>
+                            <span key={p.memberId || `t-${i}-${p.memberName}`} className="text-[12px]" style={{ color: p.isTrial ? theme.accent2 : theme.ink }}>
                               {p.memberName}
                               {p.sessionNumber && p.totalSessions && (
                                 <span style={{ color: theme.inkMute }}> ({p.sessionNumber}/{p.totalSessions})</span>
@@ -1987,7 +2012,7 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
                             </span>
                           ))}
                           {cancelled.map((p, i) => (
-                            <span key={'c'+i} className="text-[11px] line-through" style={{ color: theme.inkMute }}>
+                            <span key={`c-${p.memberId || p.memberName || i}`} className="text-[11px] line-through" style={{ color: theme.inkMute }}>
                               {p.memberName}
                             </span>
                           ))}
@@ -2005,7 +2030,7 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
         {homeAlerts.length > 0 && (
           <div className="px-4 py-3" style={{ backgroundColor: theme.terraSoft, borderTop: '1px solid #F0D6CB' }}>
             {homeAlerts.map((alert, i) => (
-              <div key={i} className="flex items-center gap-2 text-[12px] py-0.5" style={{ color: '#5E3A20' }}>
+              <div key={`${alert.icon}-${alert.name}-${i}`} className="flex items-center gap-2 text-[12px] py-0.5" style={{ color: '#5E3A20' }}>
                 <span className="flex-shrink-0">{alert.icon}</span>
                 <span><strong>{alert.name}</strong>{alert.suffix}</span>
               </div>
@@ -2211,22 +2236,8 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
     // 옛 슬롯의 차감은 옛 날짜 기준으로 빼야 함 (sessionDates 보정)
     const oldDateStr = isMove ? oldKey.slice(0, 10) : dateStr;
 
-    // 차감 대상: status 기반 (없으면 옛 cancelled 필드 fallback)
-    // 차감 X: reserved, cancelled_advance, cancelled (no_charge), 당일 취소 미차감
-    // 차감 O: attended (default), no_show, cancelled_sameday w/charged, cancelled (charged)
-    const isCharged = (p) => {
-      // 새 status 시스템
-      if (p.status === 'reserved') return false;
-      if (p.status === 'cancelled_advance') return false;
-      if (p.status === 'cancelled_sameday') return p.cancelled === 'charged';
-      if (p.status === 'no_show') return true;
-      // 옛 cancelled 시스템 호환
-      if (p.cancelled === 'no_charge') return false;
-      if (p.cancelled === 'charged') return true;
-      // 기본: 출석 (attended) → 차감
-      return true;
-    };
-    const chargeOf = (p) => isCharged(p) && p.memberId && p.passId ? `${p.memberId}|${p.passId}` : null;
+    // 차감 판정 - 모듈 레벨 isPartCharged 헬퍼 사용
+    const chargeOf = (p) => isPartCharged(p) && p.memberId && p.passId ? `${p.memberId}|${p.passId}` : null;
     const oldCharges = oldParts.map(chargeOf).filter(Boolean);
     const newCharges = newParts.map(chargeOf).filter(Boolean);
 
@@ -2505,7 +2516,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
                     const isNext = cardKey === nextClassKey;
                     
                     return (
-                      <div key={i} onClick={() => onCardClick(d, item)}
+                      <div key={cardKey} onClick={() => onCardClick(d, item)}
                         className="rounded-xl mb-1.5 px-3 py-2.5 flex gap-3 cursor-pointer transition-all"
                         style={{
                           backgroundColor: item.isAuto ? 'transparent' : theme.card,
@@ -2787,7 +2798,7 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
             className="px-3 py-2 rounded-lg text-sm w-full"
             style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }} />
           <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>
-            {fmtKR(new Date(date + 'T00:00:00'))}
+            {fmtKR(fromYMD(date))}
           </div>
         </div>
 
@@ -2795,7 +2806,7 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
         <div>
           <div className="text-xs font-medium mb-2" style={{ color: theme.inkSoft }}>시간</div>
           {category === 'group' ? (
-            <div className="flex gap-1.5 flex-wrap items-center">
+            <div className="flex gap-1.5 flex-wrap">
               {(groupSlots || []).map(t => (
                 <button key={t} onClick={() => setTime(t)}
                   className="px-3 py-1.5 rounded-full text-xs font-semibold transition-all"
@@ -2807,9 +2818,6 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
                   {t}
                 </button>
               ))}
-              <input type="time" value={time} onChange={(e) => setTime(e.target.value)}
-                className="px-2 py-1.5 rounded-lg text-xs"
-                style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}`, width: 100 }} />
             </div>
           ) : (
             <div className="flex items-center gap-2">
@@ -2839,7 +2847,7 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
                 const isCancelled = !!p.cancelled;
                 const isCharged = p.cancelled === 'charged';
                 return (
-                  <div key={i} className="rounded-lg p-2"
+                  <div key={p.memberId || `trial-${i}-${p.memberName || ''}`} className="rounded-lg p-2"
                     style={{
                       backgroundColor: 
                         p.status === 'no_show' || p.cancelled === 'charged' ? theme.dangerBg :
@@ -2873,9 +2881,12 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
                         {!p.status && p.cancelled === 'no_charge' && <Chip tone="neutral" size="sm">취소(미차감)</Chip>}
                         {!p.status && p.cancelled === 'charged' && <Chip tone="danger" size="sm">취소(차감)</Chip>}
                       </div>
-                      <button onClick={() => setParts(parts.filter((_, j) => j !== i))} className="p-1 rounded" style={{ color: theme.danger }}>
-                        <X size={14} />
-                      </button>
+                      {/* X 버튼은 활성 회원만 - 취소/노쇼 기록은 통계 보존 위해 유지 (상태 해제로 풀거나 그대로 둠) */}
+                      {!isCancelled && p.status !== 'no_show' && (
+                        <button onClick={() => setParts(parts.filter((_, j) => j !== i))} className="p-1 rounded" style={{ color: theme.danger }}>
+                          <X size={14} />
+                        </button>
+                      )}
                     </div>
                     {p.cancelNote && (
                       <div className="text-[10px] mt-1" style={{ color: theme.inkMute }}>메모: {p.cancelNote}</div>
@@ -2967,7 +2978,7 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
 /* =========================================================
    Members View + Detail
    ========================================================= */
-function MembersView({ members, setMembers, sessions, groupSlots, toast, onSendSMS }) {
+function MembersView({ members, setMembers, sessions, setSessions, groupSlots, toast, onSendSMS }) {
   const [openId, setOpenId] = useState(null);
   const [adding, setAdding] = useState(false);
   const [photoImporting, setPhotoImporting] = useState(false);
@@ -3042,7 +3053,30 @@ function MembersView({ members, setMembers, sessions, groupSlots, toast, onSendS
   };
 
   const deleteMember = async (id) => {
+    // 1) 회원 목록에서 제거
     await saveMembers(members.filter(m => m.id !== id));
+    
+    // 2) sessions에서 그 회원의 참여 기록 제거 (남은 참여자가 없으면 슬롯 자체 삭제)
+    if (sessions && setSessions) {
+      const newSessions = {};
+      let touched = false;
+      Object.entries(sessions).forEach(([key, s]) => {
+        if (!s?.participants) { newSessions[key] = s; return; }
+        const filtered = s.participants.filter(p => p.memberId !== id);
+        if (filtered.length === s.participants.length) {
+          newSessions[key] = s; // 변경 없음
+          return;
+        }
+        touched = true;
+        if (filtered.length === 0) return; // 슬롯 자체 삭제
+        newSessions[key] = { ...s, participants: filtered };
+      });
+      if (touched) {
+        setSessions(newSessions);
+        await saveKey(K.sessions, newSessions);
+      }
+    }
+    
     setOpenId(null);
     toast('회원이 삭제되었어요');
   };
@@ -3984,7 +4018,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                   const showCancelNote = h.cancelNote && !legacyAutoNotes.includes(h.cancelNote.trim());
                   
                   return (
-                    <div key={i} className="px-3 py-2 rounded-lg flex items-center gap-3"
+                    <div key={`${h.date}_${h.time}`} className="px-3 py-2 rounded-lg flex items-center gap-3"
                       style={{ backgroundColor: bgColor, border: `1px solid ${borderColor}` }}>
                       <span className="text-[12px] tabular-nums shrink-0" style={{ color: theme.inkMute }}>{h.date}</span>
                       <span className="text-[12px] font-medium tabular-nums shrink-0" style={{ color: timeColor, fontFamily: theme.serif, fontSize: 13 }}>{h.time}</span>
@@ -4449,7 +4483,7 @@ JSON만 출력. 코드펜스 금지.`;
               {images.length > 0 && (
                 <div className="flex flex-wrap gap-2">
                   {images.map((img, i) => (
-                    <div key={i} className="relative">
+                    <div key={`${i}-${(img.data || '').slice(0, 16)}`} className="relative">
                       <img src={`data:${img.media_type};base64,${img.data}`} className="w-16 h-16 object-cover rounded-lg" alt="" />
                       <button onClick={() => setImages(images.filter((_, j) => j !== i))}
                         className="absolute -top-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center"
@@ -5178,7 +5212,7 @@ function ClassLogView({ classLog, setClassLog, sessions, toast }) {
             const isHoliday = HOLIDAYS.has(key);
             const isSmGroup = d.getDay() === 2 || d.getDay() === 4;
             return (
-              <button key={i} onClick={() => setEditingDate(key)}
+              <button key={key} onClick={() => setEditingDate(key)}
                 className="relative text-left p-1.5 transition-colors overflow-hidden active:scale-95 min-h-[150px]"
                 style={{
                   borderBottom: `1px solid ${theme.lineLight}`,
@@ -5294,7 +5328,7 @@ function DayLogEditor({ date, entries, sessions, onClose, onSave }) {
                 {(active.length > 0 || cancelled.length > 0) && (
                   <div className="mt-1.5 pl-[54px] text-[11px]" style={{ color: theme.inkSoft }}>
                     {active.map((p, i) => (
-                      <span key={i}>
+                      <span key={p.memberId || `t-${i}-${p.memberName}`}>
                         {i > 0 && ', '}
                         <span style={{ color: theme.ink, fontWeight: p.isTrial ? 400 : 500 }}>{p.memberName}</span>
                         {p.sessionNumber && p.totalSessions && (
@@ -5305,7 +5339,7 @@ function DayLogEditor({ date, entries, sessions, onClose, onSave }) {
                       </span>
                     ))}
                     {cancelled.map((p, i) => (
-                      <span key={'c' + i} style={{ color: p.cancelled === 'charged' ? theme.danger : theme.inkMute, textDecoration: 'line-through' }}>
+                      <span key={`c-${p.memberId || p.memberName || i}`} style={{ color: p.cancelled === 'charged' ? theme.danger : theme.inkMute, textDecoration: 'line-through' }}>
                         {(active.length > 0 || i > 0) && ', '}
                         {p.memberName}
                       </span>
@@ -5982,7 +6016,7 @@ function TrialBulkImport({ onClose, onSave, toast }) {
             {images.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {images.map((img, i) => (
-                  <div key={i} className="relative">
+                  <div key={`${i}-${(img.data || '').slice(0, 16)}`} className="relative">
                     <img src={`data:${img.media_type};base64,${img.data}`} className="w-16 h-16 object-cover rounded-lg" alt="" />
                     <button onClick={() => setImages(images.filter((_, j) => j !== i))}
                       className="absolute -top-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center"
@@ -6373,7 +6407,7 @@ function AnalysisView({ members, setMembers, toast }) {
             {images.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">
                 {images.map((img, i) => (
-                  <div key={i} className="relative">
+                  <div key={`${i}-${(img.data || '').slice(0, 16)}`} className="relative">
                     <img src={`data:${img.media_type};base64,${img.data}`} className="w-16 h-16 object-cover rounded-lg" alt="" />
                     <button onClick={() => setImages(images.filter((_, j) => j !== i))}
                       className="absolute -top-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center"
@@ -7087,7 +7121,7 @@ function GroupSlotsManager({ groupSlots, setGroupSlots, toast }) {
 
       <div className="space-y-2">
         {groupSlots.map((time, idx) => (
-          <div key={idx} className="flex items-center gap-2 p-2 rounded-lg"
+          <div key={time} className="flex items-center gap-2 p-2 rounded-lg"
             style={{ backgroundColor: theme.cardAlt2 }}>
             {editingIdx === idx ? (
               <>
@@ -7550,25 +7584,17 @@ export default function App() {
     }
     
     // 마이그레이션 v3: 수강권 사용 회수 sessions와 동기화
-    const passSyncFlag = await loadKey({ lkey: 'sosun:migration:pass-sync:v1', table: 'settings', id: 'migration_pass_sync_v1' }, false);
+    // v2로 올림 - isPartCharged 통일 후 데이터 재보정
+    const passSyncFlag = await loadKey({ lkey: 'sosun:migration:pass-sync:v2', table: 'settings', id: 'migration_pass_sync_v2' }, false);
     if (!passSyncFlag) {
-      const todayStr = toYMD(new Date());
-      // 회원별 / 수강권별로 sessions에서 사용된 회수 카운트
+      // 회원별 / 수강권별로 sessions에서 차감 대상 회수 카운트
+      // (isPartCharged 헬퍼 사용 — saveSession과 완전히 동일한 판정)
       const usageMap = {}; // { 'memberId|passId': { count, dates: [] } }
       Object.values(migratedS).forEach(s => {
-        if (s.date > todayStr) return; // 미래 X
         (s.participants || []).forEach(p => {
           if (!p.memberId || !p.passId) return;
           if (p.isTrial) return;
-          // 출석으로 인정되는 것만 (sn 있음 = 차감됨, 또는 명시 attended)
-          const isAttended = !p.cancelled 
-            && p.status !== 'cancelled_advance' 
-            && p.status !== 'cancelled_sameday'
-            && (p.sessionNumber || p.status === 'attended' || p.status === '출석');
-          // 노쇼는 차감되어야 함
-          const isNoShow = p.status === 'no_show';
-          if (!isAttended && !isNoShow) return;
-          
+          if (!isPartCharged(p)) return;
           const key = `${p.memberId}|${p.passId}`;
           if (!usageMap[key]) usageMap[key] = { count: 0, dates: [] };
           usageMap[key].count++;
@@ -7582,14 +7608,16 @@ export default function App() {
         if (!m.passes || m.passes.length === 0) return m;
         const newPasses = m.passes.map(p => {
           const key = `${m.id}|${p.id}`;
-          const usage = usageMap[key];
-          if (!usage) return p;
-          if (usage.count === p.usedSessions) return p; // 이미 맞음
+          const usage = usageMap[key] || { count: 0, dates: [] };
+          const sortedNew = [...usage.dates].sort();
+          const sortedOld = [...(p.sessionDates || [])].sort();
+          // 회수와 날짜 둘 다 일치하면 skip
+          if (usage.count === p.usedSessions && JSON.stringify(sortedNew) === JSON.stringify(sortedOld)) return p;
           updated++;
           return {
             ...p,
             usedSessions: usage.count,
-            sessionDates: usage.dates.sort(),
+            sessionDates: sortedNew,
           };
         });
         return { ...m, passes: newPasses };
@@ -7600,7 +7628,7 @@ export default function App() {
         await saveKey(K.members, migratedM);
         console.log('[migration] 수강권 동기화', updated, '건');
       }
-      await saveKey({ lkey: 'sosun:migration:pass-sync:v1', table: 'settings', id: 'migration_pass_sync_v1' }, true);
+      await saveKey({ lkey: 'sosun:migration:pass-sync:v2', table: 'settings', id: 'migration_pass_sync_v2' }, true);
     }
     
     // 매번 실행: 체험 시간 + 1시간 지났는데 '예약확정' 상태면 '수업완료'로 자동 변경
@@ -7610,13 +7638,13 @@ export default function App() {
       if (t.status !== '예약확정') return t;
       if (!t.date || !t.time) return t;
       try {
-        const trialEnd = new Date(`${t.date}T${t.time}:00`);
+        const trialEnd = fromYMDHM(t.date, t.time);
         trialEnd.setHours(trialEnd.getHours() + 1);
         if (now > trialEnd) {
           trialsChanged = true;
           return { ...t, status: '수업완료' };
         }
-      } catch (e) {}
+      } catch (e) { console.warn('체험 자동완료 처리 실패', t?.id, e); }
       return t;
     });
     let migT = finalT;
@@ -7706,7 +7734,7 @@ export default function App() {
       const s = updatedSessions[key];
       if (!s?.date || !s?.time || !s?.participants) return;
       try {
-        const sessionEnd = new Date(`${s.date}T${s.time}:00`);
+        const sessionEnd = fromYMDHM(s.date, s.time);
         sessionEnd.setHours(sessionEnd.getHours() + 1);
         if (now <= sessionEnd) return; // 아직 안 지남
         
@@ -7727,23 +7755,25 @@ export default function App() {
           updatedSessions[key] = { ...s, participants: newParts };
           sessionsChanged = true;
         }
-      } catch (e) {}
+      } catch (e) { console.warn('수업 자동출석 처리 실패', key, e); }
     });
     
     let migS = migratedS;
     if (sessionsChanged) {
       migS = updatedSessions;
-      // 수강권 회수 재계산
+      await saveKey(K.sessions, migS);
+      console.log('[auto] 자동 출석 처리');
+    }
+    
+    // === 매번 실행: 수강권 회수+날짜 일관성 검증 (M5) ===
+    // saveSession이 정확하면 변화 없음. 어쩌다 꼬인 데이터 자동 보정.
+    {
       const usageMap = {};
       Object.values(migS).forEach(s => {
-        if (!s.date || s.date > toYMD(new Date())) return;
+        if (!s?.date) return;
         (s.participants || []).forEach(p => {
           if (!p.memberId || !p.passId || p.isTrial) return;
-          if (p.cancelled || p.status === 'cancelled_advance' || p.status === 'cancelled_sameday') return;
-          // 출석 또는 노쇼만 카운트
-          const isAttended = p.status === 'attended' || p.sessionNumber || p.status === '출석';
-          const isNoShow = p.status === 'no_show';
-          if (!isAttended && !isNoShow) return;
+          if (!isPartCharged(p)) return;
           const k = `${p.memberId}|${p.passId}`;
           if (!usageMap[k]) usageMap[k] = { count: 0, dates: [] };
           usageMap[k].count++;
@@ -7758,37 +7788,33 @@ export default function App() {
         Object.values(migS).forEach(s => {
           (s.participants || []).forEach(p => {
             if (`${p.memberId}|${p.passId}` !== k) return;
-            if (p.cancelled || p.isTrial) return;
-            const isAttended = p.status === 'attended' || p.sessionNumber || p.status === '출석' || p.status === 'no_show';
-            if (!isAttended) return;
-            // sn이 없으면 부여
+            if (p.isTrial) return;
+            if (!isPartCharged(p)) return;
             if (!p.sessionNumber) p.sessionNumber = sn;
             sn = Math.max(sn, p.sessionNumber) + 1;
           });
         });
       });
       
-      // 회원 수강권 업데이트
-      let updated = 0;
-      const newMembers2 = migratedM.map(m => {
+      let drift = 0;
+      const verified = migratedM.map(m => {
         if (!m.passes || m.passes.length === 0) return m;
         const newPasses = m.passes.map(p => {
           const key = `${m.id}|${p.id}`;
-          const usage = usageMap[key];
-          if (!usage) return p;
-          if (usage.count === p.usedSessions) return p;
-          updated++;
-          return { ...p, usedSessions: usage.count, sessionDates: usage.dates.sort() };
+          const usage = usageMap[key] || { count: 0, dates: [] };
+          const sortedNew = [...usage.dates].sort();
+          const sortedOld = [...(p.sessionDates || [])].sort();
+          if (usage.count === p.usedSessions && JSON.stringify(sortedNew) === JSON.stringify(sortedOld)) return p;
+          drift++;
+          return { ...p, usedSessions: usage.count, sessionDates: sortedNew };
         });
         return { ...m, passes: newPasses };
       });
-      
-      if (updated > 0) {
-        migratedM = newMembers2;
+      if (drift > 0) {
+        migratedM = verified;
         await saveKey(K.members, migratedM);
+        console.log(`[auto] 회수 일관성 보정 ${drift}건`);
       }
-      await saveKey(K.sessions, migS);
-      console.log('[auto] 자동 출석 처리');
     }
     
     setMembers(migratedM); setSessions(migS); setClassLog(finalC); setTrials(migT);
@@ -7905,7 +7931,7 @@ export default function App() {
       )}
       {tab === 'members' && (
         <MembersView members={members} setMembers={setMembers}
-          sessions={sessions} groupSlots={groupSlots} toast={toast} onSendSMS={onSendSMS} />
+          sessions={sessions} setSessions={setSessions} groupSlots={groupSlots} toast={toast} onSendSMS={onSendSMS} />
       )}
       {tab === 'trials' && (
         <TrialsView trials={trials} setTrials={setTrials}
