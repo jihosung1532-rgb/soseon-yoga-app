@@ -1390,7 +1390,7 @@ function memberRhythmStatus(member, closedDays = []) {
    Anthropic API
    ========================================================= */
 async function callClaude(messages, system) {
-  const body = { model: 'claude-sonnet-4-20250514', max_tokens: 1800, messages };
+  const body = { model: 'claude-sonnet-4-20250514', max_tokens: 4096, messages };
   if (system) body.system = system;
   const res = await fetch('/api/claude', {
     method: 'POST',
@@ -1398,6 +1398,10 @@ async function callClaude(messages, system) {
     body: JSON.stringify(body),
   });
   const data = await res.json();
+  // 에러 응답 처리
+  if (!res.ok || data.error) {
+    throw new Error(data.error || data.detail || `API 에러 (${res.status})`);
+  }
   return (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
 }
 
@@ -3461,11 +3465,17 @@ function MemberPhotoImport({ onClose, onSave, toast }) {
       content.push({ type: 'text', text: '소선요가 회원 등록 자료입니다. 회원 정보와 회원권 정보를 JSON으로 정리해주세요.' });
 
       const resp = await callClaude([{ role: 'user', content }], system);
+      console.log('[사진 분석] AI 응답:', resp);
       const result = tryParseJSON(resp);
       if (result?.members?.length) {
         setParsed(result.members);
+      } else if (result) {
+        // JSON은 파싱됐는데 members가 없음
+        toast('AI가 회원 정보를 못 찾았어요. 신청서/영수증 사진인지 확인해주세요');
       } else {
-        toast('읽을 수 없었어요. 더 밝은 사진으로 다시 시도해주세요');
+        // JSON 파싱 실패 - AI가 뭐라고 답했는지 일부 보여주기
+        const preview = resp.slice(0, 80);
+        toast(`읽기 실패: ${preview}...`);
       }
     } catch (e) {
       toast('분석 실패: ' + (e.message || ''));
