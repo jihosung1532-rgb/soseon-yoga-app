@@ -2198,12 +2198,18 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
     };
   };
 
-  const saveSession = async (date, time, data) => {
+  const saveSession = async (date, time, data, oldKey = null) => {
     const key = `${toYMD(date)}_${time}`;
     const dateStr = toYMD(date);
-    const oldSess = sessions[key];
+    
+    // 키가 바뀌면(이동) 옛 슬롯의 참여자를 먼저 차감 빼기 위해 가져옴
+    const isMove = oldKey && oldKey !== key;
+    const oldSess = isMove ? sessions[oldKey] : sessions[key];
     const oldParts = oldSess?.participants || [];
     const newParts = data?.participants || [];
+    
+    // 옛 슬롯의 차감은 옛 날짜 기준으로 빼야 함 (sessionDates 보정)
+    const oldDateStr = isMove ? oldKey.slice(0, 10) : dateStr;
 
     // 차감 대상: status 기반 (없으면 옛 cancelled 필드 fallback)
     // 차감 X: reserved, cancelled_advance, cancelled (no_charge), 당일 취소 미차감
@@ -2224,9 +2230,18 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
     const oldCharges = oldParts.map(chargeOf).filter(Boolean);
     const newCharges = newParts.map(chargeOf).filter(Boolean);
 
+    // pass key별로 (delta, 빼야 할 옛 날짜 개수, 더해야 할 새 날짜 개수)를 추적
     const adjustments = {};
-    oldCharges.forEach(k => { adjustments[k] = (adjustments[k] || 0) - 1; });
-    newCharges.forEach(k => { adjustments[k] = (adjustments[k] || 0) + 1; });
+    oldCharges.forEach(k => {
+      adjustments[k] = adjustments[k] || { delta: 0, removeOld: 0, addNew: 0 };
+      adjustments[k].delta -= 1;
+      adjustments[k].removeOld += 1;
+    });
+    newCharges.forEach(k => {
+      adjustments[k] = adjustments[k] || { delta: 0, removeOld: 0, addNew: 0 };
+      adjustments[k].delta += 1;
+      adjustments[k].addNew += 1;
+    });
 
     if (Object.keys(adjustments).length > 0) {
       const updatedMembers = members.map(m => ({
@@ -2234,14 +2249,16 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
         passes: (m.passes || []).map(p => {
           const k = `${m.id}|${p.id}`;
           if (!(k in adjustments)) return p;
-          const delta = adjustments[k];
+          const { delta, removeOld, addNew } = adjustments[k];
           const newUsed = Math.max(0, Math.min(p.totalSessions, p.usedSessions + delta));
           let sessionDates = [...(p.sessionDates || [])];
-          if (delta > 0) sessionDates.push(dateStr);
-          else if (delta < 0) {
-            const idx = sessionDates.lastIndexOf(dateStr);
+          // 옛 날짜에서 removeOld번 제거
+          for (let i = 0; i < removeOld; i++) {
+            const idx = sessionDates.lastIndexOf(oldDateStr);
             if (idx >= 0) sessionDates.splice(idx, 1);
           }
+          // 새 날짜를 addNew번 추가
+          for (let i = 0; i < addNew; i++) sessionDates.push(dateStr);
           return { ...p, usedSessions: newUsed, sessionDates };
         }),
       }));
@@ -2250,6 +2267,8 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
     }
 
     const next = { ...sessions };
+    // 이동인 경우 옛 키 삭제
+    if (isMove) delete next[oldKey];
     if (!data || !newParts.length) delete next[key];
     else next[key] = { ...data, date: dateStr, time };
     setSessions(next);
@@ -2601,9 +2620,21 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
           onClose={() => setSlotModal(null)}
           onSave={async (data) => {
             const saveTime = data.time || slotModal.time;
-            await saveSession(slotModal.date, saveTime, data);
+            const saveDate = data.date ? new Date(data.date + 'T00:00:00') : slotModal.date;
+            const newKey = `${toYMD(saveDate)}_${saveTime}`;
+            const oldKey = data.originalKey;
+            const isMoving = oldKey && oldKey !== newKey;
+            const isDelete = !data.participants || data.participants.length === 0;
+
+            // 다른 슬롯으로 이동하는데 그 자리에 이미 다른 수업이 있으면 막기
+            if (isMoving && !isDelete && sessions[newKey] && sessions[newKey].participants?.length > 0) {
+              toast('이미 그 시간에 수업이 있어요. 다른 시간을 골라주세요.');
+              return;
+            }
+
+            await saveSession(saveDate, saveTime, data, oldKey);
             setSlotModal(null);
-            toast('저장되었어요');
+            toast(isMoving && !isDelete ? '옮겨졌어요' : isDelete ? '삭제되었어요' : '저장되었어요');
           }}
         />
       )}
@@ -2637,6 +2668,10 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
   
   // 시간 - isNew면 처음엔 빈값, 아니면 slot.time
   const [time, setTime] = useState(slot.time || (groupSlots?.[0] || '11:00'));
+  // 날짜 (YYYY-MM-DD 문자열로 관리, input[type=date]와 호환)
+  const [date, setDate] = useState(slot.date ? toYMD(slot.date) : toYMD(new Date()));
+  // 원래 키 (이동 감지용)
+  const originalKey = !isNewMode && slot.date && slot.time ? `${toYMD(slot.date)}_${slot.time}` : null;
   
   const initial = existing?.participants
     || (slot.autoFill ? slot.autoFill.map(p => {
@@ -2715,9 +2750,7 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
     }));
   };
 
-  const titleText = isNewMode 
-    ? `${fmtKR(slot.date)} · 새 수업`
-    : `${fmtKR(slot.date)} · ${time}`;
+  const titleText = isNewMode ? '새 수업' : '수업 편집';
 
   return (
     <Modal open={true} onClose={onClose} title={titleText} maxWidth="max-w-md">
@@ -2727,7 +2760,7 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
           <div>
             <div className="text-xs font-medium mb-2" style={{ color: theme.inkSoft }}>수업 종류</div>
             <div className="flex gap-1 p-1 rounded-xl" style={{ backgroundColor: theme.cardAlt2 }}>
-              <button onClick={() => setCategory('group')}
+              <button onClick={() => { setCategory('group'); setAddingMember(''); }}
                 className="flex-1 py-2 rounded-lg text-sm font-semibold transition-all"
                 style={{
                   backgroundColor: category === 'group' ? theme.accent : 'transparent',
@@ -2735,7 +2768,7 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
                 }}>
                 소그룹
               </button>
-              <button onClick={() => setCategory('private')}
+              <button onClick={() => { setCategory('private'); setAddingMember(''); }}
                 className="flex-1 py-2 rounded-lg text-sm font-semibold transition-all"
                 style={{
                   backgroundColor: category === 'private' ? theme.accent2 : 'transparent',
@@ -2747,36 +2780,48 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
           </div>
         )}
 
-        {/* 시간 선택 */}
-        {isNewMode && (
-          <div>
-            <div className="text-xs font-medium mb-2" style={{ color: theme.inkSoft }}>시간</div>
-            {category === 'group' ? (
-              <div className="flex gap-1.5 flex-wrap">
-                {(groupSlots || []).map(t => (
-                  <button key={t} onClick={() => setTime(t)}
-                    className="px-3 py-1.5 rounded-full text-xs font-semibold transition-all"
-                    style={{
-                      backgroundColor: time === t ? theme.accent : theme.card,
-                      color: time === t ? '#FFF' : theme.inkSoft,
-                      border: `1px solid ${time === t ? theme.accent : theme.line}`,
-                    }}>
-                    {t}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <input type="time" value={time} onChange={(e) => setTime(e.target.value)}
-                  className="px-3 py-2 rounded-lg text-sm"
-                  style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}`, maxWidth: 140 }} />
-                <span className="text-[11px]" style={{ color: theme.inkMute }}>
-                  분 단위 자유 입력
-                </span>
-              </div>
-            )}
+        {/* 날짜 선택 (항상 편집 가능) */}
+        <div>
+          <div className="text-xs font-medium mb-2" style={{ color: theme.inkSoft }}>날짜</div>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+            className="px-3 py-2 rounded-lg text-sm w-full"
+            style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }} />
+          <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>
+            {fmtKR(new Date(date + 'T00:00:00'))}
           </div>
-        )}
+        </div>
+
+        {/* 시간 선택 (항상 편집 가능) */}
+        <div>
+          <div className="text-xs font-medium mb-2" style={{ color: theme.inkSoft }}>시간</div>
+          {category === 'group' ? (
+            <div className="flex gap-1.5 flex-wrap items-center">
+              {(groupSlots || []).map(t => (
+                <button key={t} onClick={() => setTime(t)}
+                  className="px-3 py-1.5 rounded-full text-xs font-semibold transition-all"
+                  style={{
+                    backgroundColor: time === t ? theme.accent : theme.card,
+                    color: time === t ? '#FFF' : theme.inkSoft,
+                    border: `1px solid ${time === t ? theme.accent : theme.line}`,
+                  }}>
+                  {t}
+                </button>
+              ))}
+              <input type="time" value={time} onChange={(e) => setTime(e.target.value)}
+                className="px-2 py-1.5 rounded-lg text-xs"
+                style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}`, width: 100 }} />
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <input type="time" value={time} onChange={(e) => setTime(e.target.value)}
+                className="px-3 py-2 rounded-lg text-sm"
+                style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}`, maxWidth: 140 }} />
+              <span className="text-[11px]" style={{ color: theme.inkMute }}>
+                분 단위 자유 입력
+              </span>
+            </div>
+          )}
+        </div>
 
         {slot.autoFill && !existing && (
           <div className="text-[12px] p-2 rounded-lg" style={{ backgroundColor: theme.highlight, color: theme.ink }}>
@@ -2889,7 +2934,9 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
         {mode === 'member' ? (
           <div className="flex gap-2">
             <Select value={addingMember} onChange={(e) => setAddingMember(e.target.value)} placeholder="회원 선택"
-              options={members.map(m => ({ value: m.id, label: m.name }))} />
+              options={members
+                .filter(m => activePass(m, category === 'private' ? 'private' : 'group'))
+                .map(m => ({ value: m.id, label: m.name }))} />
             <Button icon={Plus} onClick={addExisting}>추가</Button>
           </div>
         ) : (
@@ -2905,11 +2952,11 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
 
         <div className="flex justify-between gap-2 pt-2">
           {existing && (
-            <Button variant="danger" size="sm" icon={Trash2} onClick={() => onSave({ participants: [], time })}>수업 삭제</Button>
+            <Button variant="danger" size="sm" icon={Trash2} onClick={() => onSave({ participants: [], time, date, originalKey })}>수업 삭제</Button>
           )}
           <div className="flex gap-2 ml-auto">
             <Button variant="ghost" onClick={onClose}>취소</Button>
-            <Button icon={Check} onClick={() => onSave({ participants: parts, note, time })}>저장</Button>
+            <Button icon={Check} onClick={() => onSave({ participants: parts, note, time, date, originalKey })}>저장</Button>
           </div>
         </div>
       </div>
