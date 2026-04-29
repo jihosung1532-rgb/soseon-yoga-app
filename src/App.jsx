@@ -3411,11 +3411,24 @@ function MemberPhotoImport({ onClose, onSave, toast }) {
     for (const f of files) {
       const data = await new Promise((res, rej) => {
         const r = new FileReader();
-        r.onload = () => res(r.result.split(',')[1]);
+        r.onload = () => {
+          const raw = (r.result || '').split(',')[1] || '';
+          const clean = raw.replace(/[\r\n\s]/g, '');
+          res(clean);
+        };
         r.onerror = () => rej();
         r.readAsDataURL(f);
       });
-      arr.push({ name: f.name, data, media_type: f.type || 'image/png' });
+      let mediaType = f.type || '';
+      if (!mediaType || mediaType === 'image/jpg') {
+        const ext = (f.name || '').toLowerCase().split('.').pop();
+        if (ext === 'jpg' || ext === 'jpeg') mediaType = 'image/jpeg';
+        else if (ext === 'png') mediaType = 'image/png';
+        else if (ext === 'gif') mediaType = 'image/gif';
+        else if (ext === 'webp') mediaType = 'image/webp';
+        else mediaType = 'image/jpeg';
+      }
+      arr.push({ name: f.name, data, media_type: mediaType });
     }
     setImages(arr);
   };
@@ -4461,11 +4474,24 @@ function ProgressTimeline({ items, onUpdate, toast, memberName }) {
     for (const f of files) {
       const data = await new Promise((res, rej) => {
         const r = new FileReader();
-        r.onload = () => res(r.result.split(',')[1]);
+        r.onload = () => {
+          const raw = (r.result || '').split(',')[1] || '';
+          const clean = raw.replace(/[\r\n\s]/g, '');
+          res(clean);
+        };
         r.onerror = () => rej();
         r.readAsDataURL(f);
       });
-      arr.push({ name: f.name, data, media_type: f.type || 'image/png' });
+      let mediaType = f.type || '';
+      if (!mediaType || mediaType === 'image/jpg') {
+        const ext = (f.name || '').toLowerCase().split('.').pop();
+        if (ext === 'jpg' || ext === 'jpeg') mediaType = 'image/jpeg';
+        else if (ext === 'png') mediaType = 'image/png';
+        else if (ext === 'gif') mediaType = 'image/gif';
+        else if (ext === 'webp') mediaType = 'image/webp';
+        else mediaType = 'image/jpeg';
+      }
+      arr.push({ name: f.name, data, media_type: mediaType });
     }
     setImages(arr);
   };
@@ -4679,11 +4705,24 @@ function AssessmentPanel({ member, onUpdate, toast }) {
     for (const f of files) {
       const data = await new Promise((res, rej) => {
         const r = new FileReader();
-        r.onload = () => res(r.result.split(',')[1]);
+        r.onload = () => {
+          const raw = (r.result || '').split(',')[1] || '';
+          const clean = raw.replace(/[\r\n\s]/g, '');
+          res(clean);
+        };
         r.onerror = () => rej();
         r.readAsDataURL(f);
       });
-      arr.push({ name: f.name, data, media_type: f.type || 'image/png' });
+      let mediaType = f.type || '';
+      if (!mediaType || mediaType === 'image/jpg') {
+        const ext = (f.name || '').toLowerCase().split('.').pop();
+        if (ext === 'jpg' || ext === 'jpeg') mediaType = 'image/jpeg';
+        else if (ext === 'png') mediaType = 'image/png';
+        else if (ext === 'gif') mediaType = 'image/gif';
+        else if (ext === 'webp') mediaType = 'image/webp';
+        else mediaType = 'image/jpeg';
+      }
+      arr.push({ name: f.name, data, media_type: mediaType });
     }
     setImages(arr);
   };
@@ -6023,11 +6062,24 @@ function TrialBulkImport({ onClose, onSave, toast }) {
     for (const f of files) {
       const data = await new Promise((res, rej) => {
         const r = new FileReader();
-        r.onload = () => res(r.result.split(',')[1]);
+        r.onload = () => {
+          const raw = (r.result || '').split(',')[1] || '';
+          const clean = raw.replace(/[\r\n\s]/g, '');
+          res(clean);
+        };
         r.onerror = () => rej();
         r.readAsDataURL(f);
       });
-      arr.push({ name: f.name, data, media_type: f.type || 'image/png' });
+      let mediaType = f.type || '';
+      if (!mediaType || mediaType === 'image/jpg') {
+        const ext = (f.name || '').toLowerCase().split('.').pop();
+        if (ext === 'jpg' || ext === 'jpeg') mediaType = 'image/jpeg';
+        else if (ext === 'png') mediaType = 'image/png';
+        else if (ext === 'gif') mediaType = 'image/gif';
+        else if (ext === 'webp') mediaType = 'image/webp';
+        else mediaType = 'image/jpeg';
+      }
+      arr.push({ name: f.name, data, media_type: mediaType });
     }
     setImages(arr);
   };
@@ -6366,11 +6418,24 @@ function AnalysisView({ members, setMembers, toast }) {
     for (const f of files) {
       const data = await new Promise((res, rej) => {
         const r = new FileReader();
-        r.onload = () => res(r.result.split(',')[1]);
+        r.onload = () => {
+          const raw = (r.result || '').split(',')[1] || '';
+          const clean = raw.replace(/[\r\n\s]/g, '');
+          res(clean);
+        };
         r.onerror = () => rej();
         r.readAsDataURL(f);
       });
-      arr.push({ name: f.name, data, media_type: f.type || 'image/png' });
+      let mediaType = f.type || '';
+      if (!mediaType || mediaType === 'image/jpg') {
+        const ext = (f.name || '').toLowerCase().split('.').pop();
+        if (ext === 'jpg' || ext === 'jpeg') mediaType = 'image/jpeg';
+        else if (ext === 'png') mediaType = 'image/png';
+        else if (ext === 'gif') mediaType = 'image/gif';
+        else if (ext === 'webp') mediaType = 'image/webp';
+        else mediaType = 'image/jpeg';
+      }
+      arr.push({ name: f.name, data, media_type: mediaType });
     }
     setImages(arr);
   };
