@@ -1288,27 +1288,37 @@ function rhythmStatus(p, closedDays = []) {
   }
   
   if (!p.startDate) return null;
-  const startMs = fromYMD(p.startDate).getTime();
   const todayMs = new Date().setHours(0,0,0,0);
   const todayStr = toYMD(new Date());
   
-  // 도전 종료일 = 시작일 + (weeks * 7 - 1)일
-  const challengeEndYMD = toYMD(addDays(fromYMD(p.startDate), weeks * 7 - 1));
+  // 도전 기준일 = 첫 출석일 (sessionDates의 가장 이른 날짜).
+  // 출석 0회면 수강권 시작일을 임시 기준으로 함 (시작 전 / 막 시작 회원 표시용).
+  const sortedDates = [...(p.sessionDates || [])].sort();
+  const firstAttendDate = sortedDates[0] || null;
+  const challengeStartYMD = firstAttendDate || p.startDate;
+  const challengeStartMs = fromYMD(challengeStartYMD).getTime();
+  
+  // 도전 종료일 = 기준일 + (weeks * 7 - 1)일
+  const challengeEndYMD = toYMD(addDays(fromYMD(challengeStartYMD), weeks * 7 - 1));
   const challengeEndMs = fromYMD(challengeEndYMD).getTime();
   
-  // 시작 전이면 예고만
-  const elapsedDays = Math.floor((todayMs - startMs) / (1000*60*60*24));
-  if (elapsedDays < 0) {
+  // 아직 첫 출석 전(=수강권 시작도 안 했거나, 시작했지만 한 번도 안 옴)
+  const startMs = fromYMD(p.startDate).getTime();
+  if (todayMs < startMs) {
     return { eligible: true, notStarted: true, weeks, bonus, challengeEndYMD };
   }
+  // 시작은 했는데 출석이 0회면 — 도전은 첫 출석부터 시작이라 아직 트래커 표시 X
+  if (!firstAttendDate) {
+    return { eligible: true, notStarted: true, weeks, bonus };
+  }
   
-  // 도전 기간 내의 모든 화·목 날짜
-  const allTueThu = tueThuDatesBetween(p.startDate, challengeEndYMD);
+  // 도전 기간 내의 모든 화·목 날짜 (첫 출석일부터)
+  const allTueThu = tueThuDatesBetween(challengeStartYMD, challengeEndYMD);
   // 면제일 제외 → 진짜 와야 할 슬롯
   const requiredDays = allTueThu.filter(d => !isExemptDay(d, p, closedDays));
   
-  // 출석한 날짜 (sessionDates 활용 — saveSession이 정확하게 관리)
-  const attendedSet = new Set(p.sessionDates || []);
+  // 출석한 날짜
+  const attendedSet = new Set(sortedDates);
   
   // 결석 검증: requiredDays 중 오늘까지 지나간 날들 점검
   const passedDays = requiredDays.filter(d => d <= todayStr);
@@ -3974,12 +3984,14 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                         </div>
                       );
                     }
-                    if (rsP.expired) {
-                      // 결석으로 탈락
+                    // 탈락(진행 중 결석) 또는 미달성(도전 기간 종료, 결석 있음)
+                    if (rsP.expired || (rsP.completed && !rsP.achieved)) {
+                      const missDates = (rsP.missedDays || []).map(d => fmtKRShort(d)).join(', ');
                       return (
                         <div className="rounded-lg p-2 mb-2" style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }}>
                           <div className="text-[10.5px]" style={{ color: theme.inkMute }}>
-                            리듬 수련 — {rsP.message || '도전 종료'}
+                            리듬 수련 — {rsP.missedDays?.length || 0}회 결석으로 대상 제외
+                            {missDates && <span style={{ color: theme.inkSoft }}> · {missDates}</span>}
                           </div>
                         </div>
                       );
