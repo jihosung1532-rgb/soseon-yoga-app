@@ -4003,31 +4003,170 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
               );
             })()}
 
-            {(member.passes || []).filter(p => !p.archived).map(p => {
-              const st = passStatus(p);
-              const progress = p.usedSessions / p.totalSessions;
-              return (
-                <div key={p.id} className="rounded-2xl p-3" style={{ backgroundColor: theme.cardAlt, border: `1px solid ${theme.line}` }}>
-                  <div className="flex items-start justify-between mb-2 gap-2">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-bold text-sm" style={{ color: theme.ink }}>{p.type}</span>
-                        {p.category === 'private' && <Chip tone="accent" size="sm">개인</Chip>}
-                        {p.category === 'trial' && <Chip tone="peach" size="sm">체험</Chip>}
-                      </div>
-                      <div className="text-[11px] mt-0.5" style={{ color: theme.inkMute }}>
-                        {p.paymentDate && `결제 ${p.paymentDate} · `}{p.startDate} ~ {p.expiryDate}
-                        {p.holdUsed && <span style={{ color: theme.warn }}> · 홀딩{p.holdDays}일 사용</span>}
-                      </div>
-                      {p.price > 0 && (
-                        <div className="text-[11px] mt-0.5" style={{ color: theme.accent }}>
-                          {p.price.toLocaleString()}원
-                          {p.pricePerSession && <span style={{ color: theme.inkMute }}> · 회당 {p.pricePerSession.toLocaleString()}원</span>}
+            {(() => {
+              const activePasses = (member.passes || []).filter(p => !p.archived);
+              // 묶음 그룹화: bundleOf 있는 것끼리 모으기
+              const groups = []; // [{ bundleName, passes: [...] }, { bundleName: null, passes: [singlePass] }]
+              const bundleMap = {};
+              activePasses.forEach(p => {
+                if (p.bundleOf) {
+                  if (!bundleMap[p.bundleOf]) {
+                    const g = { bundleName: p.bundleOf, passes: [] };
+                    bundleMap[p.bundleOf] = g;
+                    groups.push(g);
+                  }
+                  bundleMap[p.bundleOf].passes.push(p);
+                } else {
+                  groups.push({ bundleName: null, passes: [p] });
+                }
+              });
+              
+              // 패키지 카드 (bundleName 있음)
+              const renderPassInner = (p) => {
+                const st = passStatus(p);
+                const progress = p.usedSessions / p.totalSessions;
+                return (
+                  <div key={p.id} className="rounded-xl p-2.5" style={{ backgroundColor: theme.card, border: `1px solid ${theme.lineLight}` }}>
+                    <div className="flex items-start justify-between mb-1 gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-semibold text-[13px]" style={{ color: theme.ink }}>{p.type.replace(/^스타터 · /, '')}</span>
+                          {p.category === 'private' && <Chip tone="accent" size="sm">개인</Chip>}
+                          {p.category === 'group' && <Chip tone="default" size="sm">소그룹</Chip>}
                         </div>
+                        <div className="text-[10.5px] mt-0.5" style={{ color: theme.inkMute }}>
+                          {p.startDate} ~ {p.expiryDate}
+                          {p.holdUsed && <span style={{ color: theme.warn }}> · 홀딩{p.holdDays}일</span>}
+                        </div>
+                        {p.note && (
+                          <div className="text-[10px] mt-1 italic" style={{ color: theme.inkSoft }}>{p.note}</div>
+                        )}
+                      </div>
+                      <Chip tone={st.tone} size="sm">{st.text}</Chip>
+                    </div>
+                    {/* 진행 바 */}
+                    <div className="flex justify-between items-center text-[11px] mb-1" style={{ color: theme.inkSoft }}>
+                      <span>진행</span>
+                      <span style={{ color: theme.ink, fontWeight: 600 }}>{p.usedSessions}/{p.totalSessions}회</span>
+                    </div>
+                    <div className="h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: theme.cardAlt2 }}>
+                      <div className="h-full transition-all" style={{ width: `${progress * 100}%`, backgroundColor: progress >= 1 ? theme.warn : theme.accent }} />
+                    </div>
+                    {/* 리듬 트래커 박스 */}
+                    {(() => {
+                      const rsP = rhythmStatus(p, closedDays);
+                      if (!rsP) return null;
+                      if (rsP.achieved) {
+                        return (
+                          <div className="rounded-lg p-2 mt-2" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}>
+                            <div className="flex justify-between items-center mb-1">
+                              <span className="text-[11px] font-bold" style={{ color: '#6B5410' }}>🏆 리듬 수련 도전 성공</span>
+                              <span className="text-[10px]" style={{ color: '#8B6F30' }}>{rsP.weeks}주 빠짐없이</span>
+                            </div>
+                            <div className="text-[10px]" style={{ color: '#8B6F30' }}>🎁 재등록 시 <strong>+{rsP.bonus}회 보상</strong></div>
+                          </div>
+                        );
+                      }
+                      if (rsP.challenging) {
+                        const pct = rsP.requiredDays > 0 ? (rsP.attendedDays / rsP.requiredDays) * 100 : 0;
+                        return (
+                          <div className="rounded-lg p-2 mt-2" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}>
+                            <div className="flex justify-between items-center mb-1">
+                              <span className="text-[11px] font-bold" style={{ color: '#6B5410' }}>리듬 수련 도전중</span>
+                              <span className="text-[10px]" style={{ color: '#8B6F30' }}>{rsP.attendedDays} / {rsP.requiredDays}회</span>
+                            </div>
+                            <div className="h-[3px] rounded-full overflow-hidden mb-1" style={{ backgroundColor: 'rgba(201,169,97,0.25)' }}>
+                              <div className="h-full" style={{ width: `${pct}%`, backgroundColor: '#C9A961' }} />
+                            </div>
+                            <div className="text-[10px]" style={{ color: '#8B6F30' }}>
+                              {rsP.remaining > 0 ? <>남은 {rsP.remaining}회 빠짐없이 → <strong>+{rsP.bonus}회 보상</strong></> : <>완주 직전! → <strong>+{rsP.bonus}회 보상</strong></>}
+                            </div>
+                          </div>
+                        );
+                      }
+                      if (rsP.expired || (rsP.completed && !rsP.achieved)) {
+                        const missDates = (rsP.missedDays || []).map(d => fmtKRShort(d)).join(', ');
+                        return (
+                          <div className="rounded-lg p-1.5 mt-2" style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }}>
+                            <div className="text-[10.5px]" style={{ color: theme.inkMute }}>
+                              리듬 수련 — {rsP.missedDays?.length || 0}회 결석으로 대상 제외
+                              {missDates && <span style={{ color: theme.inkSoft }}> · {missDates}</span>}
+                            </div>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
+                    {/* 액션 버튼 */}
+                    <div className="flex gap-1 mt-2 justify-end flex-wrap">
+                      {p.canHold && !p.holdUsed && (
+                        <Button size="sm" variant="ghost" onClick={() => applyHold(p.id, p.holdDays || 7)}>
+                          <Pause size={11} /> 홀딩
+                        </Button>
                       )}
-                      {p.note && (
-                        <div className="text-[10px] mt-1 italic" style={{ color: theme.inkSoft }}>{p.note}</div>
+                      {p.canHold && p.holdUsed && (
+                        <Button size="sm" variant="ghost" onClick={() => cancelHold(p.id)}>
+                          <RotateCcw size={11} /> 홀딩취소
+                        </Button>
                       )}
+                      <Button size="sm" variant="ghost" onClick={() => setConvertingPass(p)}>
+                        <RefreshCw size={11} /> 전환
+                      </Button>
+                      <Button size="sm" variant="ghost" icon={Trash2} onClick={() => deletePass(p.id)}></Button>
+                    </div>
+                  </div>
+                );
+              };
+              
+              return groups.map((group, gi) => {
+                if (group.bundleName) {
+                  // 패키지 묶음 카드
+                  const totalPrice = group.passes.reduce((s, p) => s + (p.price || 0), 0);
+                  const earliestPay = group.passes.map(p => p.paymentDate).filter(Boolean).sort()[0];
+                  const noteFromBundle = group.passes.find(p => p.note)?.note || '';
+                  return (
+                    <div key={`bundle-${gi}-${group.bundleName}`} className="rounded-2xl p-3 space-y-2" style={{ backgroundColor: theme.cardAlt, border: `1px solid ${theme.line}` }}>
+                      <div className="flex items-center gap-1.5">
+                        <span style={{ fontSize: 14 }}>🎁</span>
+                        <span className="font-bold text-sm" style={{ color: theme.ink }}>{group.bundleName}</span>
+                      </div>
+                      <div className="text-[11px]" style={{ color: theme.inkMute }}>
+                        {earliestPay && `결제 ${earliestPay}`}
+                        {totalPrice > 0 && <span style={{ color: theme.accent }}> · {totalPrice.toLocaleString()}원</span>}
+                      </div>
+                      {/* 묶인 수강권들 */}
+                      <div className="space-y-2">
+                        {group.passes.map(p => renderPassInner(p))}
+                      </div>
+                    </div>
+                  );
+                } else {
+                  // 단일 수강권 - 기존 카드 스타일
+                  const p = group.passes[0];
+                  const st = passStatus(p);
+                  const progress = p.usedSessions / p.totalSessions;
+                  return (
+                    <div key={p.id} className="rounded-2xl p-3" style={{ backgroundColor: theme.cardAlt, border: `1px solid ${theme.line}` }}>
+                      <div className="flex items-start justify-between mb-2 gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-bold text-sm" style={{ color: theme.ink }}>{p.type}</span>
+                            {p.category === 'private' && <Chip tone="accent" size="sm">개인</Chip>}
+                            {p.category === 'trial' && <Chip tone="peach" size="sm">체험</Chip>}
+                          </div>
+                          <div className="text-[11px] mt-0.5" style={{ color: theme.inkMute }}>
+                            {p.paymentDate && `결제 ${p.paymentDate} · `}{p.startDate} ~ {p.expiryDate}
+                            {p.holdUsed && <span style={{ color: theme.warn }}> · 홀딩{p.holdDays}일 사용</span>}
+                          </div>
+                          {p.price > 0 && (
+                            <div className="text-[11px] mt-0.5" style={{ color: theme.accent }}>
+                              {p.price.toLocaleString()}원
+                              {p.pricePerSession && <span style={{ color: theme.inkMute }}> · 회당 {p.pricePerSession.toLocaleString()}원</span>}
+                            </div>
+                          )}
+                          {p.note && (
+                            <div className="text-[10px] mt-1 italic" style={{ color: theme.inkSoft }}>{p.note}</div>
+                          )}
                     </div>
                     <div className="flex flex-col items-end gap-1 flex-shrink-0">
                       {st && (() => {
@@ -4132,7 +4271,9 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                   </div>
                 </div>
               );
-            })}
+                }
+              });
+            })()}
 
             {/* Archived passes (converted) */}
             {(member.passes || []).filter(p => p.archived).length > 0 && (
