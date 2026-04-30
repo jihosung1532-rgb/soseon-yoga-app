@@ -1299,7 +1299,17 @@ function rhythmStatus(p, closedDays = []) {
   const challengeStartMs = fromYMD(challengeStartYMD).getTime();
   
   // 도전 종료일 = 기준일 + (weeks * 7 - 1)일
-  const challengeEndYMD = toYMD(addDays(fromYMD(challengeStartYMD), weeks * 7 - 1));
+  // 단, 그 기간 안에 면제일(공휴일/휴강일/홀딩)이 끼면 그만큼 연장
+  let challengeEndYMD = toYMD(addDays(fromYMD(challengeStartYMD), weeks * 7 - 1));
+  // 면제일 만큼 연장 - 화/목인 면제일만 카운트 (다른 요일은 도전과 무관)
+  const initialSlotsAll = tueThuDatesBetween(challengeStartYMD, challengeEndYMD);
+  const exemptCount = initialSlotsAll.filter(d => isExemptDay(d, p, closedDays)).length;
+  if (exemptCount > 0) {
+    // 한 주에 화/목 2슬롯 = 7일이 한 주. 면제 슬롯 1개당 한 주 연장이 아닌, 
+    // 정확히 슬롯 1개만큼 연장 = 다음 화/목까지 (3.5일 평균)
+    // 단순화: 면제 슬롯 1개당 7일(한 주) 연장하면 안전하게 슬롯 한 개 더 확보
+    challengeEndYMD = toYMD(addDays(fromYMD(challengeEndYMD), exemptCount * 7));
+  }
   const challengeEndMs = fromYMD(challengeEndYMD).getTime();
   
   // 아직 첫 출석 전(=수강권 시작도 안 했거나, 시작했지만 한 번도 안 옴)
@@ -1314,28 +1324,33 @@ function rhythmStatus(p, closedDays = []) {
   
   // 도전 기간 내의 모든 화·목 날짜 (첫 출석일부터)
   const allTueThu = tueThuDatesBetween(challengeStartYMD, challengeEndYMD);
-  // 면제일 제외 → 진짜 와야 할 슬롯
-  const requiredDays = allTueThu.filter(d => !isExemptDay(d, p, closedDays));
+  // 면제일 제외 → 진짜 와야 할 슬롯 후보
+  const validSlots = allTueThu.filter(d => !isExemptDay(d, p, closedDays));
   
   // 출석한 날짜
   const attendedSet = new Set(sortedDates);
   
-  // 결석 검증: requiredDays 중 오늘까지 지나간 날들 점검
-  const passedDays = requiredDays.filter(d => d <= todayStr);
-  const futureDays = requiredDays.filter(d => d > todayStr);
-  const missedDays = passedDays.filter(d => !attendedSet.has(d));
+  // 결석 검증: validSlots 중 오늘까지 지나간 날들 점검 (화·목인데 안 온 날)
+  const passedSlots = validSlots.filter(d => d <= todayStr);
+  const missedDays = passedSlots.filter(d => !attendedSet.has(d));
+  
+  // requiredDays = 수강권 총 회수 (8 / 16 / 24)
+  // attendedDays = 실제 출석한 회수 (sessionDates 길이)
+  const requiredCount = p.totalSessions;
+  const attendedCount = sortedDates.length;
+  const remaining = Math.max(0, requiredCount - attendedCount);
   
   // 도전 기간 종료 후 판정
   if (todayMs > challengeEndMs) {
-    const allCovered = missedDays.length === 0;
+    const allCovered = missedDays.length === 0 && attendedCount >= requiredCount;
     return {
       eligible: true,
       completed: true,
       achieved: allCovered,
       weeks, bonus,
       challengeEndYMD,
-      requiredDays: requiredDays.length,
-      attendedDays: passedDays.length - missedDays.length,
+      requiredDays: requiredCount,
+      attendedDays: attendedCount,
       missedDays,
       message: allCovered 
         ? `${weeks}주 빠짐없이 완주`
@@ -1350,11 +1365,11 @@ function rhythmStatus(p, closedDays = []) {
       completed: false,
       achieved: false,
       challenging: false,
-      expired: true, // 더 이상 도전 불가능
+      expired: true,
       weeks, bonus,
       challengeEndYMD,
-      requiredDays: requiredDays.length,
-      attendedDays: passedDays.length - missedDays.length,
+      requiredDays: requiredCount,
+      attendedDays: attendedCount,
       missedDays,
       message: `${missedDays.length}회 결석으로 탈락`,
     };
@@ -1368,11 +1383,11 @@ function rhythmStatus(p, closedDays = []) {
     challenging: true,
     weeks, bonus,
     challengeEndYMD,
-    requiredDays: requiredDays.length,
-    attendedDays: passedDays.length,
-    remaining: futureDays.length,
-    message: futureDays.length > 0 
-      ? `남은 ${futureDays.length}회 빠짐없이`
+    requiredDays: requiredCount,
+    attendedDays: attendedCount,
+    remaining,
+    message: remaining > 0 
+      ? `남은 ${remaining}회 빠짐없이`
       : `완주 직전`,
   };
 }
@@ -2361,31 +2376,28 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     setSessions(next);
     await saveKey(K.sessions, next);
     
-    // 메모(note) → classLog 자동 동기화
-    // 일정에 메모를 입력하면 같은 날짜의 수업 기록에도 자동 등록 (양방향 동기화 단방향 버전)
-    if (setClassLog && data && data.note !== undefined) {
-      const note = (data.note || '').trim();
+    // 수업기록(classNote) → classLog 자동 동기화
+    // 일정에 수업기록(우파비스타코나아사나 등)을 입력하면 수업기록 탭에도 자동 등록
+    // 메모(note)는 강사 메모용으로 별도 (open class 등) → classLog에 저장 X
+    if (setClassLog && data && data.classNote !== undefined) {
+      const classNote = (data.classNote || '').trim();
       const cl = { ...classLog };
       const dayEntries = [...(cl[dateStr] || [])];
-      // 같은 시간의 entry 찾기
       const existingIdx = dayEntries.findIndex(e => e.time === time);
-      if (note) {
-        const entry = { 
-          id: existingIdx >= 0 ? dayEntries[existingIdx].id : `cl_${dateStr}_${time}_${Math.random().toString(36).slice(2, 6)}`,
-          time, 
-          content: note,
-        };
+      if (classNote) {
         if (existingIdx >= 0) {
-          // 이미 있는 entry는 content만 업데이트 (사용자가 classLog 화면에서 직접 쓴 내용 보존 X — 일정 메모로 덮어씀)
-          dayEntries[existingIdx] = { ...dayEntries[existingIdx], content: note };
+          dayEntries[existingIdx] = { ...dayEntries[existingIdx], content: classNote };
         } else {
-          dayEntries.push(entry);
+          dayEntries.push({ 
+            id: `cl_${dateStr}_${time}_${Math.random().toString(36).slice(2, 6)}`,
+            time, 
+            content: classNote,
+          });
         }
         cl[dateStr] = dayEntries.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
         setClassLog(cl);
         await saveKey(K.classlog, cl);
       } else if (existingIdx >= 0) {
-        // 메모를 비우면 classLog에서도 같은 시간 entry 제거
         dayEntries.splice(existingIdx, 1);
         if (dayEntries.length) cl[dateStr] = dayEntries;
         else delete cl[dateStr];
@@ -2840,6 +2852,7 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
 
   const [parts, setParts] = useState(initial);
   const [note, setNote] = useState(existing?.note || '');
+  const [classNote, setClassNote] = useState(existing?.classNote || '');
   const [addingMember, setAddingMember] = useState('');
   const [trialName, setTrialName] = useState('');
   const [mode, setMode] = useState('member');
@@ -3103,13 +3116,20 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
           <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="예: open class" />
         </Field>
 
+        <Field label="수업기록 (선택)">
+          <Input value={classNote} onChange={(e) => setClassNote(e.target.value)} placeholder="예: 우파비스타코나아사나" />
+          <div className="text-[10px] mt-1" style={{ color: theme.inkMute }}>
+            ↻ 수업기록 탭과 자동 연동
+          </div>
+        </Field>
+
         <div className="flex justify-between gap-2 pt-2">
           {existing && (
-            <Button variant="danger" size="sm" icon={Trash2} onClick={() => onSave({ participants: [], time, date, originalKey })}>수업 삭제</Button>
+            <Button variant="danger" size="sm" icon={Trash2} onClick={() => onSave({ participants: [], time, date, originalKey, classNote: '' })}>수업 삭제</Button>
           )}
           <div className="flex gap-2 ml-auto">
             <Button variant="ghost" onClick={onClose}>취소</Button>
-            <Button icon={Check} onClick={() => onSave({ participants: parts, note, time, date, originalKey })}>저장</Button>
+            <Button icon={Check} onClick={() => onSave({ participants: parts, note, classNote, time, date, originalKey })}>저장</Button>
           </div>
         </div>
       </div>
@@ -5366,7 +5386,7 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, toast }) {
     setClassLog(next);
     await saveKey(K.classlog, next);
     
-    // sessions의 note도 동기화 (양방향 — 수업 기록에 쓰면 일정 메모에 자동 반영)
+    // sessions의 classNote도 동기화 (양방향 — 수업 기록에 쓰면 일정의 수업기록 칸에 자동 반영)
     if (setSessions && sessions) {
       const oldEntries = classLog[date] || [];
       const oldByTime = {};
@@ -5374,7 +5394,6 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, toast }) {
       const newByTime = {};
       entries.forEach(e => { if (e.time) newByTime[e.time] = e.content || ''; });
       
-      // 변경된 시간들에 대해 sessions 업데이트
       const allTimes = new Set([...Object.keys(oldByTime), ...Object.keys(newByTime)]);
       const sessNext = { ...sessions };
       let touched = false;
@@ -5382,10 +5401,9 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, toast }) {
         const newContent = (newByTime[time] || '').trim();
         const sessKey = `${date}_${time}`;
         const sess = sessNext[sessKey];
-        // 일정에 등록된 수업이 있을 때만 메모 동기화
         if (sess && sess.participants && sess.participants.length > 0) {
-          if ((sess.note || '') !== newContent) {
-            sessNext[sessKey] = { ...sess, note: newContent };
+          if ((sess.classNote || '') !== newContent) {
+            sessNext[sessKey] = { ...sess, classNote: newContent };
             touched = true;
           }
         }
