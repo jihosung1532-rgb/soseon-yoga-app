@@ -3529,7 +3529,9 @@ function MemberPhotoImport({ onClose, onSave, toast }) {
   const analyze = async () => {
     if (!images.length) { toast('사진을 올려주세요'); return; }
     setLoading(true);
+    let stage = 'start';
     try {
+      stage = 'building_system';
       const system = `당신은 한국 요가원 회원 등록 서류, 회원권 신청서, 결제 영수증, 상담 메모 사진을 읽어서 회원 등록용 JSON으로 정리하는 어시스턴트입니다.
 
 사진 여러 장이 한 사람의 자료일 수 있습니다. 같은 이름이 보이면 하나의 회원으로 합쳐주세요. 손글씨가 불확실하면 빈칸으로 두거나 notes에 "확인 필요"라고 적으세요.
@@ -3564,27 +3566,44 @@ function MemberPhotoImport({ onClose, onSave, toast }) {
 
 날짜 규칙: 4/23, 4.23 같은 날짜는 2026년으로 보정. 화목 19:20이면 fixedSlots에 화=2, 목=4로 넣기.`;
 
+      stage = 'building_content';
       const content = images.map(img => ({
         type: 'image',
         source: { type: 'base64', media_type: img.media_type, data: img.data },
       }));
       content.push({ type: 'text', text: '소선요가 회원 등록 자료입니다. 회원 정보와 회원권 정보를 JSON으로 정리해주세요.' });
 
+      // base64 클라이언트단 검증 - 진짜 깨끗한지 확인
+      stage = 'validating_images';
+      for (let i = 0; i < images.length; i++) {
+        const img = images[i];
+        if (!img.data || typeof img.data !== 'string') throw new Error(`이미지 ${i+1}: 데이터 없음`);
+        if (img.data.length < 100) throw new Error(`이미지 ${i+1}: 너무 짧음 (${img.data.length}자)`);
+        // base64 문자만 있는지
+        const bad = img.data.match(/[^A-Za-z0-9+/=]/);
+        if (bad) {
+          throw new Error(`이미지 ${i+1} (${img.name}): base64에 잘못된 문자 '${bad[0]}' (코드 ${bad[0].charCodeAt(0)}, 위치 ${bad.index})`);
+        }
+        if (!img.media_type || !img.media_type.startsWith('image/')) {
+          throw new Error(`이미지 ${i+1}: media_type 잘못됨 (${img.media_type})`);
+        }
+      }
+
+      stage = 'calling_api';
       const resp = await callClaude([{ role: 'user', content }], system);
+      stage = 'parsing_response';
       console.log('[사진 분석] AI 응답:', resp);
       const result = tryParseJSON(resp);
       if (result?.members?.length) {
         setParsed(result.members);
       } else if (result) {
-        // JSON은 파싱됐는데 members가 없음
         toast('AI가 회원 정보를 못 찾았어요. 신청서/영수증 사진인지 확인해주세요');
       } else {
-        // JSON 파싱 실패 - AI가 뭐라고 답했는지 일부 보여주기
         const preview = resp.slice(0, 80);
         toast(`읽기 실패: ${preview}...`);
       }
     } catch (e) {
-      toast('분석 실패: ' + (e.message || ''));
+      toast(`분석 실패 [${stage}]: ${e.message || e}`);
     } finally {
       setLoading(false);
     }
