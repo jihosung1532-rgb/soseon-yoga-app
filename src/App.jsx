@@ -1407,34 +1407,43 @@ function memberRhythmStatus(member, closedDays = []) {
 // 이미지를 base64로 변환하면서 자동 압축 (큰 사진을 1568px로 리사이즈, JPEG 80%)
 // → fetch body 크기 줄여서 "string did not match the expected pattern" 에러 회피
 async function fileToCompressedBase64(file, maxDim = 1280, quality = 0.75) {
-  // 이미지 로드
-  const dataUrl = await new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(r.result);
-    r.onerror = () => rej(new Error('파일 읽기 실패'));
-    r.readAsDataURL(file);
-  });
-  const img = await new Promise((res, rej) => {
-    const i = new Image();
-    i.onload = () => res(i);
-    i.onerror = () => rej(new Error('이미지 디코드 실패'));
-    i.src = dataUrl;
-  });
+  // 이미지 로드 - createImageBitmap 사용해서 EXIF orientation 자동 보정
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch (e) {
+    // createImageBitmap 미지원 환경 → 폴백
+    const dataUrl = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result);
+      r.onerror = () => rej(new Error('파일 읽기 실패'));
+      r.readAsDataURL(file);
+    });
+    bitmap = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i);
+      i.onerror = () => rej(new Error('이미지 디코드 실패'));
+      i.src = dataUrl;
+    });
+  }
   // 리사이즈 비율 계산
-  const ratio = Math.min(1, maxDim / Math.max(img.width, img.height));
-  const w = Math.round(img.width * ratio);
-  const h = Math.round(img.height * ratio);
+  const w0 = bitmap.width, h0 = bitmap.height;
+  const ratio = Math.min(1, maxDim / Math.max(w0, h0));
+  const w = Math.round(w0 * ratio);
+  const h = Math.round(h0 * ratio);
   // canvas로 압축
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d');
-  ctx.drawImage(img, 0, 0, w, h);
+  ctx.drawImage(bitmap, 0, 0, w, h);
   // JPEG로 인코딩 (PNG보다 훨씬 작음)
   const compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
   // base64만 추출 + 정리
   const raw = compressedDataUrl.split(',')[1] || '';
   const clean = raw.replace(/[\r\n\s]/g, '');
+  // bitmap 메모리 해제
+  if (bitmap.close) bitmap.close();
   return { data: clean, media_type: 'image/jpeg' };
 }
 
