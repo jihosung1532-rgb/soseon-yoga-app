@@ -1859,7 +1859,7 @@ function SMSDialog({ open, onClose, phone, name, template, onConfirmed }) {
 /* =========================================================
    Home Dashboard — today's tasks with dismiss
    ========================================================= */
-function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDismiss, smsConfirmed = {}, closedDays = [], toast, onSendSMS, goto, onOpenSettings }) {
+function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDismiss, smsConfirmed = {}, closedDays = [], groupSlots = [], toast, onSendSMS, goto, onOpenSettings }) {
   const todayYMD = toYMD(new Date());
   const dismissedToday = (dashDismiss[todayYMD] || []);
   const [daysSinceBackup, setDaysSinceBackup] = useState(null);
@@ -2029,6 +2029,43 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
   // 모달 state
   const [showExpiringModal, setShowExpiringModal] = useState(false);
   
+  // === 정원 현황 (소그룹 화·목 시간대별 등록 인원) ===
+  // CAPACITY: 정원 4명 (옵션 1: 거의참=정원의 75% 이상, 마감=정원 다 참)
+  const CAPACITY = 4;
+  const capacityStatus = useMemo(() => {
+    // 각 시간대별로 화/목에 등록된 회원 수 계산
+    // fixedSlots 기반 (활성 수강권 + 시작일~만료일 범위 안에 있는 회원만)
+    // 화·목 시간대는 groupSlots 활용
+    const result = []; // [{ time, tue, thu }]
+    (groupSlots || []).forEach(time => {
+      const tueMembers = members.filter(m => {
+        if (!m.fixedSlots?.some(fs => fs.dow === 2 && fs.time === time)) return false;
+        const validPass = (m.passes || []).find(p => 
+          !p.archived && p.startDate && p.expiryDate
+          && (p.category === 'group')
+        );
+        return !!validPass;
+      });
+      const thuMembers = members.filter(m => {
+        if (!m.fixedSlots?.some(fs => fs.dow === 4 && fs.time === time)) return false;
+        const validPass = (m.passes || []).find(p => 
+          !p.archived && p.startDate && p.expiryDate
+          && (p.category === 'group')
+        );
+        return !!validPass;
+      });
+      result.push({ time, tueCount: tueMembers.length, thuCount: thuMembers.length });
+    });
+    return result;
+  }, [members, groupSlots]);
+  
+  // 정원 상태 라벨 / 색깔
+  const getCapacityState = (count) => {
+    if (count >= CAPACITY) return 'full'; // 마감
+    if (count >= Math.ceil(CAPACITY * 0.75)) return 'near'; // 거의참 (4명 정원이면 3명+)
+    return 'free'; // 여유
+  };
+  
   // 자동 알림 데이터
   const homeAlerts = useMemo(() => {
     const alerts = [];
@@ -2175,6 +2212,56 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
           </div>
         )}
       </div>
+
+      {/* 정원 현황 카드 (소그룹 화·목 시간대별 등록 인원) */}
+      {capacityStatus.length > 0 && (
+        <div className="rounded-2xl p-3.5" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
+          <div className="flex items-center gap-1.5 mb-3">
+            <span style={{ fontSize: 13 }}>📊</span>
+            <span className="font-semibold text-[13px]" style={{ color: theme.ink }}>정원 현황</span>
+            <span className="text-[11px]" style={{ color: theme.inkMute }}>· 정원 {CAPACITY}명</span>
+          </div>
+          <div className="grid items-center gap-2" style={{ gridTemplateColumns: '52px 1fr 1fr' }}>
+            <div></div>
+            <div className="text-[10px] font-semibold text-center" style={{ color: theme.inkMute }}>화요일</div>
+            <div className="text-[10px] font-semibold text-center" style={{ color: theme.inkMute }}>목요일</div>
+            
+            {capacityStatus.map(({ time, tueCount, thuCount }) => {
+              const renderCell = (count) => {
+                const state = getCapacityState(count);
+                const filledDots = '●'.repeat(count);
+                const emptyDots = '○'.repeat(Math.max(0, CAPACITY - count));
+                const colors = {
+                  free: { bg: 'rgba(165, 192, 165, 0.08)', border: '#A5C0A5', label: { bg: '#5C8A5C', text: '여유' } },
+                  near: { bg: 'rgba(212, 181, 116, 0.10)', border: '#D4B574', label: { bg: '#C9A961', text: '거의참' } },
+                  full: { bg: 'rgba(197, 146, 142, 0.12)', border: '#C5928E', label: { bg: '#B85450', text: '마감' } },
+                }[state];
+                return (
+                  <div className="rounded-lg px-2 py-2 text-center" style={{ backgroundColor: colors.bg, border: `1px solid ${colors.border}` }}>
+                    <div className="mb-1" style={{ fontSize: 13, letterSpacing: 1, lineHeight: 1 }}>
+                      <span style={{ color: theme.ink }}>{filledDots}</span>
+                      <span style={{ color: '#D0CABB' }}>{emptyDots}</span>
+                    </div>
+                    <div className="text-[11px] tabular-nums" style={{ color: theme.inkSoft }}>
+                      <strong style={{ color: theme.ink, fontWeight: 700 }}>{count}</strong>/{CAPACITY}
+                    </div>
+                    <div className="inline-block mt-1 px-1.5 py-0.5 rounded-md" style={{ backgroundColor: colors.label.bg, color: 'white', fontSize: 9, fontWeight: 700, letterSpacing: 0.5 }}>
+                      {colors.label.text}
+                    </div>
+                  </div>
+                );
+              };
+              return (
+                <React.Fragment key={time}>
+                  <div className="text-[13px] font-semibold text-right pr-1" style={{ color: theme.ink }}>{time}</div>
+                  {renderCell(tueCount)}
+                  {renderCell(thuCount)}
+                </React.Fragment>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* 만료 임박 모달 */}
       {showExpiringModal && (
@@ -3484,7 +3571,6 @@ function MembersView({ members, setMembers, sessions, setSessions, groupSlots, c
         </select>
 
         <div className="flex-1" />
-        <Button icon={Camera} variant="soft" size="sm" onClick={() => setPhotoImporting(true)}>사진</Button>
         <Button icon={Plus} onClick={() => setAdding(true)}>추가</Button>
       </div>
 
@@ -3498,13 +3584,6 @@ function MembersView({ members, setMembers, sessions, setSessions, groupSlots, c
         </div>
       )}
       {adding && <MemberEditor onClose={() => setAdding(false)} onSave={createMember} groupSlots={groupSlots} />}
-      {photoImporting && (
-        <MemberPhotoImport
-          onClose={() => setPhotoImporting(false)}
-          onSave={handlePhotoImport}
-          toast={toast}
-        />
-      )}
       {openMember && (
         <MemberDetail
           member={openMember}
@@ -6291,7 +6370,6 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
 
         <div className="flex-1" />
         <Button icon={FileText} variant="soft" size="sm" onClick={() => setTextImporting(true)}>텍스트</Button>
-        <Button icon={Camera} variant="soft" size="sm" onClick={() => setBulkImporting(true)}>사진</Button>
         <Button icon={Plus} onClick={() => setAdding(true)}>추가</Button>
       </div>
 
@@ -6345,13 +6423,6 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
       )}
 
       {adding && <TrialEditor onClose={() => setAdding(false)} onSave={create} />}
-      {bulkImporting && (
-        <TrialBulkImport
-          onClose={() => setBulkImporting(false)}
-          onSave={addManyTrials}
-          toast={toast}
-        />
-      )}
       {textImporting && (
         <TrialTextImport
           onClose={() => setTextImporting(false)}
@@ -6487,9 +6558,9 @@ function TrialTextImport({ onClose, onSave, toast }) {
             <TextArea
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder={'4/28 11:00 체험\n장다연(인스타/미입금)\n010-3573-0912\n발목이 잘 휘고 삐어요\n요가 경험 없습니다\n\n나주연(카채널/입완)\n010-9821-7914\n무릎이 구부리면 아파요\n유'}
+              placeholder={'4/28 11:00 체험\n장다연(인스타/미입금)\n010-3573-0912\n발목 삐었음\n요가 경험 없음'}
               rows={12}
-              style={{ fontFamily: 'monospace', fontSize: 12 }}
+              style={{ fontFamily: 'monospace', fontSize: 11, lineHeight: 1.5 }}
             />
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={onClose}>취소</Button>
@@ -8640,6 +8711,7 @@ export default function App() {
           dashDismiss={dashDismiss} setDashDismiss={setDashDismiss}
           smsConfirmed={smsConfirmed}
           closedDays={closedDays}
+          groupSlots={groupSlots}
           toast={toast} onSendSMS={onSendSMS} goto={setTab}
           onOpenSettings={() => setSettingsOpen(true)} />
       )}
