@@ -2237,7 +2237,7 @@ function Stat({ label, value, color }) {
 /* =========================================================
    Schedule View
    ========================================================= */
-function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, setGroupSlots, closedDays = [], setClosedDays, toast }) {
+function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {}, setClassLog, groupSlots, setGroupSlots, closedDays = [], setClosedDays, toast }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [slotModal, setSlotModal] = useState(null);
   const [slotsManagerOpen, setSlotsManagerOpen] = useState(false);
@@ -2276,8 +2276,22 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
     if (HOLIDAYS.has(toYMD(date))) return null;
     const today = new Date(); today.setHours(0, 0, 0, 0);
     if (date < today) return null;
+    const dateStr = toYMD(date);
     const dow = date.getDay();
-    const autoMembers = members.filter(m => m.fixedSlots?.some(fs => fs.dow === dow && fs.time === time));
+    // 자동 추가: fixedSlots 일치 + 그날에 활성 수강권 있어야 함 (시작일~만료일 사이, 홀딩 기간 제외)
+    const autoMembers = members.filter(m => {
+      if (!m.fixedSlots?.some(fs => fs.dow === dow && fs.time === time)) return false;
+      // 활성 수강권: 시작일 <= 그날 <= 만료일, archived 아님
+      const validPass = (m.passes || []).find(p => 
+        !p.archived 
+        && p.startDate && p.expiryDate
+        && p.startDate <= dateStr 
+        && dateStr <= p.expiryDate
+        // 홀딩 기간 안이면 제외
+        && !(p.holdStart && p.holdEnd && dateStr >= p.holdStart && dateStr <= p.holdEnd)
+      );
+      return !!validPass;
+    });
     if (!autoMembers.length) return null;
     return {
       isAuto: true,
@@ -2346,6 +2360,39 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
     else next[key] = { ...data, date: dateStr, time };
     setSessions(next);
     await saveKey(K.sessions, next);
+    
+    // 메모(note) → classLog 자동 동기화
+    // 일정에 메모를 입력하면 같은 날짜의 수업 기록에도 자동 등록 (양방향 동기화 단방향 버전)
+    if (setClassLog && data && data.note !== undefined) {
+      const note = (data.note || '').trim();
+      const cl = { ...classLog };
+      const dayEntries = [...(cl[dateStr] || [])];
+      // 같은 시간의 entry 찾기
+      const existingIdx = dayEntries.findIndex(e => e.time === time);
+      if (note) {
+        const entry = { 
+          id: existingIdx >= 0 ? dayEntries[existingIdx].id : `cl_${dateStr}_${time}_${Math.random().toString(36).slice(2, 6)}`,
+          time, 
+          content: note,
+        };
+        if (existingIdx >= 0) {
+          // 이미 있는 entry는 content만 업데이트 (사용자가 classLog 화면에서 직접 쓴 내용 보존 X — 일정 메모로 덮어씀)
+          dayEntries[existingIdx] = { ...dayEntries[existingIdx], content: note };
+        } else {
+          dayEntries.push(entry);
+        }
+        cl[dateStr] = dayEntries.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+        setClassLog(cl);
+        await saveKey(K.classlog, cl);
+      } else if (existingIdx >= 0) {
+        // 메모를 비우면 classLog에서도 같은 시간 entry 제거
+        dayEntries.splice(existingIdx, 1);
+        if (dayEntries.length) cl[dateStr] = dayEntries;
+        else delete cl[dateStr];
+        setClassLog(cl);
+        await saveKey(K.classlog, cl);
+      }
+    }
   };
 
   const smallGroupDay = (d) => d.getDay() === 2 || d.getDay() === 4;
@@ -2395,9 +2442,18 @@ function ScheduleView({ members, setMembers, sessions, setSessions, groupSlots, 
       groupSlots.forEach(time => {
         // 이미 확정된 시간이면 스킵
         if (explicit.some(e => e.time === time)) return;
-        const autoMembers = members.filter(m => 
-          m.fixedSlots?.some(fs => fs.dow === dow && fs.time === time)
-        );
+        const autoMembers = members.filter(m => {
+          if (!m.fixedSlots?.some(fs => fs.dow === dow && fs.time === time)) return false;
+          // 활성 수강권 + 그날 범위 안 + 홀딩 기간 제외
+          const validPass = (m.passes || []).find(p => 
+            !p.archived 
+            && p.startDate && p.expiryDate
+            && p.startDate <= ymd 
+            && ymd <= p.expiryDate
+            && !(p.holdStart && p.holdEnd && ymd >= p.holdStart && ymd <= p.holdEnd)
+          );
+          return !!validPass;
+        });
         if (autoMembers.length > 0) {
           autoItems.push({
             time,
@@ -5280,7 +5336,7 @@ function PassConvertDialog({ oldPass, onClose, onConvert }) {
 /* =========================================================
    Class Log — monthly calendar with expanded cells (B option)
    ========================================================= */
-function ClassLogView({ classLog, setClassLog, sessions, toast }) {
+function ClassLogView({ classLog, setClassLog, sessions, setSessions, toast }) {
   const [month, setMonth] = useState(() => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d; });
 
   const days = useMemo(() => {
@@ -5309,6 +5365,36 @@ function ClassLogView({ classLog, setClassLog, sessions, toast }) {
     if (!entries.length) delete next[date]; else next[date] = entries;
     setClassLog(next);
     await saveKey(K.classlog, next);
+    
+    // sessions의 note도 동기화 (양방향 — 수업 기록에 쓰면 일정 메모에 자동 반영)
+    if (setSessions && sessions) {
+      const oldEntries = classLog[date] || [];
+      const oldByTime = {};
+      oldEntries.forEach(e => { if (e.time) oldByTime[e.time] = e.content || ''; });
+      const newByTime = {};
+      entries.forEach(e => { if (e.time) newByTime[e.time] = e.content || ''; });
+      
+      // 변경된 시간들에 대해 sessions 업데이트
+      const allTimes = new Set([...Object.keys(oldByTime), ...Object.keys(newByTime)]);
+      const sessNext = { ...sessions };
+      let touched = false;
+      allTimes.forEach(time => {
+        const newContent = (newByTime[time] || '').trim();
+        const sessKey = `${date}_${time}`;
+        const sess = sessNext[sessKey];
+        // 일정에 등록된 수업이 있을 때만 메모 동기화
+        if (sess && sess.participants && sess.participants.length > 0) {
+          if ((sess.note || '') !== newContent) {
+            sessNext[sessKey] = { ...sess, note: newContent };
+            touched = true;
+          }
+        }
+      });
+      if (touched) {
+        setSessions(sessNext);
+        await saveKey(K.sessions, sessNext);
+      }
+    }
   };
 
   // Swipe to change months
@@ -8104,6 +8190,7 @@ export default function App() {
       {tab === 'schedule' && (
         <ScheduleView members={members} setMembers={setMembers}
           sessions={sessions} setSessions={setSessions}
+          classLog={classLog} setClassLog={setClassLog}
           groupSlots={groupSlots} setGroupSlots={setGroupSlots}
           closedDays={closedDays} setClosedDays={setClosedDays} toast={toast} />
       )}
@@ -8119,7 +8206,7 @@ export default function App() {
           toast={toast} onSendSMS={onSendSMS} />
       )}
       {tab === 'classlog' && (
-        <ClassLogView classLog={classLog} setClassLog={setClassLog} sessions={sessions} toast={toast} />
+        <ClassLogView classLog={classLog} setClassLog={setClassLog} sessions={sessions} setSessions={setSessions} toast={toast} />
       )}
       {tab === 'stats' && (
         <StatsView members={members} trials={trials} sessions={sessions} closedDays={closedDays} />
