@@ -1439,7 +1439,7 @@ async function fileToCompressedBase64(file, maxDim = 1568, quality = 0.85) {
 }
 
 async function callClaude(messages, system) {
-  const body = { model: 'claude-sonnet-4-20250514', max_tokens: 4096, messages };
+  const body = { model: 'claude-sonnet-4-5', max_tokens: 4096, messages };
   if (system) body.system = system;
   
   // body 직렬화 단계
