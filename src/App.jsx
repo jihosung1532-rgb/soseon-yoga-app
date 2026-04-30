@@ -1404,15 +1404,74 @@ function memberRhythmStatus(member, closedDays = []) {
 /* =========================================================
    Anthropic API
    ========================================================= */
+// 이미지를 base64로 변환하면서 자동 압축 (큰 사진을 1568px로 리사이즈, JPEG 80%)
+// → fetch body 크기 줄여서 "string did not match the expected pattern" 에러 회피
+async function fileToCompressedBase64(file, maxDim = 1568, quality = 0.85) {
+  // 이미지 로드
+  const dataUrl = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = () => rej(new Error('파일 읽기 실패'));
+    r.readAsDataURL(file);
+  });
+  const img = await new Promise((res, rej) => {
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = () => rej(new Error('이미지 디코드 실패'));
+    i.src = dataUrl;
+  });
+  // 리사이즈 비율 계산
+  const ratio = Math.min(1, maxDim / Math.max(img.width, img.height));
+  const w = Math.round(img.width * ratio);
+  const h = Math.round(img.height * ratio);
+  // canvas로 압축
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+  // JPEG로 인코딩 (PNG보다 훨씬 작음)
+  const compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+  // base64만 추출 + 정리
+  const raw = compressedDataUrl.split(',')[1] || '';
+  const clean = raw.replace(/[\r\n\s]/g, '');
+  return { data: clean, media_type: 'image/jpeg' };
+}
+
 async function callClaude(messages, system) {
   const body = { model: 'claude-sonnet-4-20250514', max_tokens: 4096, messages };
   if (system) body.system = system;
-  const res = await fetch('/api/claude', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
+  
+  // body 직렬화 단계
+  let bodyStr;
+  try {
+    bodyStr = JSON.stringify(body);
+  } catch (e) {
+    throw new Error(`JSON.stringify 실패: ${e.message}`);
+  }
+  
+  const sizeMB = (bodyStr.length / 1024 / 1024).toFixed(2);
+  
+  // fetch 호출
+  let res;
+  try {
+    res = await fetch('/api/claude', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: bodyStr,
+    });
+  } catch (e) {
+    throw new Error(`fetch 실패 (body ${sizeMB}MB): ${e.message}`);
+  }
+  
+  // 응답 파싱
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    throw new Error(`응답 파싱 실패 (status ${res.status}, body ${sizeMB}MB): ${e.message}`);
+  }
+  
   // 에러 응답 처리
   if (!res.ok || data.error) {
     let errMsg = data.error || data.detail || `API 에러 (${res.status})`;
@@ -1425,6 +1484,7 @@ async function callClaude(messages, system) {
     if (data.anthropicStatus) {
       errMsg += ' [Anthropic ' + data.anthropicStatus + ']';
     }
+    errMsg += ` (body ${sizeMB}MB)`;
     throw new Error(errMsg);
   }
   return (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
@@ -3503,26 +3563,14 @@ function MemberPhotoImport({ onClose, onSave, toast }) {
   const handleFiles = async (files) => {
     const arr = [...images];
     for (const f of files) {
-      const data = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => {
-          const raw = (r.result || '').split(',')[1] || '';
-          const clean = raw.replace(/[\r\n\s]/g, '');
-          res(clean);
-        };
-        r.onerror = () => rej();
-        r.readAsDataURL(f);
-      });
-      let mediaType = f.type || '';
-      if (!mediaType || mediaType === 'image/jpg') {
-        const ext = (f.name || '').toLowerCase().split('.').pop();
-        if (ext === 'jpg' || ext === 'jpeg') mediaType = 'image/jpeg';
-        else if (ext === 'png') mediaType = 'image/png';
-        else if (ext === 'gif') mediaType = 'image/gif';
-        else if (ext === 'webp') mediaType = 'image/webp';
-        else mediaType = 'image/jpeg';
+      try {
+        // 이미지 자동 압축 (1568px, JPEG 85%) - fetch 에러 방지
+        const { data, media_type } = await fileToCompressedBase64(f);
+        arr.push({ name: f.name, data, media_type });
+      } catch (e) {
+        console.error('이미지 처리 실패:', f.name, e);
+        if (toast) toast(`이미지 처리 실패: ${f.name}`);
       }
-      arr.push({ name: f.name, data, media_type: mediaType });
     }
     setImages(arr);
   };
@@ -4732,26 +4780,14 @@ function ProgressTimeline({ items, onUpdate, toast, memberName }) {
   const handleFiles = async (files) => {
     const arr = [...images];
     for (const f of files) {
-      const data = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => {
-          const raw = (r.result || '').split(',')[1] || '';
-          const clean = raw.replace(/[\r\n\s]/g, '');
-          res(clean);
-        };
-        r.onerror = () => rej();
-        r.readAsDataURL(f);
-      });
-      let mediaType = f.type || '';
-      if (!mediaType || mediaType === 'image/jpg') {
-        const ext = (f.name || '').toLowerCase().split('.').pop();
-        if (ext === 'jpg' || ext === 'jpeg') mediaType = 'image/jpeg';
-        else if (ext === 'png') mediaType = 'image/png';
-        else if (ext === 'gif') mediaType = 'image/gif';
-        else if (ext === 'webp') mediaType = 'image/webp';
-        else mediaType = 'image/jpeg';
+      try {
+        // 이미지 자동 압축 (1568px, JPEG 85%) - fetch 에러 방지
+        const { data, media_type } = await fileToCompressedBase64(f);
+        arr.push({ name: f.name, data, media_type });
+      } catch (e) {
+        console.error('이미지 처리 실패:', f.name, e);
+        if (toast) toast(`이미지 처리 실패: ${f.name}`);
       }
-      arr.push({ name: f.name, data, media_type: mediaType });
     }
     setImages(arr);
   };
@@ -4963,26 +4999,14 @@ function AssessmentPanel({ member, onUpdate, toast }) {
   const handleFiles = async (files) => {
     const arr = [...images];
     for (const f of files) {
-      const data = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => {
-          const raw = (r.result || '').split(',')[1] || '';
-          const clean = raw.replace(/[\r\n\s]/g, '');
-          res(clean);
-        };
-        r.onerror = () => rej();
-        r.readAsDataURL(f);
-      });
-      let mediaType = f.type || '';
-      if (!mediaType || mediaType === 'image/jpg') {
-        const ext = (f.name || '').toLowerCase().split('.').pop();
-        if (ext === 'jpg' || ext === 'jpeg') mediaType = 'image/jpeg';
-        else if (ext === 'png') mediaType = 'image/png';
-        else if (ext === 'gif') mediaType = 'image/gif';
-        else if (ext === 'webp') mediaType = 'image/webp';
-        else mediaType = 'image/jpeg';
+      try {
+        // 이미지 자동 압축 (1568px, JPEG 85%) - fetch 에러 방지
+        const { data, media_type } = await fileToCompressedBase64(f);
+        arr.push({ name: f.name, data, media_type });
+      } catch (e) {
+        console.error('이미지 처리 실패:', f.name, e);
+        if (toast) toast(`이미지 처리 실패: ${f.name}`);
       }
-      arr.push({ name: f.name, data, media_type: mediaType });
     }
     setImages(arr);
   };
@@ -6348,26 +6372,14 @@ function TrialBulkImport({ onClose, onSave, toast }) {
   const handleFiles = async (files) => {
     const arr = [...images];
     for (const f of files) {
-      const data = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => {
-          const raw = (r.result || '').split(',')[1] || '';
-          const clean = raw.replace(/[\r\n\s]/g, '');
-          res(clean);
-        };
-        r.onerror = () => rej();
-        r.readAsDataURL(f);
-      });
-      let mediaType = f.type || '';
-      if (!mediaType || mediaType === 'image/jpg') {
-        const ext = (f.name || '').toLowerCase().split('.').pop();
-        if (ext === 'jpg' || ext === 'jpeg') mediaType = 'image/jpeg';
-        else if (ext === 'png') mediaType = 'image/png';
-        else if (ext === 'gif') mediaType = 'image/gif';
-        else if (ext === 'webp') mediaType = 'image/webp';
-        else mediaType = 'image/jpeg';
+      try {
+        // 이미지 자동 압축 (1568px, JPEG 85%) - fetch 에러 방지
+        const { data, media_type } = await fileToCompressedBase64(f);
+        arr.push({ name: f.name, data, media_type });
+      } catch (e) {
+        console.error('이미지 처리 실패:', f.name, e);
+        if (toast) toast(`이미지 처리 실패: ${f.name}`);
       }
-      arr.push({ name: f.name, data, media_type: mediaType });
     }
     setImages(arr);
   };
@@ -6704,26 +6716,14 @@ function AnalysisView({ members, setMembers, toast }) {
   const handleFiles = async (files) => {
     const arr = [...images];
     for (const f of files) {
-      const data = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => {
-          const raw = (r.result || '').split(',')[1] || '';
-          const clean = raw.replace(/[\r\n\s]/g, '');
-          res(clean);
-        };
-        r.onerror = () => rej();
-        r.readAsDataURL(f);
-      });
-      let mediaType = f.type || '';
-      if (!mediaType || mediaType === 'image/jpg') {
-        const ext = (f.name || '').toLowerCase().split('.').pop();
-        if (ext === 'jpg' || ext === 'jpeg') mediaType = 'image/jpeg';
-        else if (ext === 'png') mediaType = 'image/png';
-        else if (ext === 'gif') mediaType = 'image/gif';
-        else if (ext === 'webp') mediaType = 'image/webp';
-        else mediaType = 'image/jpeg';
+      try {
+        // 이미지 자동 압축 (1568px, JPEG 85%) - fetch 에러 방지
+        const { data, media_type } = await fileToCompressedBase64(f);
+        arr.push({ name: f.name, data, media_type });
+      } catch (e) {
+        console.error('이미지 처리 실패:', f.name, e);
+        if (toast) toast(`이미지 처리 실패: ${f.name}`);
       }
-      arr.push({ name: f.name, data, media_type: mediaType });
     }
     setImages(arr);
   };
