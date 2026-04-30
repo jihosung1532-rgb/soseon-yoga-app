@@ -1438,8 +1438,12 @@ async function fileToCompressedBase64(file, maxDim = 1280, quality = 0.75) {
   return { data: clean, media_type: 'image/jpeg' };
 }
 
-async function callClaude(messages, system) {
-  const body = { model: 'claude-sonnet-4-5', max_tokens: 4096, messages };
+async function callClaude(messages, system, modelOverride) {
+  const body = { 
+    model: modelOverride || 'claude-sonnet-4-5', 
+    max_tokens: 4096, 
+    messages,
+  };
   if (system) body.system = system;
   
   // body 직렬화 단계
@@ -1457,8 +1461,12 @@ async function callClaude(messages, system) {
   try {
     res = await fetch('/api/claude', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json; charset=utf-8',
+        'Accept': 'application/json',
+      },
       body: bodyStr,
+      cache: 'no-store',
     });
   } catch (e) {
     throw new Error(`fetch 실패 (body ${sizeMB}MB): ${e.message}`);
@@ -3641,46 +3649,99 @@ function MemberPhotoImport({ onClose, onSave, toast }) {
     let stage = 'start';
     try {
       stage = 'building_system';
-      const system = `당신은 한국 요가원 회원 등록 서류, 회원권 신청서, 결제 영수증, 상담 메모 사진을 읽어서 회원 등록용 JSON으로 정리하는 어시스턴트입니다.
+      const system = `당신은 정직한 OCR 어시스턴트입니다. 사진에 **글자로 적혀있는 것만** 읽습니다.
 
-사진 여러 장이 한 사람의 자료일 수 있습니다. 같은 이름이 보이면 하나의 회원으로 합쳐주세요. 손글씨가 불확실하면 빈칸으로 두거나 notes에 "확인 필요"라고 적으세요.
+🛑 가장 중요한 규칙 🛑
+빈 칸은 빈 칸입니다. 절대 채우지 마세요.
 
-반드시 아래 JSON만 출력하세요. 설명/코드펜스 금지.
+사진에 회원이 자필로 쓴 정보가 있어야만 회원이 존재합니다.
+- 빈 신청서 양식 = 회원 없음 → members: []
+- 빈 상태기록지 = 회원 없음 → members: []
+- 영수증만 있음 = 회원 없음 → members: []
+
+[자주 보내는 사진 종류]
+1. **회원권 신청서** — 양식: 성명/주소/연락처/회원권 종류(체크)/방문 경로/결제 방법/결제 금액/결제일/시작일/신청인 서명
+   - 회원이 손으로 직접 쓴 글씨가 있어야 회원 정보입니다.
+   - 양식만 있고 칸이 비어있으면 빈 양식입니다 → members: []
+
+2. **상태 기록지 (회원용)** — 양식: 성함/출생년도/성별/요가경험/이유/통증부위/생활습관/회복리듬/경계/자유메모
+   - 회원이 직접 표시(체크)와 손글씨로 채워야 회원 정보입니다.
+   - 양식 글자 (예: "통증·불편 부위", "오래 앉아 있을 때")는 항목 이름일 뿐 회원 정보가 아닙니다.
+   - 빈 체크박스만 있으면 빈 양식 → members: []
+
+3. **카드 결제 영수증** — 자동으로 인쇄됨. 회원 정보 0%.
+   - 영수증의 [소선요가] 113-29-01795 010-3040-4404 성지호 경기도 남양주시 가운로2길 63 = **요가원·사장님 정보**.
+   - 회원이 아닙니다. 절대 회원 데이터에 쓰지 마세요.
+   - 영수증에서 가져올 수 있는 건 결제금액, 거래일시뿐.
+
+🛑 동그라미·체크 인식 🛑
+회원이 신청서에서 회원권 종류를 고를 때 **동그라미·체크·밑줄**로 표시합니다.
+- 사진에서 동그라미·체크·밑줄이 있는 항목만 선택된 것입니다.
+- 동그라미가 "3개월권"에 있으면 → "3개월권" 선택. **"스타터B" 절대 X.**
+- 표시가 안 보이거나 헷갈리면 빈칸으로 두세요. 추측 금지.
+
+🛑 절대 만들지 말 것 🛑
+- 가짜 이름 (강미란, 김미영, ... 어떤 이름도 사진에 없으면 X)
+- 가짜 출생년도 (1990, 1985, ... 추측 X)
+- 가짜 전화번호 (010-3040-4404는 요가원 번호, 회원 X)
+- 가짜 주소
+- 사진에 안 보이는 회원권 종류
+
+[빈 응답이 정답인 경우]
+사장님은 **빈 양식만 사진 찍어서 보내는 경우가 많습니다**. 
+이때 정답은 **{"members": []}** 입니다. 빈 배열이 정답.
+가짜 회원을 만들어내면 사장님이 잘못된 회원을 등록하게 되어 **신뢰가 무너집니다.**
+
+[출력 형식 — JSON만, 설명 금지]
 {
   "members": [
+    // 회원이 손글씨로 쓴 정보가 있을 때만 객체 추가
     {
-      "name": "성함",
-      "phone": "010-0000-0000",
-      "birthYear": "출생년도 숫자만",
-      "gender": "여|남|기타|",
-      "job": "직업",
-      "yogaExperience": "요가/운동 경험",
-      "keyPoint": "목·어깨·허리·고관절 등 핵심 주의사항 요약",
-      "notes": "상담지/메모/특이사항 요약",
-      "fixedSlots": [{"dow": 2, "time": "19:20"}],
+      "name": "사진에 손글씨로 적힌 이름. 못 읽거나 없으면 \"\"",
+      "phone": "사진에 적힌 010-XXXX-XXXX. 없으면 \"\"",
+      "birthYear": "사진에 적힌 4자리. 없으면 \"\"",
+      "gender": "사진의 체크/표시. 없으면 \"\"",
+      "address": "사진에 손글씨로 적힌 주소. 없으면 \"\". 요가원 주소 X",
+      "source": "동그라미/체크된 방문 경로. 없으면 \"\"",
+      "passType": "동그라미/체크된 회원권 종류. 안 보이면 \"\"",
+      "keyPoint": "통증/주의사항. 없으면 \"\"",
+      "notes": "기타. 영수증 결제정보(예: 카드결제 530,000원, 2026-04-30)는 여기에. 사업자번호 113-29-01795 절대 X.",
       "pass": {
-        "type": "스타터 패키지 A / 1개월 8회 / 개인레슨 등",
-        "category": "group|private|trial",
-        "totalSessions": 8,
-        "usedSessions": 0,
-        "paymentDate": "YYYY-MM-DD",
-        "startDate": "YYYY-MM-DD",
-        "expiryDate": "YYYY-MM-DD",
-        "price": 200000,
-        "note": "결제수단, 특이사항"
+        "type": "수강권 명칭. 모르면 \"\"",
+        "category": "group/private/trial 중 하나. 모르면 \"\"",
+        "totalSessions": 0,
+        "paymentDate": "영수증 거래일시. 없으면 \"\"",
+        "startDate": "신청서 시작일 손글씨. 없으면 \"\"",
+        "price": 0,
+        "paymentMethod": "카드/계좌이체/현금/지역화폐. 없으면 \"\""
       }
     }
   ]
 }
 
-날짜 규칙: 4/23, 4.23 같은 날짜는 2026년으로 보정. 화목 19:20이면 fixedSlots에 화=2, 목=4로 넣기.`;
+[다시 강조]
+빈 양식이면 → {"members": []}
+영수증만 있으면 → {"members": []}
+손글씨가 흐릿하면 → 그 필드만 ""
+거짓 만들지 말고 빈칸이 100배 낫습니다.`;
 
       stage = 'building_content';
       const content = images.map(img => ({
         type: 'image',
         source: { type: 'base64', media_type: img.media_type, data: img.data },
       }));
-      content.push({ type: 'text', text: '소선요가 회원 등록 자료입니다. 회원 정보와 회원권 정보를 JSON으로 정리해주세요.' });
+      content.push({ type: 'text', text: `소선요가 회원 등록 자료입니다.
+
+🚨 절대 추측하지 마세요. 사진에 손글씨로 적힌 글자만 읽으세요. 🚨
+
+- 영수증의 "성지호"는 사장님(요가원 주인). 회원이 아닙니다.
+- "010-3040-4404"는 요가원 전화. 회원이 아닙니다.
+- "113-29-01795"는 요가원 사업자번호. 절대 어디에도 쓰지 마세요.
+- 회원 정보(이름/전화/생년/주소)는 손으로 쓴 신청서에서만 읽으세요.
+- 신청서 글씨가 흐릿하거나 안 보이면 그 필드는 빈 문자열 ""로 두세요.
+- 사진에 신청서가 없고 영수증만 있으면 members: []로 반환하세요.
+
+빈칸이 가짜 정보보다 100배 낫습니다.` });
 
       // base64 클라이언트단 검증 - 진짜 깨끗한지 확인
       stage = 'validating_images';
@@ -3699,12 +3760,47 @@ function MemberPhotoImport({ onClose, onSave, toast }) {
       }
 
       stage = 'calling_api';
-      const resp = await callClaude([{ role: 'user', content }], system);
+      // 사진 분석은 Opus (가장 강력, 환각 적음)
+      const resp = await callClaude([{ role: 'user', content }], system, 'claude-opus-4-5');
       stage = 'parsing_response';
       console.log('[사진 분석] AI 응답:', resp);
       const result = tryParseJSON(resp);
       if (result?.members?.length) {
-        setParsed(result.members);
+        // 사장님(요가원) 정보가 회원으로 잘못 들어왔으면 제거 — 가드
+        const STUDIO_NAME = '성지호';
+        const STUDIO_PHONE = '010-3040-4404';
+        const STUDIO_BIZ = '113-29-01795';
+        const STUDIO_ADDR_KEYWORDS = ['남양주', '가운로2길', '205호'];
+        
+        const cleaned = result.members.map(m => {
+          const cm = { ...m };
+          // 이름이 사장님이면 제거
+          if (cm.name === STUDIO_NAME || cm.name?.includes(STUDIO_NAME)) cm.name = '';
+          // 전화가 요가원이면 제거
+          if (cm.phone === STUDIO_PHONE || cm.phone?.replace(/[^0-9]/g, '') === STUDIO_PHONE.replace(/[^0-9]/g, '')) cm.phone = '';
+          // 주소가 요가원이면 제거
+          if (cm.address && STUDIO_ADDR_KEYWORDS.some(k => cm.address.includes(k))) cm.address = '';
+          // 메모/notes에 사업자번호 있으면 제거
+          if (cm.notes) {
+            cm.notes = cm.notes.replace(STUDIO_BIZ, '').replace(/사업자[등록번호 :]*\s*$/g, '').trim();
+            if (cm.notes.includes(STUDIO_NAME)) cm.notes = cm.notes.replace(STUDIO_NAME, '').trim();
+          }
+          // keyPoint도 같이
+          if (cm.keyPoint && (cm.keyPoint.includes(STUDIO_BIZ) || cm.keyPoint.includes(STUDIO_NAME))) {
+            cm.keyPoint = cm.keyPoint.replace(STUDIO_BIZ, '').replace(STUDIO_NAME, '').trim();
+          }
+          return cm;
+        }).filter(m => {
+          // 이름·전화·주소·메모 다 비어있으면 제거 (사장님 정보만 들어왔던 케이스)
+          const empty = !m.name && !m.phone && !m.address && !m.keyPoint && !m.notes;
+          return !empty;
+        });
+        
+        if (cleaned.length === 0) {
+          toast('회원 정보를 못 찾았어요. 신청서가 있는 사진인지 확인해주세요');
+        } else {
+          setParsed(cleaned);
+        }
       } else if (result) {
         toast('AI가 회원 정보를 못 찾았어요. 신청서/영수증 사진인지 확인해주세요');
       } else {
