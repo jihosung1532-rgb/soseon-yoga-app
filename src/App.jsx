@@ -2944,18 +2944,20 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                                       const isCancelled = !!p.cancelled;
                                       const isCharged = p.cancelled === 'charged';
                                       return (
-                                        <span key={j} style={{
-                                          color: isCharged ? theme.danger : 'inherit',
-                                          textDecoration: isCancelled ? 'line-through' : 'none',
-                                        }}>
-                                          <span style={{ fontWeight: 600 }}>{p.memberName}</span>
-                                          {p.sessionNumber && p.totalSessions && !isCancelled && (
-                                            <span style={{ color: theme.inkMute, fontSize: 11, fontWeight: 400 }}>
-                                              {' '}({p.sessionNumber}/{p.totalSessions})
-                                            </span>
-                                          )}
+                                        <React.Fragment key={j}>
+                                          <span style={{
+                                            color: isCharged ? theme.danger : 'inherit',
+                                            textDecoration: isCancelled ? 'line-through' : 'none',
+                                          }}>
+                                            <span style={{ fontWeight: 600 }}>{p.memberName}</span>
+                                            {p.sessionNumber && p.totalSessions && !isCancelled && (
+                                              <span style={{ color: theme.inkMute, fontSize: 11, fontWeight: 400 }}>
+                                                {' '}({p.sessionNumber}/{p.totalSessions})
+                                              </span>
+                                            )}
+                                          </span>
                                           {j < regulars.length - 1 && <span style={{ color: theme.inkMute }}> · </span>}
-                                        </span>
+                                        </React.Fragment>
                                       );
                                     })}
                                   </div>
@@ -2967,14 +2969,16 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                                       const isCancelled = !!p.cancelled;
                                       const isCharged = p.cancelled === 'charged';
                                       return (
-                                        <span key={j} style={{
-                                          color: isCharged ? theme.danger : isCancelled ? theme.inkMute : theme.accent2,
-                                          textDecoration: isCancelled ? 'line-through' : 'none',
-                                        }}>
-                                          <span style={{ fontWeight: 500 }}>{p.memberName}</span>
-                                          <span style={{ color: theme.inkMute, fontSize: 10, marginLeft: 3 }}>체험</span>
+                                        <React.Fragment key={j}>
+                                          <span style={{
+                                            color: isCharged ? theme.danger : isCancelled ? theme.inkMute : theme.accent2,
+                                            textDecoration: isCancelled ? 'line-through' : 'none',
+                                          }}>
+                                            <span style={{ fontWeight: 500 }}>{p.memberName}</span>
+                                            <span style={{ color: theme.inkMute, fontSize: 10, marginLeft: 3 }}>체험</span>
+                                          </span>
                                           {j < trials.length - 1 && <span style={{ color: theme.inkMute }}> · </span>}
-                                        </span>
+                                        </React.Fragment>
                                       );
                                     })}
                                   </div>
@@ -6246,11 +6250,39 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
     setEditing(null);
   };
 
+  // 체험 이력을 메모 텍스트로 만드는 헬퍼
+  const buildTrialHistoryNote = (trial) => {
+    const parts = [];
+    // 1) 체험 날짜·시간
+    if (trial.date && trial.time) {
+      parts.push(`${trial.date} ${trial.time} 체험`);
+    } else if (trial.date) {
+      parts.push(`${trial.date} 체험`);
+    }
+    // 2) 유입 경로
+    if (trial.source) parts.push(`유입: ${trial.source}`);
+    // 3) 입금 여부
+    if (trial.paid === true) parts.push('체험비 입금완료');
+    else if (trial.paid === false) parts.push('체험비 미입금');
+    // 4) 요가 경험
+    if (trial.experience) parts.push(`요가 경험: ${trial.experience}`);
+    // 5) 통증·불편
+    if (trial.painPoints) parts.push(`통증: ${trial.painPoints}`);
+    // 6) 기존 메모
+    if (trial.memo) parts.push(`체험 메모: ${trial.memo}`);
+    return parts.join(' · ');
+  };
+  
   const convertToMember = async (trial) => {
     if (!confirm(`${trial.name}님을 정식 회원으로 전환할까요?`)) return;
+    const trialHistoryNote = buildTrialHistoryNote(trial);
+    const baseNotes = trial.painPoints || '';
+    // notes에 통증 이력 + 체험 이력 모두 포함
+    const fullNotes = [baseNotes, trialHistoryNote].filter(Boolean).join('\n\n');
     const m = {
       id: uid(), name: trial.name, phone: trial.phone,
-      yogaExperience: trial.experience, notes: trial.painPoints,
+      yogaExperience: trial.experience,
+      notes: fullNotes,
       keyPoint: trial.painPoints,
       passes: [], memoTimeline: [], progressLog: [],
       fixedSlots: [], createdAt: toYMD(new Date()),
@@ -8109,7 +8141,7 @@ function SettingsModal({ open, onClose, members, sessions, classLog, trials, set
         </div>
 
         <div className="text-[10px] text-center" style={{ color: theme.inkMute }}>
-          소선요가 · 素禪 · So-Seon · v3
+          소선요가 · So-Seon · v3
 
         <button onClick={() => { sbSignOut(); window.location.reload(); }}
           className="w-full py-2 rounded-lg text-[12px] mt-2"
@@ -8507,6 +8539,58 @@ export default function App() {
         console.log('[migration] classLog 일괄 동기화', progressTouched, '명');
       }
       await saveKey({ lkey: 'sosun:migration:classlog-sync:v1', table: 'settings', id: 'migration_classlog_sync_v1' }, true);
+    }
+    
+    // 마이그레이션: 체험 → 회원 전환된 회원의 메모에 체험 이력 자동 추가
+    // (한아름님처럼 옛 데이터 정리 - 메모가 비어있거나 짧으면 체험 이력 추가)
+    const trialHistoryFlag = await loadKey({ lkey: 'sosun:migration:trial-history:v1', table: 'settings', id: 'migration_trial_history_v1' }, false);
+    if (!trialHistoryFlag) {
+      const buildTrialHistoryNote = (trial) => {
+        const parts = [];
+        if (trial.date && trial.time) parts.push(`${trial.date} ${trial.time} 체험`);
+        else if (trial.date) parts.push(`${trial.date} 체험`);
+        if (trial.source) parts.push(`유입: ${trial.source}`);
+        if (trial.paid === true) parts.push('체험비 입금완료');
+        else if (trial.paid === false) parts.push('체험비 미입금');
+        if (trial.experience) parts.push(`요가 경험: ${trial.experience}`);
+        if (trial.painPoints) parts.push(`통증: ${trial.painPoints}`);
+        if (trial.memo) parts.push(`체험 메모: ${trial.memo}`);
+        return parts.join(' · ');
+      };
+      
+      let trialHistoryUpdated = 0;
+      const newMembersWithHistory = migratedM.map(m => {
+        // 이 회원이 체험 → 전환된 케이스인지 찾기
+        const trial = (finalT || []).find(t => 
+          t.status === '회원전환' && t.convertedToMemberId === m.id
+        );
+        if (!trial) return m;
+        
+        const trialNote = buildTrialHistoryNote(trial);
+        if (!trialNote) return m;
+        
+        const currentNotes = (m.notes || '').trim();
+        // 이미 체험 정보가 들어있으면 스킵 (중복 방지)
+        if (currentNotes.includes('체험') && currentNotes.includes('유입') === false) {
+          // 옛 형식의 짧은 메모만 있으면 → 체험 이력 추가
+        }
+        if (currentNotes.includes(trialNote)) return m; // 이미 동일 내용 있으면 스킵
+        if (currentNotes.includes('유입:') && currentNotes.includes('요가 경험:')) return m; // 이미 풍부하면 스킵
+        
+        // 메모 합치기 (기존 메모 + 체험 이력)
+        const newNotes = currentNotes 
+          ? `${currentNotes}\n\n${trialNote}`
+          : trialNote;
+        trialHistoryUpdated++;
+        return { ...m, notes: newNotes };
+      });
+      
+      if (trialHistoryUpdated > 0) {
+        migratedM = newMembersWithHistory;
+        await saveKey(K.members, migratedM);
+        console.log('[migration] 체험 이력 메모 추가', trialHistoryUpdated, '명');
+      }
+      await saveKey({ lkey: 'sosun:migration:trial-history:v1', table: 'settings', id: 'migration_trial_history_v1' }, true);
     }
     
     // 매번 실행: 체험 시간 + 1시간 지났는데 '예약확정' 상태면 '수업완료'로 자동 변경
