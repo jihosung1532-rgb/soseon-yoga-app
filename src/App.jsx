@@ -2285,7 +2285,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
         if (!a.isTrial && b.isTrial) return -1;
         return 0;
       }),
-      isAuto: false, note: explicit.note
+      isAuto: false, note: explicit.note, classNote: explicit.classNote
     };
     // 공휴일이면 자동 슬롯 표시 안 함
     if (HOLIDAYS.has(toYMD(date))) return null;
@@ -2437,6 +2437,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
             category,
             isAuto: false,
             note: sess.note,
+            classNote: sess.classNote,
             participants: [...sess.participants].sort((a, b) => {
               if (a.isTrial && !b.isTrial) return 1;
               if (!a.isTrial && b.isTrial) return -1;
@@ -2696,10 +2697,10 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
 
                         {/* Content */}
                         <div className="flex-1 min-w-0">
-                          {item.note && !item.isAuto && (
+                          {item.classNote && !item.isAuto && (
                             <div className="text-[9px] font-semibold uppercase tracking-wide mb-0.5"
                               style={{ color: theme.accent2 }}>
-                              {item.note}
+                              {item.classNote}
                             </div>
                           )}
                           
@@ -3112,15 +3113,15 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
           </div>
         )}
 
-        <Field label="메모 (선택)">
-          <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="예: open class" />
-        </Field>
-
         <Field label="수업기록 (선택)">
           <Input value={classNote} onChange={(e) => setClassNote(e.target.value)} placeholder="예: 우파비스타코나아사나" />
           <div className="text-[10px] mt-1" style={{ color: theme.inkMute }}>
             ↻ 수업기록 탭과 자동 연동
           </div>
+        </Field>
+
+        <Field label="메모 (선택)">
+          <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="예: open class" />
         </Field>
 
         <div className="flex justify-between gap-2 pt-2">
@@ -3764,21 +3765,27 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
 
   const history = useMemo(() => {
     const arr = [];
+    const passById = {};
+    (member.passes || []).forEach(p => { passById[p.id] = p; });
     Object.values(sessions).forEach(s => {
       s.participants.forEach(p => {
         if (p.memberId === member.id) {
+          // 카테고리 추론: passId가 있으면 그 수강권의 category, 없으면 p.classType
+          const pass = p.passId ? passById[p.passId] : null;
+          const category = pass?.category || (p.classType === '개인' ? 'private' : null);
           arr.push({
             date: s.date, time: s.time,
             sessionNumber: p.sessionNumber, totalSessions: p.totalSessions,
             cancelled: p.cancelled, cancelNote: p.cancelNote,
             classType: p.classType,
-            status: p.status, // 'attended' | 'reserved' | 'cancelled_advance' | 'cancelled_sameday' | 'no_show'
+            category, // 'private' | 'group' | null
+            status: p.status,
           });
         }
       });
     });
     return arr.sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
-  }, [sessions, member.id]);
+  }, [sessions, member.id, member.passes]);
 
   const addPass = async (passData, rewardSourceId) => {
     let passes = [...(member.passes || [])];
@@ -4381,7 +4388,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                       {showCancelNote && <span className="text-[10px] flex-1" style={{ color: theme.inkMute }}>· {h.cancelNote}</span>}
                       {!showCancelNote && <div className="flex-1"></div>}
                       <div className="flex items-center gap-1.5 shrink-0">
-                        {h.classType === '개인' && <Chip tone="accent" size="sm">개인</Chip>}
+                        {h.category === 'private' && <Chip tone="accent" size="sm">개인</Chip>}
                         {h.sessionNumber && h.totalSessions && !h.cancelled && h.status !== 'cancelled_advance' && h.status !== 'reserved' && !isFuture && (
                           <span className="text-[11px] tabular-nums" style={{ color: theme.inkSoft }}>{h.sessionNumber}/{h.totalSessions}</span>
                         )}
