@@ -1400,7 +1400,17 @@ async function callClaude(messages, system) {
   const data = await res.json();
   // 에러 응답 처리
   if (!res.ok || data.error) {
-    throw new Error(data.error || data.detail || `API 에러 (${res.status})`);
+    let errMsg = data.error || data.detail || `API 에러 (${res.status})`;
+    if (data.detail && typeof data.detail === 'object') {
+      errMsg += ' [' + JSON.stringify(data.detail) + ']';
+    }
+    if (data.imageInfo) {
+      errMsg += ' [imgs: ' + JSON.stringify(data.imageInfo) + ']';
+    }
+    if (data.anthropicStatus) {
+      errMsg += ' [Anthropic ' + data.anthropicStatus + ']';
+    }
+    throw new Error(errMsg);
   }
   return (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n');
 }
@@ -1560,13 +1570,20 @@ function EmptyState({ icon: Icon, title, hint }) {
 
 function Toast({ msg, onDone }) {
   useEffect(() => {
-    if (msg) { const t = setTimeout(onDone, 2400); return () => clearTimeout(t); }
+    if (msg) { 
+      // 긴 메시지(에러 진단)는 8초, 짧은 건 2.4초
+      const duration = msg.length > 60 ? 12000 : 2400;
+      const t = setTimeout(onDone, duration); 
+      return () => clearTimeout(t); 
+    }
   }, [msg, onDone]);
   if (!msg) return null;
+  const isLong = msg.length > 60;
   return (
-    <div className="fixed left-1/2 -translate-x-1/2 z-[100]" style={{ bottom: 32 }}>
-      <div className="px-4 py-2 rounded-full text-sm shadow-lg"
-        style={{ backgroundColor: theme.ink, color: theme.card }}>
+    <div className="fixed left-1/2 -translate-x-1/2 z-[100]" style={{ bottom: 32, maxWidth: '92vw' }}>
+      <div className={isLong ? "px-4 py-3 rounded-2xl text-xs shadow-lg" : "px-4 py-2 rounded-full text-sm shadow-lg"}
+        style={{ backgroundColor: theme.ink, color: theme.card, wordBreak: 'break-all', whiteSpace: 'pre-wrap', maxHeight: '40vh', overflow: 'auto' }}
+        onClick={onDone}>
         {msg}
       </div>
     </div>
