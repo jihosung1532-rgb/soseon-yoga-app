@@ -4421,6 +4421,17 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                           {p.startDate} ~ {p.expiryDate}
                           {p.holdUsed && <span style={{ color: theme.warn }}> · 홀딩{p.holdDays}일</span>}
                         </div>
+                        {(() => {
+                          const perSession = p.pricePerSession || (p.price > 0 && p.totalSessions > 0 ? Math.round(p.price / p.totalSessions) : 0);
+                          if (perSession > 0) {
+                            return (
+                              <div className="text-[10px] mt-0.5" style={{ color: theme.accent }}>
+                                회당 {perSession.toLocaleString()}원
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
                         {p.note && (
                           <div className="text-[10px] mt-1 italic" style={{ color: theme.inkSoft }}>{p.note}</div>
                         )}
@@ -4541,12 +4552,15 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                             {p.paymentDate && `결제 ${p.paymentDate} · `}{p.startDate} ~ {p.expiryDate}
                             {p.holdUsed && <span style={{ color: theme.warn }}> · 홀딩{p.holdDays}일 사용</span>}
                           </div>
-                          {p.price > 0 && (
-                            <div className="text-[11px] mt-0.5" style={{ color: theme.accent }}>
-                              {p.price.toLocaleString()}원
-                              {p.pricePerSession && <span style={{ color: theme.inkMute }}> · 회당 {p.pricePerSession.toLocaleString()}원</span>}
-                            </div>
-                          )}
+                          {p.price > 0 && (() => {
+                            const perSession = p.pricePerSession || (p.totalSessions > 0 ? Math.round(p.price / p.totalSessions) : 0);
+                            return (
+                              <div className="text-[11px] mt-0.5" style={{ color: theme.accent }}>
+                                {p.price.toLocaleString()}원
+                                {perSession > 0 && <span style={{ color: theme.inkMute }}> · 회당 {perSession.toLocaleString()}원</span>}
+                              </div>
+                            );
+                          })()}
                           {p.note && (
                             <div className="text-[10px] mt-1 italic" style={{ color: theme.inkSoft }}>{p.note}</div>
                           )}
@@ -7377,26 +7391,63 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
 
   // 수업 통계
   const classStats = useMemo(() => {
-    if (!sessions) return { total: 0, group: 0, private: 0, weekAvg: 0, weeks: 0 };
+    if (!sessions) return { total: 0, group: 0, private: 0, weekAvg: 0, weeks: 0, byTime: [] };
     let total = 0, group = 0, privateClass = 0;
     const todayStr = toYMD(new Date());
+    
+    // 시간대별 집계 (수업 횟수 + 총 수익)
+    // 회원당 회당 단가를 계산하여 더함 (체험자 제외)
+    const byTimeMap = {}; // { '11:00': { count, revenue, attendees } }
+    const memberMap = {};
+    members.forEach(m => { memberMap[m.id] = m; });
+    
     Object.entries(sessions).forEach(([key, s]) => {
       if (!s?.date?.startsWith(targetYM)) return;
-      // 미래 수업은 제외
       if (s.date > todayStr) return;
-      // 출석한 사람이 있는 수업만 카운트 (취소/노쇼 빼고)
+      
       const hasAttended = s.participants?.some(p => 
         !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'no_show'
       );
       if (!hasAttended) return;
       total++;
-      // 카테고리 판단
       const hasPrivate = s.participants?.some(p => p.classType === '개인');
       if (hasPrivate) privateClass++;
       else group++;
+      
+      // 시간대별 수익 계산
+      const time = s.time || '기타';
+      if (!byTimeMap[time]) byTimeMap[time] = { count: 0, revenue: 0, attendees: 0, group: 0, private: 0 };
+      byTimeMap[time].count++;
+      if (hasPrivate) byTimeMap[time].private++;
+      else byTimeMap[time].group++;
+      
+      // 그 수업의 수익: 출석한 회원들의 회당 단가 합
+      (s.participants || []).forEach(p => {
+        if (p.isTrial) return;
+        if (p.cancelled || p.status === 'reserved' || p.status === 'cancelled_advance' || p.status === 'cancelled_sameday') return;
+        // 회원 찾기 + 그 패스의 회당 단가
+        const member = memberMap[p.memberId];
+        if (!member) return;
+        const pass = (member.passes || []).find(x => x.id === p.passId);
+        if (!pass || !pass.price || !pass.totalSessions) return;
+        const perSession = pass.pricePerSession || Math.round(pass.price / pass.totalSessions);
+        byTimeMap[time].revenue += perSession;
+        byTimeMap[time].attendees++;
+      });
     });
     
-    // 해당 월의 주 수 (현재 월이면 지난 주까지만)
+    const byTime = Object.entries(byTimeMap)
+      .map(([time, v]) => ({
+        time,
+        count: v.count,
+        revenue: v.revenue,
+        attendees: v.attendees,
+        avgPerClass: v.count > 0 ? Math.round(v.revenue / v.count) : 0,
+        avgAttendees: v.count > 0 ? (v.attendees / v.count).toFixed(1) : 0,
+        group: v.group, private: v.private,
+      }))
+      .sort((a, b) => a.time.localeCompare(b.time));
+    
     const monthStart = new Date(targetMonth);
     const monthEnd = new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 0);
     const isCurrentMonth = monthOffset === 0;
@@ -7405,8 +7456,8 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
     const weeks = Math.max(1, Math.ceil(daysElapsed / 7));
     const weekAvg = (total / weeks).toFixed(1);
     
-    return { total, group, private: privateClass, weekAvg, weeks };
-  }, [sessions, targetYM, monthOffset, targetMonth]);
+    return { total, group, private: privateClass, weekAvg, weeks, byTime };
+  }, [sessions, members, targetYM, monthOffset, targetMonth]);
   
   // 출석률 통계
   const attendanceStats = useMemo(() => {
@@ -7615,6 +7666,9 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
   const timeSlotStats = useMemo(() => {
     if (!sessions) return [];
     const todayStr = toYMD(new Date());
+    const memberMap = {};
+    members.forEach(m => { memberMap[m.id] = m; });
+    
     const slots = {};
     Object.values(sessions).forEach(s => {
       if (!s?.date?.startsWith(targetYM) || s.date > todayStr) return;
@@ -7622,18 +7676,29 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
         !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'no_show'
       );
       if (!hasAttended) return;
-      if (!slots[s.time]) slots[s.time] = { time: s.time, count: 0, totalPpl: 0 };
+      if (!slots[s.time]) slots[s.time] = { time: s.time, count: 0, totalPpl: 0, totalRevenue: 0 };
       slots[s.time].count++;
-      const ppl = s.participants?.filter(p => 
+      const attendees = s.participants?.filter(p => 
         !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'no_show'
-      ).length || 0;
-      slots[s.time].totalPpl += ppl;
+      ) || [];
+      slots[s.time].totalPpl += attendees.length;
+      // 수업당 수익 = 출석 회원들의 회당 단가 합 (체험자 제외)
+      attendees.forEach(p => {
+        if (p.isTrial) return;
+        const member = memberMap[p.memberId];
+        if (!member) return;
+        const pass = (member.passes || []).find(x => x.id === p.passId);
+        if (!pass || !pass.price || !pass.totalSessions) return;
+        const perSession = pass.pricePerSession || Math.round(pass.price / pass.totalSessions);
+        slots[s.time].totalRevenue += perSession;
+      });
     });
     return Object.values(slots).map(s => ({
       ...s,
       avgPpl: s.count > 0 ? Math.round(s.totalPpl / s.count * 10) / 10 : 0,
+      avgRevenue: s.count > 0 ? Math.round(s.totalRevenue / s.count) : 0,
     })).sort((a, b) => b.count - a.count);
-  }, [sessions, targetYM]);
+  }, [sessions, members, targetYM]);
 
   return (
     <div className="px-3 pb-28 pt-2 space-y-3">
@@ -7911,14 +7976,15 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
             
             {timeSlotStats.length > 0 && (
               <>
-                <div className="text-[11px] font-bold mb-2 mt-3" style={{ color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.05em' }}>인기 시간대</div>
+                <div className="text-[11px] font-bold mb-2 mt-3" style={{ color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.05em' }}>시간대별 수업 · 수익</div>
                 {timeSlotStats.map(t => (
-                  <div key={t.time} className="mb-2">
+                  <div key={t.time} className="mb-2.5">
                     <div className="flex justify-between text-[11px] mb-1">
-                      <span>{t.time}</span>
+                      <span style={{ fontWeight: 600 }}>{t.time}</span>
                       <span style={{ color: theme.inkMute }}>
                         <strong style={{ color: theme.ink }}>{t.count}회</strong>
                         {t.avgPpl > 0 && <span> · 평균 {t.avgPpl}명</span>}
+                        {t.avgRevenue > 0 && <span style={{ color: theme.accent }}> · 회당 {t.avgRevenue.toLocaleString()}원</span>}
                       </span>
                     </div>
                     <div className="h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: theme.cardAlt }}>
