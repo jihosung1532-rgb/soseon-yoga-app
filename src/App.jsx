@@ -1174,6 +1174,21 @@ function buildSeedSessions() {
 /* =========================================================
    Pass / member helpers
    ========================================================= */
+// === 5월 감사 이벤트 ===
+// 2026년 5월 한정: 체험자가 회원권 등록 시 수강권 +1회 보너스
+const MAY_EVENT_START = '2026-05-01';
+const MAY_EVENT_END = '2026-05-31';
+// 오늘 5월이면 안내 배너 표시
+function isMayEventActive() {
+  const today = toYMD(new Date());
+  return today >= MAY_EVENT_START && today <= MAY_EVENT_END;
+}
+// 체험 날짜가 5월이면 보너스 대상
+function isMayEventTrial(trialDate) {
+  if (!trialDate) return false;
+  return trialDate >= MAY_EVENT_START && trialDate <= MAY_EVENT_END;
+}
+
 function activePass(member, category) {
   if (!member?.passes?.length) return null;
   const today = toYMD(new Date());
@@ -2212,6 +2227,18 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
           </div>
         )}
       </div>
+
+      {/* 5월 감사 이벤트 안내 배너 (5월 한정) */}
+      {isMayEventActive() && (
+        <div className="rounded-2xl p-3" style={{ backgroundColor: '#E8F0E5', border: '1px solid #5C8A5C' }}>
+          <div className="text-[12px] font-bold mb-0.5" style={{ color: '#3F5A3F' }}>
+            🌿 5월 감사 이벤트 진행 중
+          </div>
+          <div className="text-[11px]" style={{ color: '#4A6E4A', lineHeight: 1.5 }}>
+            5월 체험자가 회원권 등록 시 → 수강권 +1회 보너스
+          </div>
+        </div>
+      )}
 
       {/* 정원 현황 카드 (소그룹 화·목 시간대별 등록 인원) */}
       {capacityStatus.length > 0 && (
@@ -4756,8 +4783,12 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
             member={member}
             closedDays={closedDays}
             onClose={() => setAddingPass(false)}
-            onSave={async (data, rewardSourceId) => {
+            onSave={async (data, rewardSourceId, mayBonusUsed) => {
               await addPass(data, rewardSourceId);
+              // 5월 이벤트 보너스 사용 처리 - 회원에 플래그 저장 (재사용 방지)
+              if (mayBonusUsed && !member.mayEventBonusUsed) {
+                await onUpdate({ ...member, mayEventBonusUsed: true });
+              }
               // Offer registration SMS
               const p = Array.isArray(data) ? data[data.length - 1] : data;
               if (member.phone && p && p.totalSessions) {
@@ -5483,6 +5514,12 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
   
   const [applyBonus, setApplyBonus] = useState(true);
   const bonus = (eligibleReward && applyBonus) ? eligibleReward.rs.bonus : 0;
+  
+  // 🌿 5월 이벤트 보너스 (체험자가 5월 1~31일에 체험한 경우)
+  const isMayEventEligible = !!member?.mayEventBonus && !member?.mayEventBonusUsed;
+  const [applyMayBonus, setApplyMayBonus] = useState(isMayEventEligible);
+  const mayBonus = (isMayEventEligible && applyMayBonus) ? 1 : 0;
+  
   const [category, setCategory] = useState(preset.category || 'group');
   const [canHold, setCanHold] = useState(!!preset.canHold);
   const [note, setNote] = useState('');
@@ -5520,8 +5557,9 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
         },
       ]);
     } else {
+      const totalBonus = bonus + mayBonus; // 리듬 보상 + 5월 이벤트 보너스
       const data = {
-        type, category, totalSessions: total + bonus,
+        type, category, totalSessions: total + totalBonus,
         paymentDate, startDate, expiryDate: extendedExpiry,
         price, canHold, days, note: note || undefined,
       };
@@ -5531,13 +5569,51 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
         data.rhythmBonus = bonus;
         data.rhythmBonusFrom = eligibleReward.p.id;
       }
-      onSave(data, eligibleReward && applyBonus ? eligibleReward.p.id : null);
+      if (mayBonus > 0) {
+        data.mayEventBonus = mayBonus;
+      }
+      onSave(data, eligibleReward && applyBonus ? eligibleReward.p.id : null, mayBonus > 0);
     }
   };
 
   return (
     <Modal open={true} onClose={onClose} title="수강권 추가">
       <div className="space-y-3">
+        {/* 🌿 5월 감사 이벤트 */}
+        {isMayEventEligible && (
+          <div className="rounded-xl p-3" style={{ backgroundColor: '#E8F0E5', border: '1px solid #5C8A5C' }}>
+            <div className="text-[12px] font-bold mb-1" style={{ color: '#3F5A3F' }}>
+              🌿 5월 감사 이벤트 대상자!
+            </div>
+            <div className="text-[10.5px] mb-2" style={{ color: '#4A6E4A' }}>
+              5월 체험 후 등록 → <strong>수강권 +1회 보너스</strong>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer pt-2"
+              style={{ borderTop: '1px dashed #5C8A5C' }}>
+              <input 
+                type="checkbox" 
+                checked={applyMayBonus}
+                onChange={(e) => setApplyMayBonus(e.target.checked)}
+                style={{
+                  width: 18, height: 18,
+                  accentColor: '#5C8A5C',
+                  cursor: 'pointer',
+                }}
+              />
+              <div className="flex-1">
+                <div className="text-[12px] font-bold" style={{ color: '#3F5A3F' }}>
+                  5월 이벤트 보너스 +1회 적용
+                </div>
+                <div className="text-[10px]" style={{ color: '#4A6E4A' }}>
+                  {applyMayBonus 
+                    ? `${total + bonus}회 → ${total + bonus + 1}회로 등록`
+                    : '체크 해제 시 보너스 없이 등록'}
+                </div>
+              </div>
+            </label>
+          </div>
+        )}
+        
         {/* 🏆 리듬 수련 보상 */}
         {eligibleReward && (
           <div className="rounded-xl p-3" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}>
@@ -6277,8 +6353,11 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
     if (!confirm(`${trial.name}님을 정식 회원으로 전환할까요?`)) return;
     const trialHistoryNote = buildTrialHistoryNote(trial);
     const baseNotes = trial.painPoints || '';
-    // notes에 통증 이력 + 체험 이력 모두 포함
-    const fullNotes = [baseNotes, trialHistoryNote].filter(Boolean).join('\n\n');
+    // 5월 이벤트 대상 체크
+    const isMayBonus = isMayEventTrial(trial.date);
+    const eventNote = isMayBonus ? '🌿 5월 이벤트 대상 (수강권 등록 시 +1회 보너스 적용)' : '';
+    // notes에 통증 + 체험 이력 + 이벤트 알림
+    const fullNotes = [baseNotes, trialHistoryNote, eventNote].filter(Boolean).join('\n\n');
     const m = {
       id: uid(), name: trial.name, phone: trial.phone,
       yogaExperience: trial.experience,
@@ -6287,12 +6366,13 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
       passes: [], memoTimeline: [], progressLog: [],
       fixedSlots: [], createdAt: toYMD(new Date()),
       fromTrial: trial.id,
+      mayEventBonus: isMayBonus, // 수강권 등록 시 자동 +1회
     };
     setMembers([...members, m]);
     await saveKey(K.members, [...members, m]);
     await saveTrials(trials.map(t => t.id === trial.id ? { ...t, status: '회원전환', convertedAt: toYMD(new Date()), convertedToMemberId: m.id } : t));
     setEditing(null);
-    toast('정식 회원으로 전환됨');
+    toast(isMayBonus ? '회원 전환됨 · 🌿 5월 이벤트 대상' : '정식 회원으로 전환됨');
   };
 
   const statusTone = (s) => {
@@ -7224,13 +7304,46 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
 
   const stats = useMemo(() => {
     let revenue = 0, count = 0, refundTotal = 0;
+    let netRevenue = 0;  // 카드 수수료 차감 후 실수령
+    let totalFee = 0;    // 카드 수수료 합계
     const byCat = { group: 0, private: 0, trial: 0, other: 0 };
+    const byMethod = { 카드: 0, 지역화폐: 0, 계좌이체: 0, 현금: 0, 기타: 0 };
+    
+    // 결제수단별 수수료율 (실측치)
+    const FEE_RATE = {
+      신한카드: 0.0215,   // 2.15% (유연선 360,000 → 352,260 실측)
+      카드: 0.0215,       // 일반 카드도 같은 비율로 추정
+      지역화폐: 0.005,    // 0.50% (지역화폐 1,940,000 → 1,930,325 실측)
+      계좌이체: 0,
+      현금: 0,
+    };
+    
     members.forEach(m => {
       (m.passes || []).forEach(p => {
         if (p.paymentDate && p.paymentDate.startsWith(targetYM) && p.price > 0) {
           revenue += p.price; count++;
           const cat = p.category || 'other';
           byCat[cat] = (byCat[cat] || 0) + p.price;
+          
+          // 결제수단별 수수료 계산
+          const method = p.paymentMethod || '';
+          let feeRate = 0;
+          if (method.includes('지역화폐')) {
+            feeRate = FEE_RATE.지역화폐;
+            byMethod.지역화폐 += p.price;
+          } else if (method.includes('카드')) {
+            feeRate = FEE_RATE.카드;
+            byMethod.카드 += p.price;
+          } else if (method.includes('계좌') || method.includes('이체')) {
+            byMethod.계좌이체 += p.price;
+          } else if (method.includes('현금')) {
+            byMethod.현금 += p.price;
+          } else {
+            byMethod.기타 += p.price;
+          }
+          const fee = Math.round(p.price * feeRate);
+          totalFee += fee;
+          netRevenue += (p.price - fee);
         }
       });
       (m.refunds || []).forEach(r => {
@@ -7243,14 +7356,23 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
     const conversionRate = monthTrials.length > 0 ? Math.round(converted / monthTrials.length * 100) : 0;
     
     // 체험 수익: 미전환 + 입금완료 = 1만원
-    const trialRevenue = monthTrials.filter(t => 
+    const trialPaidCount = monthTrials.filter(t => 
       t.status !== '회원전환' && t.paid === true
-    ).length * 10000;
+    ).length;
+    const trialRevenue = trialPaidCount * 10000;
     revenue += trialRevenue;
+    netRevenue += trialRevenue; // 체험비는 보통 계좌이체라 수수료 X
     byCat.trial = (byCat.trial || 0) + trialRevenue;
-    count += monthTrials.filter(t => t.status !== '회원전환' && t.paid === true).length;
+    count += trialPaidCount;
 
-    return { revenue, count, refundTotal, net: revenue - refundTotal, byCat, trialTotal: monthTrials.length, converted, conversionRate, trialRevenue };
+    return { 
+      revenue, count, refundTotal, 
+      net: revenue - refundTotal, 
+      netRevenue: netRevenue - refundTotal, // 실수령액 (수수료 차감 + 환불 차감)
+      totalFee,
+      byCat, byMethod,
+      trialTotal: monthTrials.length, converted, conversionRate, trialRevenue 
+    };
   }, [members, trials, targetYM]);
 
   // 수업 통계
@@ -7542,12 +7664,29 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
                 {stats.net.toLocaleString()}
               </div>
               <div className="text-sm" style={{ color: theme.inkMute }}>원</div>
+              <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full" 
+                style={{ backgroundColor: theme.cardAlt2, color: theme.inkMute }}>
+                결제 기준
+              </span>
             </div>
             <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>
               매출 {stats.revenue.toLocaleString()}원
               {stats.refundTotal > 0 && <span style={{ color: theme.accent2 }}> · 환불 -{stats.refundTotal.toLocaleString()}원</span>}
               <span> · 결제 {stats.count}건</span>
             </div>
+            {stats.totalFee > 0 && (
+              <div className="mt-2 pt-2 flex items-baseline gap-2" 
+                style={{ borderTop: `1px dashed ${theme.line}` }}>
+                <div className="text-[10px]" style={{ color: theme.inkMute }}>실수령</div>
+                <div className="text-[18px] font-bold tabular-nums" style={{ color: theme.ink, fontFamily: theme.serif }}>
+                  {stats.netRevenue.toLocaleString()}
+                </div>
+                <div className="text-[10px]" style={{ color: theme.inkMute }}>원</div>
+                <div className="ml-auto text-[10px]" style={{ color: theme.accent2 }}>
+                  카드 수수료 -{stats.totalFee.toLocaleString()}원
+                </div>
+              </div>
+            )}
             <div className="flex gap-3 mt-3 text-[11px]" style={{ color: theme.inkSoft }}>
               <span>소그룹 <strong style={{ color: theme.ink }}>{Math.round(stats.byCat.group / 10000)}만</strong></span>
               <span>개인 <strong style={{ color: theme.ink }}>{Math.round(stats.byCat.private / 10000)}만</strong></span>
@@ -7558,6 +7697,44 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
         expand={
           <>
             <div className="text-[11px] font-bold mb-2" style={{ color: theme.accent, textTransform: 'uppercase', letterSpacing: '0.05em' }}>수익 인사이트</div>
+            
+            {/* 결제수단별 매출 분포 */}
+            <div className="mb-3 p-2 rounded-lg" style={{ backgroundColor: theme.cardAlt2 }}>
+              <div className="text-[10px] mb-1.5" style={{ color: theme.inkMute }}>결제수단별 매출</div>
+              <div className="space-y-1 text-[11px]">
+                {stats.byMethod.지역화폐 > 0 && (
+                  <div className="flex justify-between">
+                    <span style={{ color: theme.inkSoft }}>🟢 지역화폐 (수수료 0.5%)</span>
+                    <span><strong style={{ color: theme.ink }}>{stats.byMethod.지역화폐.toLocaleString()}원</strong></span>
+                  </div>
+                )}
+                {stats.byMethod.카드 > 0 && (
+                  <div className="flex justify-between">
+                    <span style={{ color: theme.inkSoft }}>🔵 카드 (수수료 2.15%)</span>
+                    <span><strong style={{ color: theme.ink }}>{stats.byMethod.카드.toLocaleString()}원</strong></span>
+                  </div>
+                )}
+                {stats.byMethod.계좌이체 > 0 && (
+                  <div className="flex justify-between">
+                    <span style={{ color: theme.inkSoft }}>⚪ 계좌이체 (수수료 X)</span>
+                    <span><strong style={{ color: theme.ink }}>{stats.byMethod.계좌이체.toLocaleString()}원</strong></span>
+                  </div>
+                )}
+                {stats.byMethod.현금 > 0 && (
+                  <div className="flex justify-between">
+                    <span style={{ color: theme.inkSoft }}>💵 현금 (수수료 X)</span>
+                    <span><strong style={{ color: theme.ink }}>{stats.byMethod.현금.toLocaleString()}원</strong></span>
+                  </div>
+                )}
+                {stats.byMethod.기타 > 0 && (
+                  <div className="flex justify-between">
+                    <span style={{ color: theme.inkSoft }}>· 기타</span>
+                    <span><strong style={{ color: theme.ink }}>{stats.byMethod.기타.toLocaleString()}원</strong></span>
+                  </div>
+                )}
+              </div>
+            </div>
+            
             {revenueInsight.prevMonthDelta !== null && (
               <InsightRow label="전월 대비"
                 value={
