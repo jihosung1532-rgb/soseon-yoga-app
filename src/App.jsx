@@ -2264,16 +2264,23 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
                   full: { bg: 'rgba(197, 146, 142, 0.12)', border: '#C5928E', label: { bg: '#B85450', text: '마감' } },
                 }[state];
                 return (
-                  <div className="rounded-lg px-2 py-2 text-center" style={{ backgroundColor: colors.bg, border: `1px solid ${colors.border}` }}>
-                    <div className="mb-1" style={{ fontSize: 13, letterSpacing: 1, lineHeight: 1 }}>
+                  <div className="rounded-lg px-2 py-1.5 text-center relative" 
+                    style={{ backgroundColor: colors.bg, border: `1px solid ${colors.border}`, paddingTop: 14 }}>
+                    {/* 라벨 - 우측 상단 모서리 */}
+                    <span className="absolute px-1.5 py-0.5 rounded-md" 
+                      style={{ 
+                        backgroundColor: colors.label.bg, color: 'white', 
+                        fontSize: 9, fontWeight: 700, letterSpacing: 0.5, lineHeight: 1.2,
+                        top: -7, right: 6,
+                      }}>
+                      {colors.label.text}
+                    </span>
+                    <div className="mb-0.5" style={{ fontSize: 13, letterSpacing: 1, lineHeight: 1 }}>
                       <span style={{ color: theme.ink }}>{filledDots}</span>
                       <span style={{ color: '#D0CABB' }}>{emptyDots}</span>
                     </div>
                     <div className="text-[11px] tabular-nums" style={{ color: theme.inkSoft }}>
                       <strong style={{ color: theme.ink, fontWeight: 700 }}>{count}</strong>/{CAPACITY}
-                    </div>
-                    <div className="inline-block mt-1 px-1.5 py-0.5 rounded-md" style={{ backgroundColor: colors.label.bg, color: 'white', fontSize: 9, fontWeight: 700, letterSpacing: 0.5 }}>
-                      {colors.label.text}
                     </div>
                   </div>
                 );
