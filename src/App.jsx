@@ -112,6 +112,42 @@ const sb = {
     if (!res.ok) return null;
     return res.json();
   },
+
+  // === bookings 테이블 (예약 요청 시스템) ===
+  async getPendingBookings() {
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/bookings?status=eq.pending&order=created_at.asc`,
+        { headers: sb.headers() }
+      );
+      if (!res.ok) return [];
+      return res.json();
+    } catch { return []; }
+  },
+  
+  async getAllBookings() {
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/bookings?order=created_at.desc&limit=100`,
+        { headers: sb.headers() }
+      );
+      if (!res.ok) return [];
+      return res.json();
+    } catch { return []; }
+  },
+
+  async updateBooking(id, updates) {
+    try {
+      await fetch(
+        `${SUPABASE_URL}/rest/v1/bookings?id=eq.${encodeURIComponent(id)}`,
+        {
+          method: 'PATCH',
+          headers: { ...sb.headers(), 'Prefer': 'return=representation' },
+          body: JSON.stringify(updates),
+        }
+      );
+    } catch (e) { console.error('updateBooking', e); }
+  },
 };
 
 // Supabase 로그인
@@ -1919,7 +1955,7 @@ function SMSDialog({ open, onClose, phone, name, template, onConfirmed }) {
 /* =========================================================
    Home Dashboard — today's tasks with dismiss
    ========================================================= */
-function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDismiss, smsConfirmed = {}, closedDays = [], groupSlots = [], toast, onSendSMS, goto, onOpenSettings }) {
+function HomeView({ members, setMembers, sessions, setSessions, trials, classLog, dashDismiss, setDashDismiss, smsConfirmed = {}, closedDays = [], groupSlots = [], toast, onSendSMS, goto, onOpenSettings }) {
   const todayYMD = toYMD(new Date());
   const dismissedToday = (dashDismiss[todayYMD] || []);
   const [daysSinceBackup, setDaysSinceBackup] = useState(null);
@@ -2092,6 +2128,81 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
   // 💼 사업 일정 팝업 (5/22 월세 D-7, 5/31 종소세 등 임박 시)
   const [showFinanceAlert, setShowFinanceAlert] = useState(false);
   const [financeAlertItems, setFinanceAlertItems] = useState([]);
+  
+  // 📩 예약 요청 (bookings)
+  const [pendingBookings, setPendingBookings] = useState([]);
+  const [showBookingModal, setShowBookingModal] = useState(false);
+  
+  // 페이지 진입 시 + 30초마다 자동으로 예약 요청 확인
+  useEffect(() => {
+    const load = async () => {
+      const items = await sb.getPendingBookings();
+      setPendingBookings(items || []);
+    };
+    load();
+    const interval = setInterval(load, 30000); // 30초마다
+    return () => clearInterval(interval);
+  }, []);
+  
+  // 예약 승인
+  const approveBooking = async (booking) => {
+    if (!confirm(`${booking.member_name}님의 ${booking.date} ${booking.time} 예약을 승인할까요?`)) return;
+    
+    // 1. bookings 상태 업데이트
+    await sb.updateBooking(booking.id, {
+      status: 'approved',
+      responded_at: new Date().toISOString(),
+    });
+    
+    // 2. sessions에 추가 (강사 앱 데이터)
+    const sessKey = `${booking.date}_${booking.time}`;
+    const existing = sessions[sessKey];
+    const newPart = {
+      memberId: booking.member_id,
+      memberName: booking.member_name,
+      classType: booking.class_type === '개인' ? '개인' : '그룹',
+      status: 'reserved',
+    };
+    
+    let newSession;
+    if (existing) {
+      // 기존 세션에 참여자 추가
+      const alreadyIn = existing.participants?.some(p => p.memberId === booking.member_id);
+      if (!alreadyIn) {
+        newSession = { ...existing, participants: [...(existing.participants || []), newPart] };
+      } else {
+        newSession = existing; // 이미 있으면 그대로
+      }
+    } else {
+      // 새 세션
+      newSession = {
+        date: booking.date,
+        time: booking.time,
+        participants: [newPart],
+      };
+    }
+    
+    const newSessions = { ...sessions, [sessKey]: newSession };
+    setSessions(newSessions);
+    await saveKey(K.sessions, newSessions);
+    
+    // 3. 새로고침
+    const items = await sb.getPendingBookings();
+    setPendingBookings(items || []);
+    toast(`${booking.member_name}님 예약 승인됨`);
+  };
+  
+  // 예약 거절
+  const rejectBooking = async (booking) => {
+    if (!confirm(`${booking.member_name}님의 예약을 거절할까요?`)) return;
+    await sb.updateBooking(booking.id, {
+      status: 'rejected',
+      responded_at: new Date().toISOString(),
+    });
+    const items = await sb.getPendingBookings();
+    setPendingBookings(items || []);
+    toast('예약 거절됨');
+  };
   
   useEffect(() => {
     // 오늘 기준으로 임박한 사업 일정 체크
@@ -2308,6 +2419,78 @@ function HomeView({ members, sessions, trials, classLog, dashDismiss, setDashDis
           </div>
         )}
       </div>
+
+      {/* 📩 예약 요청 알림 (pending bookings) */}
+      {pendingBookings.length > 0 && (
+        <div className="rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.99]" 
+          style={{ 
+            background: 'linear-gradient(135deg, #FFF8ED 0%, #FFE8C9 100%)',
+            border: '1px solid #C26B4A',
+          }}
+          onClick={() => setShowBookingModal(true)}>
+          <div className="flex items-center gap-2">
+            <div style={{ fontSize: 18 }}>📩</div>
+            <div className="flex-1">
+              <div className="text-[13px] font-bold" style={{ color: '#8A3F3C' }}>
+                새 예약 요청 {pendingBookings.length}건
+              </div>
+              <div className="text-[11px]" style={{ color: '#A0573B' }}>
+                {pendingBookings.slice(0, 2).map(b => `${b.member_name}님 ${b.date} ${b.time}`).join(' · ')}
+                {pendingBookings.length > 2 && ` 외 ${pendingBookings.length - 2}건`}
+              </div>
+            </div>
+            <div style={{ color: '#C26B4A', fontSize: 18, fontWeight: 600 }}>›</div>
+          </div>
+        </div>
+      )}
+      
+      {/* 예약 요청 모달 */}
+      {showBookingModal && (
+        <Modal open={true} onClose={() => setShowBookingModal(false)} 
+          title="📩 예약 요청" 
+          sub={`${pendingBookings.length}건 대기 중`}>
+          <div className="space-y-2 mb-2">
+            {pendingBookings.length === 0 ? (
+              <div className="text-center py-8 text-[12px]" style={{ color: theme.inkMute }}>
+                대기 중인 요청이 없어요
+              </div>
+            ) : pendingBookings.map(b => (
+              <div key={b.id} className="rounded-xl p-3"
+                style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
+                <div className="flex items-start justify-between mb-2">
+                  <div>
+                    <div className="text-[13px] font-bold" style={{ color: theme.ink }}>
+                      {b.member_name}
+                      <span className="text-[11px] font-normal ml-2" style={{ color: theme.inkMute }}>
+                        {b.member_phone}
+                      </span>
+                    </div>
+                    <div className="text-[12px] mt-1" style={{ color: theme.accent }}>
+                      📅 {b.date} {b.time} · {b.class_type || '소그룹'}
+                    </div>
+                    {b.note && (
+                      <div className="text-[10px] mt-1 italic" style={{ color: theme.inkSoft }}>
+                        {b.note}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="flex gap-2 mt-2">
+                  <Button size="sm" variant="primary" className="flex-1"
+                    onClick={() => approveBooking(b)}>
+                    ✓ 승인
+                  </Button>
+                  <Button size="sm" variant="ghost" className="flex-1"
+                    onClick={() => rejectBooking(b)}>
+                    ✗ 거절
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <Button onClick={() => setShowBookingModal(false)} variant="ghost" className="w-full">닫기</Button>
+        </Modal>
+      )}
 
       {/* 5월 감사 이벤트 안내 배너 (5월 한정) */}
       {isMayEventActive() && (
@@ -9590,7 +9773,7 @@ export default function App() {
       `}</style>
       <Header tab={tab} setTab={setTab} onOpenSettings={() => setSettingsOpen(true)} />
       {tab === 'home' && (
-        <HomeView members={members} sessions={sessions} trials={trials}
+        <HomeView members={members} setMembers={setMembers} sessions={sessions} setSessions={setSessions} trials={trials}
           classLog={classLog}
           dashDismiss={dashDismiss} setDashDismiss={setDashDismiss}
           smsConfirmed={smsConfirmed}
