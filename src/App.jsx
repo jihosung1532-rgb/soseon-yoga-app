@@ -149,6 +149,29 @@ const sb = {
       );
     } catch (e) { console.error('updateBooking', e); }
   },
+
+  // 회원 비밀번호 초기화 (강사가 호출 - authenticated 필요)
+  async resetMemberPassword(memberId) {
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/rpc/reset_member_password`,
+        {
+          method: 'POST',
+          headers: { ...sb.headers() },
+          body: JSON.stringify({ p_member_id: memberId }),
+        }
+      );
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error('resetMemberPassword error', res.status, errText);
+        return { ok: false, error: '권한 또는 네트워크 오류' };
+      }
+      return await res.json();
+    } catch (e) {
+      console.error('resetMemberPassword exception', e);
+      return { ok: false, error: e.message };
+    }
+  },
 };
 
 // Supabase 로그인
@@ -4749,7 +4772,19 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
             )}
             <div className="flex justify-between pt-3 border-t" style={{ borderColor: theme.line }}>
               <Button variant="danger" size="sm" icon={Trash2} onClick={() => confirm(`${member.name} 회원을 삭제할까요?`) && onDelete()}>삭제</Button>
-              <Button variant="soft" size="sm" icon={Edit3} onClick={() => setEditing(true)}>수정</Button>
+              <div className="flex gap-2">
+                <Button variant="ghost" size="sm" onClick={async () => {
+                  const last4 = (member.phone || '').replace(/[^0-9]/g, '').slice(-4);
+                  if (!confirm(`${member.name}님 비밀번호를 초기화할까요?\n초기 비번: ${last4} (전화번호 뒷 4자리)\n\n회원에게 카톡으로 안내해주세요.`)) return;
+                  const result = await sb.resetMemberPassword(member.id);
+                  if (result?.ok) {
+                    toast(`✓ ${member.name}님 비번 초기화 완료 (${last4})`);
+                  } else {
+                    toast(`⚠️ 초기화 실패: ${result?.error || '알 수 없는 오류'}`);
+                  }
+                }}>🔑 비번 초기화</Button>
+                <Button variant="soft" size="sm" icon={Edit3} onClick={() => setEditing(true)}>수정</Button>
+              </div>
             </div>
           </div>
         )}
