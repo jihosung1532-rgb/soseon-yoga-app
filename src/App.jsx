@@ -114,10 +114,11 @@ const sb = {
   },
 
   // === bookings 테이블 (예약 요청 시스템) ===
+  // pending: 추가 예약 요청 / pending_cancel: 취소 요청
   async getPendingBookings() {
     try {
       const res = await fetch(
-        `${SUPABASE_URL}/rest/v1/bookings?status=eq.pending&order=created_at.asc`,
+        `${SUPABASE_URL}/rest/v1/bookings?status=in.(pending,pending_cancel)&order=created_at.asc`,
         { headers: sb.headers() }
       );
       if (!res.ok) return [];
@@ -2144,64 +2145,120 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
     return () => clearInterval(interval);
   }, []);
   
-  // 예약 승인
+  // 예약 승인 (status에 따라 분기)
+  // - status='pending': 신규 예약 요청 → sessions에 참여자 추가
+  // - status='pending_cancel': 취소 요청 → sessions에서 해당 회원 cancelled_advance로 변경
   const approveBooking = async (booking) => {
-    if (!confirm(`${booking.member_name}님의 ${booking.date} ${booking.time} 예약을 승인할까요?`)) return;
+    const isCancelReq = booking.status === 'pending_cancel';
+    const confirmMsg = isCancelReq
+      ? `${booking.member_name}님의 ${booking.date} ${booking.time} 취소 요청을 승인할까요?\n(이번 회차만 취소되고, 사전취소로 처리됩니다 - 회수 차감 X)`
+      : `${booking.member_name}님의 ${booking.date} ${booking.time} 예약을 승인할까요?`;
+    if (!confirm(confirmMsg)) return;
     
     // 1. bookings 상태 업데이트
     await sb.updateBooking(booking.id, {
-      status: 'approved',
+      status: isCancelReq ? 'cancel_approved' : 'approved',
       responded_at: new Date().toISOString(),
     });
     
-    // 2. sessions에 추가 (강사 앱 데이터)
+    // 2. sessions 처리
     const sessKey = `${booking.date}_${booking.time}`;
     const existing = sessions[sessKey];
-    const newPart = {
-      memberId: booking.member_id,
-      memberName: booking.member_name,
-      classType: booking.class_type === '개인' ? '개인' : '그룹',
-      status: 'reserved',
-    };
     
-    let newSession;
-    if (existing) {
-      // 기존 세션에 참여자 추가
-      const alreadyIn = existing.participants?.some(p => p.memberId === booking.member_id);
-      if (!alreadyIn) {
-        newSession = { ...existing, participants: [...(existing.participants || []), newPart] };
-      } else {
-        newSession = existing; // 이미 있으면 그대로
+    if (isCancelReq) {
+      // === 취소 요청 승인 ===
+      // sessions에서 해당 회원의 참여자를 cancelled_advance(사전취소, 차감 X)로 변경
+      if (existing && existing.participants) {
+        const newParts = existing.participants.map(p => {
+          if (p.memberId !== booking.member_id) return p;
+          return { 
+            ...p, 
+            status: 'cancelled_advance', 
+            cancelled: 'no_charge',
+            cancelNote: '회원 앱 취소 요청 (강사 승인)',
+          };
+        });
+        const newSession = { ...existing, participants: newParts };
+        const newSessions = { ...sessions, [sessKey]: newSession };
+        setSessions(newSessions);
+        await saveKey(K.sessions, newSessions);
+        
+        // 회원 수강권 회수 보정 (cancelled_advance는 차감 안 함)
+        // saveSession을 안 거치므로 직접 보정
+        const oldPart = existing.participants.find(p => p.memberId === booking.member_id);
+        if (oldPart && oldPart.passId && isPartCharged(oldPart)) {
+          // 원래 차감됐던 것 → 되돌리기
+          const updatedMembers = members.map(m => {
+            if (m.id !== booking.member_id) return m;
+            return {
+              ...m,
+              passes: (m.passes || []).map(p => {
+                if (p.id !== oldPart.passId) return p;
+                const newUsed = Math.max(0, p.usedSessions - 1);
+                const sessionDates = (p.sessionDates || []).filter((d, idx, arr) => {
+                  // booking.date 한 개만 제거
+                  if (d !== booking.date) return true;
+                  return arr.indexOf(d) !== idx; // 첫 매치만 제거
+                });
+                return { ...p, usedSessions: newUsed, sessionDates };
+              }),
+            };
+          });
+          setMembers(updatedMembers);
+          await saveKey(K.members, updatedMembers);
+        }
       }
+      toast(`${booking.member_name}님 ${booking.date} 취소 처리 완료`);
     } else {
-      // 새 세션
-      newSession = {
-        date: booking.date,
-        time: booking.time,
-        participants: [newPart],
+      // === 신규 예약 요청 승인 ===
+      const newPart = {
+        memberId: booking.member_id,
+        memberName: booking.member_name,
+        classType: booking.class_type === '개인' ? '개인' : '그룹',
+        status: 'reserved',
       };
+      
+      let newSession;
+      if (existing) {
+        const alreadyIn = existing.participants?.some(p => p.memberId === booking.member_id);
+        if (!alreadyIn) {
+          newSession = { ...existing, participants: [...(existing.participants || []), newPart] };
+        } else {
+          newSession = existing;
+        }
+      } else {
+        newSession = {
+          date: booking.date,
+          time: booking.time,
+          participants: [newPart],
+        };
+      }
+      
+      const newSessions = { ...sessions, [sessKey]: newSession };
+      setSessions(newSessions);
+      await saveKey(K.sessions, newSessions);
+      toast(`${booking.member_name}님 예약 승인됨`);
     }
-    
-    const newSessions = { ...sessions, [sessKey]: newSession };
-    setSessions(newSessions);
-    await saveKey(K.sessions, newSessions);
     
     // 3. 새로고침
     const items = await sb.getPendingBookings();
     setPendingBookings(items || []);
-    toast(`${booking.member_name}님 예약 승인됨`);
   };
   
-  // 예약 거절
+  // 예약/취소 요청 거절
   const rejectBooking = async (booking) => {
-    if (!confirm(`${booking.member_name}님의 예약을 거절할까요?`)) return;
+    const isCancelReq = booking.status === 'pending_cancel';
+    const confirmMsg = isCancelReq
+      ? `${booking.member_name}님의 취소 요청을 거절할까요?\n(예약은 그대로 유지됩니다)`
+      : `${booking.member_name}님의 예약 요청을 거절할까요?`;
+    if (!confirm(confirmMsg)) return;
     await sb.updateBooking(booking.id, {
-      status: 'rejected',
+      status: isCancelReq ? 'cancel_rejected' : 'rejected',
       responded_at: new Date().toISOString(),
     });
     const items = await sb.getPendingBookings();
     setPendingBookings(items || []);
-    toast('예약 거절됨');
+    toast(isCancelReq ? '취소 요청 거절됨' : '예약 거절됨');
   };
   
   useEffect(() => {
@@ -2420,73 +2477,97 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
         )}
       </div>
 
-      {/* 📩 예약 요청 알림 (pending bookings) */}
-      {pendingBookings.length > 0 && (
-        <div className="rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.99]" 
-          style={{ 
-            background: 'linear-gradient(135deg, #FFF8ED 0%, #FFE8C9 100%)',
-            border: '1px solid #C26B4A',
-          }}
-          onClick={() => setShowBookingModal(true)}>
-          <div className="flex items-center gap-2">
-            <div style={{ fontSize: 18 }}>📩</div>
-            <div className="flex-1">
-              <div className="text-[13px] font-bold" style={{ color: '#8A3F3C' }}>
-                새 예약 요청 {pendingBookings.length}건
+      {/* 📩 예약/취소 요청 알림 (pending bookings) */}
+      {pendingBookings.length > 0 && (() => {
+        const newReqs = pendingBookings.filter(b => b.status === 'pending');
+        const cancelReqs = pendingBookings.filter(b => b.status === 'pending_cancel');
+        const summary = [];
+        if (newReqs.length > 0) summary.push(`예약 ${newReqs.length}건`);
+        if (cancelReqs.length > 0) summary.push(`취소 ${cancelReqs.length}건`);
+        return (
+          <div className="rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.99]" 
+            style={{ 
+              background: 'linear-gradient(135deg, #FFF8ED 0%, #FFE8C9 100%)',
+              border: '1px solid #C26B4A',
+            }}
+            onClick={() => setShowBookingModal(true)}>
+            <div className="flex items-center gap-2">
+              <div style={{ fontSize: 18 }}>📩</div>
+              <div className="flex-1">
+                <div className="text-[13px] font-bold" style={{ color: '#8A3F3C' }}>
+                  새 요청 {summary.join(' · ')}
+                </div>
+                <div className="text-[11px]" style={{ color: '#A0573B' }}>
+                  {pendingBookings.slice(0, 2).map(b => 
+                    `${b.member_name}님 ${b.date} ${b.time}${b.status === 'pending_cancel' ? ' (취소)' : ''}`
+                  ).join(' · ')}
+                  {pendingBookings.length > 2 && ` 외 ${pendingBookings.length - 2}건`}
+                </div>
               </div>
-              <div className="text-[11px]" style={{ color: '#A0573B' }}>
-                {pendingBookings.slice(0, 2).map(b => `${b.member_name}님 ${b.date} ${b.time}`).join(' · ')}
-                {pendingBookings.length > 2 && ` 외 ${pendingBookings.length - 2}건`}
-              </div>
+              <div style={{ color: '#C26B4A', fontSize: 18, fontWeight: 600 }}>›</div>
             </div>
-            <div style={{ color: '#C26B4A', fontSize: 18, fontWeight: 600 }}>›</div>
           </div>
-        </div>
-      )}
+        );
+      })()}
       
       {/* 예약 요청 모달 */}
       {showBookingModal && (
         <Modal open={true} onClose={() => setShowBookingModal(false)} 
-          title="📩 예약 요청" 
+          title="📩 예약 / 취소 요청" 
           sub={`${pendingBookings.length}건 대기 중`}>
           <div className="space-y-2 mb-2">
             {pendingBookings.length === 0 ? (
               <div className="text-center py-8 text-[12px]" style={{ color: theme.inkMute }}>
                 대기 중인 요청이 없어요
               </div>
-            ) : pendingBookings.map(b => (
-              <div key={b.id} className="rounded-xl p-3"
-                style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
-                <div className="flex items-start justify-between mb-2">
-                  <div>
-                    <div className="text-[13px] font-bold" style={{ color: theme.ink }}>
-                      {b.member_name}
-                      <span className="text-[11px] font-normal ml-2" style={{ color: theme.inkMute }}>
-                        {b.member_phone}
-                      </span>
-                    </div>
-                    <div className="text-[12px] mt-1" style={{ color: theme.accent }}>
-                      📅 {b.date} {b.time} · {b.class_type || '소그룹'}
-                    </div>
-                    {b.note && (
-                      <div className="text-[10px] mt-1 italic" style={{ color: theme.inkSoft }}>
-                        {b.note}
+            ) : pendingBookings.map(b => {
+              const isCancel = b.status === 'pending_cancel';
+              return (
+                <div key={b.id} className="rounded-xl p-3"
+                  style={{ 
+                    backgroundColor: isCancel ? '#FBE4DD' : theme.card, 
+                    border: `1px solid ${isCancel ? '#D19B91' : theme.line}` 
+                  }}>
+                  <div className="flex items-start justify-between mb-2">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" 
+                          style={{
+                            backgroundColor: isCancel ? '#C26B4A' : '#5C8A5C',
+                            color: '#FFF',
+                          }}>
+                          {isCancel ? '취소 요청' : '예약 요청'}
+                        </span>
                       </div>
-                    )}
+                      <div className="text-[13px] font-bold" style={{ color: theme.ink }}>
+                        {b.member_name}
+                        <span className="text-[11px] font-normal ml-2" style={{ color: theme.inkMute }}>
+                          {b.member_phone}
+                        </span>
+                      </div>
+                      <div className="text-[12px] mt-1" style={{ color: theme.accent }}>
+                        📅 {b.date} {b.time} · {b.class_type || '소그룹'}
+                      </div>
+                      {b.note && (
+                        <div className="text-[10px] mt-1 italic" style={{ color: theme.inkSoft }}>
+                          {b.note}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex gap-2 mt-2">
+                    <Button size="sm" variant="primary" className="flex-1"
+                      onClick={() => approveBooking(b)}>
+                      ✓ 승인
+                    </Button>
+                    <Button size="sm" variant="ghost" className="flex-1"
+                      onClick={() => rejectBooking(b)}>
+                      ✗ 거절
+                    </Button>
                   </div>
                 </div>
-                <div className="flex gap-2 mt-2">
-                  <Button size="sm" variant="primary" className="flex-1"
-                    onClick={() => approveBooking(b)}>
-                    ✓ 승인
-                  </Button>
-                  <Button size="sm" variant="ghost" className="flex-1"
-                    onClick={() => rejectBooking(b)}>
-                    ✗ 거절
-                  </Button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           <Button onClick={() => setShowBookingModal(false)} variant="ghost" className="w-full">닫기</Button>
         </Modal>
