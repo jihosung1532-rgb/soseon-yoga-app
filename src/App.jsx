@@ -312,6 +312,69 @@ async function saveKey(k, value) {
 
 
 /* =========================================================
+   🔙 전역 백 스택 (안드로이드 뒤로가기 통합 처리)
+   - 모달/시트/탭 등 닫을 수 있는 것을 push
+   - popstate 발생 시 가장 위의 것 하나만 onClose 호출
+   - 한 곳에서만 popstate 리스너를 두기 때문에 타이밍 충돌 X
+   ========================================================= */
+const sosunBackStack = {
+  stack: [], // [{ id, onClose }]
+  initialized: false,
+  exitArmed: false, // true이면 다음 popstate에서 자연스럽게 종료
+  init() {
+    if (this.initialized) return;
+    this.initialized = true;
+    if (typeof window === 'undefined') return;
+    if (!window.history.state || !window.history.state.sosunBase) {
+      window.history.replaceState({ sosunBase: true }, '');
+    }
+    window.addEventListener('popstate', () => {
+      const top = this.stack[this.stack.length - 1];
+      if (top) {
+        // 스택에 뭔가 있으면 맨 위 것 닫기
+        this.stack.pop();
+        try { top.onClose && top.onClose(); } catch (e) { console.error('back close error', e); }
+        // 다음 뒤로가기 위해 dummy 다시 push
+        window.history.pushState({ sosunBase: true }, '');
+        this.exitArmed = false;
+      } else {
+        // 스택 비어있음 (홈 상태)
+        if (this.exitArmed) {
+          // 두 번째 뒤로가기 → 자연스럽게 종료 (dummy push 안 함)
+          this.exitArmed = false;
+        } else {
+          // 첫 번째 뒤로가기 → 종료 안 하고 토스트 같은 안내 (선택)
+          // 일단은 그냥 dummy push로 막아두기
+          window.history.pushState({ sosunBase: true }, '');
+          this.exitArmed = true;
+          // 2초 안에 또 누르지 않으면 armed 해제
+          setTimeout(() => { this.exitArmed = false; }, 2000);
+        }
+      }
+    });
+  },
+  push(onClose) {
+    this.init();
+    const id = 'b_' + Math.random().toString(36).slice(2, 9);
+    this.stack.push({ id, onClose });
+    window.history.pushState({ sosunStack: id }, '');
+    this.exitArmed = false;
+    return id;
+  },
+  remove(id) {
+    const idx = this.stack.findIndex(s => s.id === id);
+    if (idx === -1) return;
+    this.stack.splice(idx, 1);
+    try {
+      if (window.history.state && window.history.state.sosunStack) {
+        window.history.replaceState({ sosunBase: true }, '');
+      }
+    } catch (e) {}
+  },
+};
+
+
+/* =========================================================
    Date utilities
    ========================================================= */
 const uid = () => Math.random().toString(36).slice(2, 11);
@@ -1724,23 +1787,11 @@ function Modal({ open, onClose, title, children, maxWidth = 'max-w-lg' }) {
     return () => { document.body.style.overflow = ''; };
   }, [open]);
   
-  // 🔙 안드로이드 뒤로가기: 모달이 열리면 history에 state push
-  // 뒤로가기 시 popstate → onClose 호출
+  // 🔙 안드로이드 뒤로가기 처리 (전역 스택 사용)
   useEffect(() => {
     if (!open) return;
-    const stateId = 'modal_' + Math.random().toString(36).slice(2, 9);
-    window.history.pushState({ sosunModal: stateId }, '');
-    const handlePop = () => {
-      onClose && onClose();
-    };
-    window.addEventListener('popstate', handlePop);
-    return () => {
-      window.removeEventListener('popstate', handlePop);
-      // 모달이 코드로 닫히는 경우(버튼 등) → history도 한 칸 되감기 (단, 자기가 push한 게 아직 위에 있을 때만)
-      if (window.history.state && window.history.state.sosunModal === stateId) {
-        window.history.back();
-      }
-    };
+    const id = sosunBackStack.push(onClose);
+    return () => sosunBackStack.remove(id);
   }, [open]);
   
   if (!open) return null;
@@ -2012,20 +2063,10 @@ function SMSDialog({ open, onClose, phone, name, template, onConfirmed }) {
    ========================================================= */
 // 📊 정원현황 시트 - 시간대별 고정 회원 목록을 보여주는 하단 시트
 function CapacitySheet({ time, allTimes, capacityStatus, capacity, onClose, onChangeTime }) {
-  // 🔙 안드로이드 뒤로가기 처리
+  // 🔙 안드로이드 뒤로가기 처리 (전역 스택 사용)
   useEffect(() => {
-    const stateId = 'sheet_' + Math.random().toString(36).slice(2, 9);
-    window.history.pushState({ sosunSheet: stateId }, '');
-    const handlePop = () => {
-      onClose && onClose();
-    };
-    window.addEventListener('popstate', handlePop);
-    return () => {
-      window.removeEventListener('popstate', handlePop);
-      if (window.history.state && window.history.state.sosunSheet === stateId) {
-        window.history.back();
-      }
-    };
+    const id = sosunBackStack.push(onClose);
+    return () => sosunBackStack.remove(id);
   }, []);
   
   const data = capacityStatus.find(c => c.time === time);
@@ -2513,8 +2554,8 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
   };
   
   // === 정원 현황 (소그룹 화·목 시간대별 등록 인원) ===
-  // CAPACITY: 정원 4명 (옵션 1: 거의참=정원의 75% 이상, 마감=정원 다 참)
-  const CAPACITY = 4;
+  // CAPACITY: 정원 5명 (옵션 1: 거의참=정원의 75% 이상, 마감=정원 다 참)
+  const CAPACITY = 5;
   const capacityStatus = useMemo(() => {
     // 각 시간대별로 화/목에 등록된 회원 수 계산
     // fixedSlots 기반 (활성 수강권 + 시작일~만료일 범위 안에 있는 회원만)
@@ -9443,31 +9484,23 @@ export default function App() {
   const toast = (m) => setToastMsg(m);
   const onSendSMS = (payload) => setSmsDialog(payload);
   
-  // 🔙 안드로이드 뒤로가기 처리 (탭 단위만 — 모달/시트는 각자 처리)
-  // 탭이 home이 아니면 → home으로
-  // home이면 자연스럽게 종료
+  // 🔙 탭 전환 시 스택에 push (뒤로가기 시 이전 탭으로 돌아감)
+  // - 탭이 바뀔 때마다 이전 탭으로 돌아갈 수 있는 close 등록
+  // - 모달은 자체적으로 push/remove하므로 자동으로 우선 처리됨
+  const prevTabRef = useRef('home');
   useEffect(() => {
     if (!authed) return;
-    if (!window.history.state || !window.history.state.sosunTab) {
-      window.history.replaceState({ sosunTab: 'home' }, '');
+    sosunBackStack.init();
+    const prev = prevTabRef.current;
+    if (tab !== prev) {
+      // 이전 탭으로 돌아가는 close 등록
+      const id = sosunBackStack.push(() => {
+        setTab(prev);
+      });
+      prevTabRef.current = tab;
+      return () => sosunBackStack.remove(id);
     }
-    const handlePop = () => {
-      if (tab !== 'home') {
-        setTab('home');
-        window.history.pushState({ sosunTab: 'home' }, '');
-      } else {
-        window.history.pushState({ sosunTab: 'home' }, '');
-      }
-    };
-    window.addEventListener('popstate', handlePop);
-    return () => window.removeEventListener('popstate', handlePop);
-  }, [authed, tab]);
-  
-  useEffect(() => {
-    if (tab !== 'home') {
-      window.history.pushState({ sosunTab: 'tab_' + tab }, '');
-    }
-  }, [tab]);
+  }, [tab, authed]);
   
   // 새로고침 - Supabase에서 모든 데이터 다시 가져오기
   const handleRefresh = async () => {
