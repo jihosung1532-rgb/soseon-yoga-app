@@ -2554,8 +2554,8 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
   };
   
   // === 정원 현황 (소그룹 화·목 시간대별 등록 인원) ===
-  // CAPACITY: 정원 5명 (옵션 1: 거의참=정원의 75% 이상, 마감=정원 다 참)
-  const CAPACITY = 5;
+  // CAPACITY: 정원 4명 (사장님이 신규 회원 받을 자리 판단용 - 기존 회원이 다른 시간에 오는 여유분 1명은 회원 앱에서만 5명으로 보여줌)
+  const CAPACITY = 4;
   const capacityStatus = useMemo(() => {
     // 각 시간대별로 화/목에 등록된 회원 수 계산
     // fixedSlots 기반 (활성 수강권 + 시작일~만료일 범위 안에 있는 회원만)
