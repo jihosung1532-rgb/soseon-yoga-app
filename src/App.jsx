@@ -1723,6 +1723,26 @@ function Modal({ open, onClose, title, children, maxWidth = 'max-w-lg' }) {
     else document.body.style.overflow = '';
     return () => { document.body.style.overflow = ''; };
   }, [open]);
+  
+  // 🔙 안드로이드 뒤로가기: 모달이 열리면 history에 state push
+  // 뒤로가기 시 popstate → onClose 호출
+  useEffect(() => {
+    if (!open) return;
+    const stateId = 'modal_' + Math.random().toString(36).slice(2, 9);
+    window.history.pushState({ sosunModal: stateId }, '');
+    const handlePop = () => {
+      onClose && onClose();
+    };
+    window.addEventListener('popstate', handlePop);
+    return () => {
+      window.removeEventListener('popstate', handlePop);
+      // 모달이 코드로 닫히는 경우(버튼 등) → history도 한 칸 되감기 (단, 자기가 push한 게 아직 위에 있을 때만)
+      if (window.history.state && window.history.state.sosunModal === stateId) {
+        window.history.back();
+      }
+    };
+  }, [open]);
+  
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
@@ -1992,6 +2012,22 @@ function SMSDialog({ open, onClose, phone, name, template, onConfirmed }) {
    ========================================================= */
 // 📊 정원현황 시트 - 시간대별 고정 회원 목록을 보여주는 하단 시트
 function CapacitySheet({ time, allTimes, capacityStatus, capacity, onClose, onChangeTime }) {
+  // 🔙 안드로이드 뒤로가기 처리
+  useEffect(() => {
+    const stateId = 'sheet_' + Math.random().toString(36).slice(2, 9);
+    window.history.pushState({ sosunSheet: stateId }, '');
+    const handlePop = () => {
+      onClose && onClose();
+    };
+    window.addEventListener('popstate', handlePop);
+    return () => {
+      window.removeEventListener('popstate', handlePop);
+      if (window.history.state && window.history.state.sosunSheet === stateId) {
+        window.history.back();
+      }
+    };
+  }, []);
+  
   const data = capacityStatus.find(c => c.time === time);
   if (!data) return null;
   
@@ -2003,9 +2039,10 @@ function CapacitySheet({ time, allTimes, capacityStatus, capacity, onClose, onCh
     const p = entry.pass;
     const since = p?.startDate || '';
     const isUpcoming = since > todayStr;
-    const used = p?.usedSessions || 0;
     const total = p?.totalSessions || 0;
-    const remaining = Math.max(0, total - used);
+    // 진짜 출석 회수 (오늘 이전 sessionDates만 카운트, 미래 예약 제외)
+    const trueUsed = (p?.sessionDates || []).filter(d => d <= todayStr).length;
+    const remaining = Math.max(0, total - trueUsed);
     return (
       <div key={m.id} className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl"
         style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
@@ -2481,16 +2518,19 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
   const capacityStatus = useMemo(() => {
     // 각 시간대별로 화/목에 등록된 회원 수 계산
     // fixedSlots 기반 (활성 수강권 + 시작일~만료일 범위 안에 있는 회원만)
-    // 화·목 시간대는 groupSlots 활용
+    // 회차 소진 판단은 "진짜 출석한 회수" (오늘 이전 sessionDates) 기준
+    // - 미래 예약은 출석 전이므로 자리는 그대로 유지
     const todayStr = toYMD(new Date());
     const filterValidMember = (m, dow, time) => {
       if (!m.fixedSlots?.some(fs => fs.dow === dow && fs.time === time)) return null;
-      const validPass = (m.passes || []).find(p => 
-        !p.archived && p.startDate && p.expiryDate
-        && (p.category === 'group')
-        && p.expiryDate >= todayStr
-        && (p.usedSessions || 0) < (p.totalSessions || 0)
-      );
+      const validPass = (m.passes || []).find(p => {
+        if (p.archived || !p.startDate || !p.expiryDate) return false;
+        if (p.category !== 'group') return false;
+        if (p.expiryDate < todayStr) return false;
+        // 진짜 출석한 회수 (미래 예약 제외)
+        const trueUsed = (p.sessionDates || []).filter(d => d <= todayStr).length;
+        return trueUsed < (p.totalSessions || 0);
+      });
       if (!validPass) return null;
       return { member: m, pass: validPass };
     };
@@ -9403,56 +9443,31 @@ export default function App() {
   const toast = (m) => setToastMsg(m);
   const onSendSMS = (payload) => setSmsDialog(payload);
   
-  // 🔙 안드로이드 뒤로가기 처리
-  // 우선순위: smsDialog > settings > 다른 탭 > 홈(종료)
-  // (회원 상세 모달은 각 View 내부에서 자체 처리)
+  // 🔙 안드로이드 뒤로가기 처리 (탭 단위만 — 모달/시트는 각자 처리)
+  // 탭이 home이 아니면 → home으로
+  // home이면 자연스럽게 종료
   useEffect(() => {
-    if (!authed) return; // 로그인 전엔 처리 X
-    if (!window.history.state || !window.history.state.sosunTeacher) {
-      window.history.replaceState({ sosunTeacher: 'home' }, '');
+    if (!authed) return;
+    if (!window.history.state || !window.history.state.sosunTab) {
+      window.history.replaceState({ sosunTab: 'home' }, '');
     }
-    
     const handlePop = () => {
-      if (smsDialog) {
-        setSmsDialog(null);
-        window.history.pushState({ sosunTeacher: 'home' }, '');
-        return;
-      }
-      if (settingsOpen) {
-        setSettingsOpen(false);
-        window.history.pushState({ sosunTeacher: 'home' }, '');
-        return;
-      }
       if (tab !== 'home') {
         setTab('home');
-        window.history.pushState({ sosunTeacher: 'home' }, '');
-        return;
+        window.history.pushState({ sosunTab: 'home' }, '');
+      } else {
+        window.history.pushState({ sosunTab: 'home' }, '');
       }
-      // 홈이면 기본 동작 (자연스럽게 종료)
-      window.history.pushState({ sosunTeacher: 'home' }, '');
     };
-    
     window.addEventListener('popstate', handlePop);
     return () => window.removeEventListener('popstate', handlePop);
-  }, [authed, smsDialog, settingsOpen, tab]);
+  }, [authed, tab]);
   
   useEffect(() => {
     if (tab !== 'home') {
-      window.history.pushState({ sosunTeacher: 'tab', name: tab }, '');
+      window.history.pushState({ sosunTab: 'tab_' + tab }, '');
     }
   }, [tab]);
-  
-  useEffect(() => {
-    if (settingsOpen) {
-      window.history.pushState({ sosunTeacher: 'settings' }, '');
-    }
-  }, [settingsOpen]);
-  
-  useEffect(() => {
-    if (smsDialog) {
-      window.history.pushState({ sosunTeacher: 'sms' }, '');
-    }
-  }, [smsDialog]);
   
   // 새로고침 - Supabase에서 모든 데이터 다시 가져오기
   const handleRefresh = async () => {
