@@ -1797,7 +1797,7 @@ function Section({ title, items, color, bullet = '·' }) {
 /* =========================================================
    Header — 소선요가 with 素禪 · So-Seon
    ========================================================= */
-function Header({ tab, setTab, onOpenSettings }) {
+function Header({ tab, setTab, onOpenSettings, onRefresh, refreshing }) {
   const tabs = [
     { id: 'schedule', label: '일정', icon: Calendar },
     { id: 'members', label: '회원', icon: Users },
@@ -1818,12 +1818,23 @@ function Header({ tab, setTab, onOpenSettings }) {
             소선요가
           </div>
         </div>
-        <button onClick={onOpenSettings}
-          className="p-1.5 rounded-lg transition-colors"
-          style={{ color: theme.inkSoft }}
-          aria-label="설정">
-          <Settings size={18} />
-        </button>
+        <div className="flex items-center gap-1">
+          {/* 새로고침 버튼 */}
+          <button onClick={onRefresh} disabled={refreshing}
+            className="p-1.5 rounded-lg transition-colors"
+            style={{ color: theme.inkSoft, opacity: refreshing ? 0.5 : 1, cursor: refreshing ? 'wait' : 'pointer' }}
+            aria-label="새로고침">
+            <RefreshCw size={18} style={{
+              animation: refreshing ? 'sosun-spin 0.8s linear infinite' : 'none',
+            }} />
+          </button>
+          <button onClick={onOpenSettings}
+            className="p-1.5 rounded-lg transition-colors"
+            style={{ color: theme.inkSoft }}
+            aria-label="설정">
+            <Settings size={18} />
+          </button>
+        </div>
       </div>
       <div className="flex gap-1 px-2 pt-1 pb-2 overflow-x-auto no-scrollbar">
         {tabs.map(t => {
@@ -9182,9 +9193,25 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
 
   const toast = (m) => setToastMsg(m);
   const onSendSMS = (payload) => setSmsDialog(payload);
+  
+  // 새로고침 - Supabase에서 모든 데이터 다시 가져오기
+  const handleRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await loadAll();
+      toast('✓ 새로고침 완료');
+    } catch (e) {
+      console.error('refresh 실패', e);
+      toast('⚠️ 새로고침 실패');
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const loadAll = async () => {
     // 먼저 4개 핵심 데이터 로드 (loadKey가 자동 마이그레이션 처리)
@@ -9851,8 +9878,9 @@ export default function App() {
         .no-scrollbar { scrollbar-width: none; }
         input[type="date"], input[type="time"] { color: ${theme.ink}; }
         select option { background: ${theme.card}; color: ${theme.ink}; }
+        @keyframes sosun-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       `}</style>
-      <Header tab={tab} setTab={setTab} onOpenSettings={() => setSettingsOpen(true)} />
+      <Header tab={tab} setTab={setTab} onOpenSettings={() => setSettingsOpen(true)} onRefresh={handleRefresh} refreshing={refreshing} />
       {tab === 'home' && (
         <HomeView members={members} setMembers={setMembers} sessions={sessions} setSessions={setSessions} trials={trials}
           classLog={classLog}
