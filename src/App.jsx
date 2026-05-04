@@ -8023,14 +8023,14 @@ function FinanceCard({ targetMonth, revenue, netRevenue }) {
   // 세금 저축 추천 (간이과세자: 부가세 1.8% + 종소세 약 3% = 5%)
   const taxRecommended = Math.round(revenue * 0.05);
   // 고정비
-  const FIXED_COSTS = 530000; // 월세 + 관리비
+  const FIXED_COSTS = 650000; // 월세 45 + 관리비 10 + 운영비 10
   
-  // 단계별 누적 목표 (이전 단계까지 + 추가 금액)
+  // 단계별 누적 목표 (1단계: 65만, 2-4단계: 50/100/100 추가)
   const stages = [
-    { num: 1, label: '다음 달 월세 빼두기', target: FIXED_COSTS, addLabel: '530,000원' },
-    { num: 2, label: '비상금 50만원 추가', target: FIXED_COSTS + 500000, addLabel: '+500,000원 = 1,030,000원' },
-    { num: 3, label: '비상금 100만원 추가', target: FIXED_COSTS + 1500000, addLabel: '+1,000,000원 = 2,030,000원' },
-    { num: 4, label: '안정 비상금 300만원 추가', target: FIXED_COSTS + 4500000, addLabel: '+3,000,000원 = 5,030,000원' },
+    { num: 1, label: '다음 달 운영비 빼두기', target: 650000 },
+    { num: 2, label: '다음 달 +50만원', target: 1150000 },
+    { num: 3, label: '다다음 달 +100만원', target: 2150000 },
+    { num: 4, label: '다다다음 달 +100만원', target: 3150000 },
   ];
   
   // 현재 단계 (누적 비교)
