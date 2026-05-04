@@ -8025,15 +8025,15 @@ function FinanceCard({ targetMonth, revenue, netRevenue }) {
   // 고정비
   const FIXED_COSTS = 530000; // 월세 + 관리비
   
-  // 단계별 목표
+  // 단계별 누적 목표 (이전 단계까지 + 추가 금액)
   const stages = [
-    { num: 1, label: '다음 달 월세 빼두기', target: FIXED_COSTS },
-    { num: 2, label: '비상금 50만원', target: 500000 },
-    { num: 3, label: '비상금 100만원', target: 1000000 },
-    { num: 4, label: '안정 비상금 300만원', target: 3000000 },
+    { num: 1, label: '다음 달 월세 빼두기', target: FIXED_COSTS, addLabel: '530,000원' },
+    { num: 2, label: '비상금 50만원 추가', target: FIXED_COSTS + 500000, addLabel: '+500,000원 = 1,030,000원' },
+    { num: 3, label: '비상금 100만원 추가', target: FIXED_COSTS + 1500000, addLabel: '+1,000,000원 = 2,030,000원' },
+    { num: 4, label: '안정 비상금 300만원 추가', target: FIXED_COSTS + 4500000, addLabel: '+3,000,000원 = 5,030,000원' },
   ];
   
-  // 현재 단계
+  // 현재 단계 (누적 비교)
   let currentStageIdx = 0;
   for (let i = 0; i < stages.length; i++) {
     if (emergencyFund >= stages[i].target) currentStageIdx = i + 1;
