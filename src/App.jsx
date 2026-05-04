@@ -8000,45 +8000,94 @@ function AnalysisView({ members, setMembers, toast }) {
    ========================================================= */
 // === 재무 대시보드 카드 ===
 function FinanceCard({ targetMonth, revenue, netRevenue }) {
-  const [emergencyFund, setEmergencyFund] = useState(0);
-  const [showEdit, setShowEdit] = useState(false);
-  const [editValue, setEditValue] = useState('');
+  // 월별 비상금 데이터: { monthly: { "2026-05": { saved: 530000 } }, transactions: [...] }
+  const [emergencyData, setEmergencyData] = useState({ monthly: {}, transactions: [] });
+  const [showAdd, setShowAdd] = useState(false);
+  const [addType, setAddType] = useState('in');
+  const [addAmount, setAddAmount] = useState('');
+  const [addNote, setAddNote] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
   
-  // localStorage에서 비상금 불러오기
+  const MONTHLY_TARGET = 650000;
+  
+  // localStorage 불러오기 + 옛 데이터 마이그레이션
   useEffect(() => {
-    const saved = localStorage.getItem('sosun_emergency_fund');
-    if (saved) setEmergencyFund(Number(saved) || 0);
+    const saved = localStorage.getItem('sosun_emergency_data_v2');
+    if (saved) {
+      try { setEmergencyData(JSON.parse(saved)); return; } catch {}
+    }
+    // 기존 sosun_emergency_fund → 이번 달 데이터로
+    const oldFund = Number(localStorage.getItem('sosun_emergency_fund') || 0);
+    if (oldFund > 0) {
+      const ym = toYMD(new Date()).slice(0, 7);
+      const migrated = {
+        monthly: { [ym]: { saved: oldFund } },
+        transactions: [{
+          id: uid(), ym, type: 'in', amount: oldFund,
+          note: '기존 비상금 이전', date: toYMD(new Date()),
+        }],
+      };
+      setEmergencyData(migrated);
+      localStorage.setItem('sosun_emergency_data_v2', JSON.stringify(migrated));
+    }
   }, []);
   
-  const saveEmergency = () => {
-    const val = Number(editValue) || 0;
-    setEmergencyFund(val);
-    localStorage.setItem('sosun_emergency_fund', String(val));
-    setShowEdit(false);
-    setEditValue('');
+  const saveData = (data) => {
+    setEmergencyData(data);
+    localStorage.setItem('sosun_emergency_data_v2', JSON.stringify(data));
   };
+  
+  // 입금/지출 추가
+  const addTransaction = () => {
+    const amount = Number(String(addAmount).replace(/,/g, '')) || 0;
+    if (amount <= 0) return;
+    const ym = toYMD(new Date()).slice(0, 7);
+    const newTx = {
+      id: uid(), ym, type: addType,
+      amount: addType === 'out' ? -amount : amount,
+      note: addNote.trim() || (addType === 'in' ? '입금' : '지출'),
+      date: toYMD(new Date()),
+    };
+    const newMonthly = { ...emergencyData.monthly };
+    const cur = newMonthly[ym]?.saved || 0;
+    newMonthly[ym] = { saved: Math.max(0, cur + newTx.amount) };
+    saveData({
+      monthly: newMonthly,
+      transactions: [newTx, ...(emergencyData.transactions || [])],
+    });
+    setAddAmount(''); setAddNote(''); setShowAdd(false);
+  };
+  
+  // 거래 삭제
+  const deleteTransaction = (txId) => {
+    if (!confirm('이 거래를 삭제할까요?')) return;
+    const tx = emergencyData.transactions.find(t => t.id === txId);
+    if (!tx) return;
+    const newMonthly = { ...emergencyData.monthly };
+    const cur = newMonthly[tx.ym]?.saved || 0;
+    newMonthly[tx.ym] = { saved: Math.max(0, cur - tx.amount) };
+    saveData({
+      monthly: newMonthly,
+      transactions: emergencyData.transactions.filter(t => t.id !== txId),
+    });
+  };
+  
+  const todayYM = toYMD(new Date()).slice(0, 7);
+  const thisMonth = emergencyData.monthly[todayYM] || { saved: 0 };
+  const thisMonthSaved = thisMonth.saved;
+  const thisMonthPct = Math.min(100, Math.round(thisMonthSaved / MONTHLY_TARGET * 100));
+  const thisMonthRemaining = Math.max(0, MONTHLY_TARGET - thisMonthSaved);
+  const thisMonthDone = thisMonthSaved >= MONTHLY_TARGET;
+  const totalSaved = Object.values(emergencyData.monthly).reduce((sum, m) => sum + (m.saved || 0), 0);
+  const pastMonths = Object.entries(emergencyData.monthly)
+    .filter(([ym]) => ym !== todayYM)
+    .sort((a, b) => b[0].localeCompare(a[0]));
+  const formatYM = (ym) => `${parseInt(ym.split('-')[1])}월`;
   
   const monthlyAlerts = getMonthlyAlerts(targetMonth);
   
   // 세금 저축 추천 (간이과세자: 부가세 1.8% + 종소세 약 3% = 5%)
   const taxRecommended = Math.round(revenue * 0.05);
-  // 고정비
-  const FIXED_COSTS = 650000; // 월세 45 + 관리비 10 + 운영비 10
-  
-  // 단계별 누적 목표 (매달 65만씩 누적)
-  const stages = [
-    { num: 1, label: '1개월차 운영비', target: 650000 },
-    { num: 2, label: '2개월차 운영비', target: 1300000 },
-    { num: 3, label: '3개월차 운영비', target: 1950000 },
-    { num: 4, label: '4개월차 운영비', target: 2600000 },
-  ];
-  
-  // 현재 단계 (누적 비교)
-  let currentStageIdx = 0;
-  for (let i = 0; i < stages.length; i++) {
-    if (emergencyFund >= stages[i].target) currentStageIdx = i + 1;
-  }
-  const nextStage = stages[currentStageIdx] || null;
   
   return (
     <div className="rounded-2xl p-3.5 mb-3" 
@@ -8107,68 +8156,175 @@ function FinanceCard({ targetMonth, revenue, netRevenue }) {
         </div>
       )}
       
-      {/* 비상금 단계별 */}
-      <div className="rounded-xl p-3" style={{ backgroundColor: 'rgba(255,255,255,0.5)' }}>
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-[10px] font-bold" style={{ color: '#6B5410', letterSpacing: '0.05em' }}>
-            🏦 비상금 단계별 목표
+      {/* 비상금 - 이번 달 게이지 + 누적 */}
+      <div className="rounded-xl p-3.5" style={{ backgroundColor: 'rgba(255,255,255,0.5)' }}>
+        {/* 이번 달 헤더 */}
+        <div className="flex items-baseline justify-between mb-2.5">
+          <div>
+            <div className="text-[10px] font-bold" style={{ color: '#6B5410', letterSpacing: '0.05em', marginBottom: 2 }}>
+              🏦 이번 달 운영비
+            </div>
+            <div style={{ fontFamily: theme.serif, fontSize: 20, fontWeight: 500, color: '#2D2A26', letterSpacing: '-0.01em' }}>
+              <span className="tabular-nums">{thisMonthSaved.toLocaleString()}</span>
+              <span style={{ fontSize: 13, color: '#8B7960', marginLeft: 4 }}>/ {MONTHLY_TARGET.toLocaleString()}원</span>
+            </div>
           </div>
-          <button onClick={() => { setShowEdit(true); setEditValue(String(emergencyFund)); }}
-            className="text-[10px]" style={{ color: '#8A6418', textDecoration: 'underline' }}>
-            금액 입력
+          <div className="text-right">
+            <div style={{ fontFamily: theme.serif, fontStyle: 'italic', fontSize: 11, color: '#8B7960' }}>
+              {thisMonthDone ? '이번 달 ✓' : `${thisMonthPct}% 달성`}
+            </div>
+            {!thisMonthDone && thisMonthRemaining > 0 && (
+              <div className="text-[10px] tabular-nums mt-0.5" style={{ color: '#C26B4A' }}>
+                {thisMonthRemaining.toLocaleString()}원 남음
+              </div>
+            )}
+          </div>
+        </div>
+        
+        {/* 게이지 */}
+        <div className="rounded-full overflow-hidden mb-3" style={{ height: 9, backgroundColor: '#EBE9DD' }}>
+          <div className="h-full rounded-full transition-all" style={{
+            width: `${thisMonthPct}%`,
+            background: thisMonthDone 
+              ? 'linear-gradient(90deg, #5C8A5C 0%, #7BA67B 100%)'
+              : 'linear-gradient(90deg, #D4B574 0%, #C9A961 100%)',
+          }} />
+        </div>
+        
+        {/* 입금/지출/이력 버튼 */}
+        <div className="flex gap-1.5">
+          <button onClick={() => { setAddType('in'); setShowAdd(true); setAddAmount(''); setAddNote(''); }}
+            className="flex-1 rounded-lg py-2 text-[12px] font-bold"
+            style={{ backgroundColor: '#2D2A26', color: '#FAFAF7' }}>
+            + 입금
+          </button>
+          <button onClick={() => { setAddType('out'); setShowAdd(true); setAddAmount(''); setAddNote(''); }}
+            className="flex-1 rounded-lg py-2 text-[12px] font-semibold"
+            style={{ backgroundColor: 'transparent', color: '#5E4520', border: '1px solid #D4B574' }}>
+            – 지출
+          </button>
+          <button onClick={() => setShowHistory(true)}
+            className="rounded-lg px-3 py-2 text-[14px]"
+            style={{ backgroundColor: 'transparent', color: '#5E4520', border: '1px solid #D4B574' }}
+            title="이력 보기">
+            ⋯
           </button>
         </div>
         
-        {showEdit ? (
-          <div className="flex gap-2 items-center mb-2">
-            <input type="number" value={editValue} onChange={(e) => setEditValue(e.target.value)}
-              placeholder="현재 비상금 (원)"
-              className="flex-1 rounded-lg px-2 py-1.5 text-[12px]"
-              style={{ border: '1px solid #D4B574', backgroundColor: 'white' }}
+        {/* 입금/지출 폼 */}
+        {showAdd && (
+          <div className="rounded-lg p-2.5 mt-2.5" style={{ backgroundColor: 'white', border: '1px solid #D4B574' }}>
+            <div className="text-[11px] font-bold mb-2" style={{ color: '#5E4520' }}>
+              {addType === 'in' ? '+ 입금' : '– 지출'}
+            </div>
+            <input type="number" value={addAmount} onChange={(e) => setAddAmount(e.target.value)}
+              placeholder="금액 (원)"
+              className="w-full rounded-lg px-2 py-1.5 text-[13px] mb-2 tabular-nums"
+              style={{ border: '1px solid #D4B574' }}
               autoFocus />
-            <button onClick={saveEmergency}
-              className="rounded-lg px-3 py-1.5 text-[11px] font-bold"
-              style={{ backgroundColor: '#8A6418', color: 'white' }}>저장</button>
-            <button onClick={() => setShowEdit(false)}
-              className="rounded-lg px-2 py-1.5 text-[11px]"
-              style={{ color: '#8A6418' }}>취소</button>
-          </div>
-        ) : (
-          <div className="text-[12px] mb-2.5" style={{ color: '#6B7568' }}>
-            현재 <strong className="tabular-nums" style={{ color: '#2D2A26' }}>{emergencyFund.toLocaleString()}원</strong>
-            {nextStage && (
-              <span> · 다음 목표까지 <strong className="tabular-nums" style={{ color: '#C26B4A' }}>{(nextStage.target - emergencyFund).toLocaleString()}원</strong></span>
-            )}
+            <input type="text" value={addNote} onChange={(e) => setAddNote(e.target.value)}
+              placeholder={addType === 'in' ? '메모 (예: 5월 매출에서 적립)' : '메모 (예: 매트 구매)'}
+              className="w-full rounded-lg px-2 py-1.5 text-[12px] mb-2"
+              style={{ border: '1px solid #D4B574' }} />
+            <div className="flex gap-1.5">
+              <button onClick={addTransaction}
+                className="flex-1 rounded-lg py-1.5 text-[11px] font-bold"
+                style={{ backgroundColor: '#2D2A26', color: '#FAFAF7' }}>저장</button>
+              <button onClick={() => { setShowAdd(false); setAddAmount(''); setAddNote(''); }}
+                className="flex-1 rounded-lg py-1.5 text-[11px]"
+                style={{ color: '#5E4520', border: '1px solid #D4B574', background: 'transparent' }}>취소</button>
+            </div>
           </div>
         )}
         
-        {/* 단계 리스트 */}
-        <div className="space-y-1">
-          {stages.map((s, i) => {
-            const done = emergencyFund >= s.target;
-            const current = i === currentStageIdx;
-            return (
-              <div key={i} className="flex items-center gap-2 text-[11px]">
-                <span style={{ fontSize: 13 }}>
-                  {done ? '✅' : current ? '⏳' : '⬜'}
-                </span>
-                <span style={{ 
-                  color: done ? '#5C8A5C' : current ? '#2D2A26' : '#8B8579',
-                  fontWeight: current ? 600 : 400,
-                  textDecoration: done ? 'line-through' : 'none',
-                  flex: 1,
-                }}>
-                  [{s.num}단계] {s.label} <span style={{ fontSize: 10, color: '#8B8579' }}>({s.target.toLocaleString()}원)</span>
-                </span>
-              </div>
-            );
-          })}
-        </div>
+        {/* 지난 달들 */}
+        {pastMonths.length > 0 && (
+          <div className="pt-3 mt-3" style={{ borderTop: '1px dashed #D4B574' }}>
+            <div className="text-[10px] font-bold mb-1.5" style={{ color: '#8A6418', letterSpacing: '0.05em' }}>
+              지난 달
+            </div>
+            <div className="space-y-1">
+              {pastMonths.slice(0, 3).map(([ym, data]) => {
+                const done = data.saved >= MONTHLY_TARGET;
+                return (
+                  <div key={ym} className="flex items-center gap-2 text-[11px]" 
+                    style={{ color: done ? '#5C8A5C' : '#8B7960' }}>
+                    <span className="tabular-nums" style={{ width: 28, color: '#8B8579' }}>{formatYM(ym)}</span>
+                    <span className="flex-1" style={{ fontWeight: done ? 600 : 400 }}>
+                      {done ? '✓ 채움' : '미달'}
+                    </span>
+                    <span className="tabular-nums">{data.saved.toLocaleString()}원</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
         
-        <div className="text-[10px] mt-3 italic" style={{ color: '#8A6418' }}>
-          💡 신생 사업자는 비상금보다 다음 달 월세 빼두는 게 먼저예요
-        </div>
+        {/* 누적 총액 */}
+        {totalSaved > 0 && (
+          <div className="rounded-lg p-2.5 mt-3 flex items-center justify-between"
+            style={{ backgroundColor: '#FFF8ED', border: '1px dashed #D4B574' }}>
+            <div className="text-[10.5px] font-semibold" style={{ color: '#8A6418' }}>
+              지금까지 모은 총액
+            </div>
+            <div className="tabular-nums" style={{ fontFamily: theme.serif, fontSize: 16, fontWeight: 600, color: '#5E4520' }}>
+              {totalSaved.toLocaleString()}원
+            </div>
+          </div>
+        )}
+        
+        {totalSaved === 0 && (
+          <div className="text-[10.5px] mt-3 italic text-center" style={{ color: '#8A6418' }}>
+            💡 첫 입금부터 시작해보세요
+          </div>
+        )}
       </div>
+      
+      {/* 거래 이력 모달 */}
+      {showHistory && (
+        <Modal open={true} onClose={() => setShowHistory(false)} title="입출금 이력" maxWidth="max-w-md">
+          {(!emergencyData.transactions || emergencyData.transactions.length === 0) ? (
+            <div className="text-center py-8 text-[12px]" style={{ color: theme.inkMute }}>
+              아직 거래 이력이 없어요
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {emergencyData.transactions.map(tx => (
+                <div key={tx.id} className="flex items-center gap-2.5 p-2.5 rounded-lg"
+                  style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
+                  <div style={{ 
+                    fontSize: 14, fontWeight: 700,
+                    color: tx.amount >= 0 ? '#5C8A5C' : '#C26B4A',
+                  }}>
+                    {tx.amount >= 0 ? '+' : '–'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[12px] font-medium" style={{ color: theme.ink }}>
+                      {tx.note}
+                    </div>
+                    <div className="text-[10px]" style={{ color: theme.inkMute, fontFamily: theme.serif, fontStyle: 'italic' }}>
+                      {tx.date}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="tabular-nums text-[12px] font-semibold" 
+                      style={{ color: tx.amount >= 0 ? '#5C8A5C' : '#C26B4A' }}>
+                      {Math.abs(tx.amount).toLocaleString()}원
+                    </div>
+                  </div>
+                  <button onClick={() => deleteTransaction(tx.id)}
+                    className="text-[14px] px-1.5 py-0.5 rounded"
+                    style={{ color: theme.inkMute }}>
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <Button onClick={() => setShowHistory(false)} variant="ghost" className="w-full mt-3">닫기</Button>
+        </Modal>
+      )}
     </div>
   );
 }
