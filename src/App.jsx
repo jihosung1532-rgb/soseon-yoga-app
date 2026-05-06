@@ -2480,11 +2480,27 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
       
       let newSession;
       if (existing) {
-        const alreadyIn = existing.participants?.some(p => p.memberId === booking.member_id);
-        if (!alreadyIn) {
+        const existingPart = existing.participants?.find(p => p.memberId === booking.member_id);
+        if (!existingPart) {
+          // 처음 추가
           newSession = { ...existing, participants: [...(existing.participants || []), newPart] };
         } else {
-          newSession = existing;
+          // 이미 있음 — 이전에 취소된 흔적이 있으면 살아있는 상태로 복구
+          // (회원이 취소 → 다시 예약 요청한 경우)
+          const wasCancelled = 
+            existingPart.cancelled 
+            || existingPart.status === 'cancelled_advance' 
+            || existingPart.status === 'cancelled_sameday';
+          if (wasCancelled) {
+            const newParts = existing.participants.map(p => {
+              if (p.memberId !== booking.member_id) return p;
+              const { cancelled, cancelNote, ...rest } = p;
+              return { ...rest, status: 'reserved' };
+            });
+            newSession = { ...existing, participants: newParts };
+          } else {
+            newSession = existing;
+          }
         }
       } else {
         newSession = {
