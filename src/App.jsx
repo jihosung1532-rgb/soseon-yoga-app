@@ -1368,8 +1368,8 @@ function activePass(member, category) {
 }
 
 // 차감 판정 - 모든 곳에서 이 함수 하나만 사용 (saveSession, 마이그레이션, 통계)
-// 차감 대상: 출석(기본), 노쇼, 당일취소(charged)
-// 차감 안 함: 예약확정(reserved), 사전취소, 당일취소(no_charge)
+// 차감 대상: 출석(attended), 노쇼, 당일취소(charged)
+// 차감 안 함: 예약확정(reserved), 사전취소, 당일취소(no_charge), status 없음(=아직 처리 안 됨)
 function isPartCharged(p) {
   if (!p) return false;
   // 새 status 시스템
@@ -1377,10 +1377,12 @@ function isPartCharged(p) {
   if (p.status === 'cancelled_advance') return false;
   if (p.status === 'cancelled_sameday') return p.cancelled === 'charged';
   if (p.status === 'no_show') return true;
+  if (p.status === 'attended') return true;
   // 옛 cancelled 시스템 호환
   if (p.cancelled === 'no_charge') return false;
   if (p.cancelled === 'charged') return true;
-  // 기본: 출석으로 간주 → 차감
+  // 옛 데이터 호환: status도 cancelled도 없으면 → 출석으로 간주 (마이그레이션 대상)
+  // 단, 미래 날짜의 새 데이터는 status:'reserved'로 명시 박혀야 함
   return true;
 }
 
@@ -3806,10 +3808,13 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
     const preferred = category === 'private' ? 'private' : 'group';
     const pass = activePass(m, preferred) || activePass(m, preferred === 'group' ? 'private' : 'group');
     
-    // 미래 날짜면 예약 확정 상태로
-    const todayStr = toYMD(new Date());
+    // ⭐ 수업 시작 시각이 안 지났으면 → reserved (출석 처리 X, 차감 X)
+    // 출석 처리는 수업 끝난 후 강사가 별도로 'attended' 등으로 변경
+    const now = new Date();
+    const todayStr = toYMD(now);
     const slotDateStr = slot.date ? toYMD(slot.date) : todayStr;
-    const isFuture = slotDateStr > todayStr;
+    const nowHHMM = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const isFuture = slotDateStr > todayStr || (slotDateStr === todayStr && time && time > nowHHMM);
     
     setParts([...parts, {
       memberId: m.id, memberName: m.name, passId: pass?.id,
