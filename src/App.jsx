@@ -2427,25 +2427,17 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
     
     if (isCancelReq) {
       // === 취소 요청 승인 ===
-      // sessions에서 해당 회원의 참여자를 cancelled_advance(사전취소, 차감 X)로 변경
+      // sessions의 participants에서 해당 회원을 통째로 제거 (이전엔 cancelled_advance로 두었지만, 회원 앱이 헷갈려서 완전 제거로 변경)
+      // 취소 이력은 bookings 테이블의 cancel_approved status에 남음
       if (existing && existing.participants) {
-        const newParts = existing.participants.map(p => {
-          if (p.memberId !== booking.member_id) return p;
-          return { 
-            ...p, 
-            status: 'cancelled_advance', 
-            cancelled: 'no_charge',
-            cancelNote: '회원 앱 취소 요청 (강사 승인)',
-          };
-        });
+        const oldPart = existing.participants.find(p => p.memberId === booking.member_id);
+        const newParts = existing.participants.filter(p => p.memberId !== booking.member_id);
         const newSession = { ...existing, participants: newParts };
         const newSessions = { ...sessions, [sessKey]: newSession };
         setSessions(newSessions);
         await saveKey(K.sessions, newSessions);
         
-        // 회원 수강권 회수 보정 (cancelled_advance는 차감 안 함)
-        // saveSession을 안 거치므로 직접 보정
-        const oldPart = existing.participants.find(p => p.memberId === booking.member_id);
+        // 회원 수강권 회수 보정 (취소는 차감 안 함)
         if (oldPart && oldPart.passId && isPartCharged(oldPart)) {
           // 원래 차감됐던 것 → 되돌리기
           const updatedMembers = members.map(m => {
