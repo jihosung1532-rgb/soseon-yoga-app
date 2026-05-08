@@ -3371,13 +3371,16 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     const map = new Map(); // member_id → Set("YYYY-MM-DD_HH:MM")
     members.forEach(m => {
       if (!m.fixedSlots || m.fixedSlots.length === 0) return;
-      const validPass = (m.passes || []).find(p => 
+      // 활성 수강권 후보들 — 만료일이 오늘 이후면 다 포함 (시작일 미래여도 OK, 신규 등록 미시작 패스 포함)
+      const activePasses = (m.passes || []).filter(p => 
         !p.archived 
         && p.startDate && p.expiryDate
-        && p.startDate <= todayYMD 
         && todayYMD <= p.expiryDate
       );
-      if (!validPass) return;
+      if (activePasses.length === 0) return;
+      // 시작일 빠른 순으로 정렬 — 시간 순서대로 채우기 위함
+      activePasses.sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''));
+      const validPass = activePasses[0];
       
       const totalSessions = validPass.totalSessions || 0;
       const used = validPass.usedSessions || 0;
@@ -3398,9 +3401,11 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
       let remaining = totalSessions - used - futureRegistered;
       if (remaining <= 0) return; // 이미 다 채움
       
-      // 오늘부터 만료일까지 fixedSlots 매칭 날짜를 가까운 순서로 찾아서 remaining만큼 채움
+      // 패스 startDate부터 만료일까지 fixedSlots 매칭 날짜를 가까운 순서로 찾아서 remaining만큼 채움
+      // (오늘이 startDate보다 늦으면 오늘부터)
       const slots = new Set();
-      const cursor = new Date(todayYMD);
+      const cursorStart = validPass.startDate > todayYMD ? validPass.startDate : todayYMD;
+      const cursor = new Date(cursorStart);
       const limit = new Date(validPass.expiryDate);
       while (cursor <= limit && slots.size < remaining) {
         const cYMD = toYMD(cursor);
@@ -3440,9 +3445,15 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
       if (key.startsWith(ymd + '_')) {
         const time = key.slice(ymd.length + 1);
         const sess = sessions[key];
-        if (sess && sess.participants && sess.participants.length > 0) {
+        // 살아있는 참여자 (cancelled 제외)
+        const aliveParticipants = (sess?.participants || []).filter(p =>
+          !p.cancelled 
+          && p.status !== 'cancelled_advance' 
+          && p.status !== 'cancelled_sameday'
+        );
+        if (sess && aliveParticipants.length > 0) {
           // 개인레슨 여부 판단: 참석자 중 classType === '개인' 있거나, 모든 참석자가 개인 카테고리
-          const hasPrivate = sess.participants.some(p => p.classType === '개인');
+          const hasPrivate = aliveParticipants.some(p => p.classType === '개인');
           // 그룹 슬롯에 포함되면 group, 아니면 private
           const isGroupSlot = groupSlots.includes(time);
           const category = hasPrivate ? 'private' : (isGroupSlot ? 'group' : 'private');
