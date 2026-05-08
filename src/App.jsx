@@ -3363,6 +3363,66 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
 
   const smallGroupDay = (d) => d.getDay() === 2 || d.getDay() === 4;
   const todayYMD = toYMD(new Date());
+  
+  // ⭐ 자동 일정 미리 계산 (회수 기반)
+  // 각 회원의 활성 수강권 기준 — 남은 회수만큼만 가까운 날짜부터 자동 등록
+  // sessions에 이미 들어가있는 미래 등록(차감/미차감 무관)도 계산에 포함
+  const autoSlotsForMembers = useMemo(() => {
+    const map = new Map(); // member_id → Set("YYYY-MM-DD_HH:MM")
+    members.forEach(m => {
+      if (!m.fixedSlots || m.fixedSlots.length === 0) return;
+      const validPass = (m.passes || []).find(p => 
+        !p.archived 
+        && p.startDate && p.expiryDate
+        && p.startDate <= todayYMD 
+        && todayYMD <= p.expiryDate
+      );
+      if (!validPass) return;
+      
+      const totalSessions = validPass.totalSessions || 0;
+      const used = validPass.usedSessions || 0;
+      // 미래 sessions에 이미 등록된 회수 (sessions 우선)
+      let futureRegistered = 0;
+      const futureSessKeys = new Set();
+      Object.entries(sessions).forEach(([k, s]) => {
+        const sDate = k.split('_')[0];
+        if (sDate < todayYMD) return;
+        const myPart = (s?.participants || []).find(p => p.memberId === m.id);
+        if (!myPart) return;
+        // cancelled는 제외, 그 외 등록은 회수 차지
+        if (myPart.cancelled || myPart.status === 'cancelled_advance' || myPart.status === 'cancelled_sameday') return;
+        futureRegistered++;
+        futureSessKeys.add(k);
+      });
+      
+      let remaining = totalSessions - used - futureRegistered;
+      if (remaining <= 0) return; // 이미 다 채움
+      
+      // 오늘부터 만료일까지 fixedSlots 매칭 날짜를 가까운 순서로 찾아서 remaining만큼 채움
+      const slots = new Set();
+      const cursor = new Date(todayYMD);
+      const limit = new Date(validPass.expiryDate);
+      while (cursor <= limit && slots.size < remaining) {
+        const cYMD = toYMD(cursor);
+        const cDow = cursor.getDay();
+        // 휴일/홀딩 제외
+        const isHol = HOLIDAYS.has(cYMD);
+        const isHold = validPass.holdStart && validPass.holdEnd && cYMD >= validPass.holdStart && cYMD <= validPass.holdEnd;
+        if (!isHol && !isHold) {
+          m.fixedSlots.forEach(fs => {
+            if (fs.dow !== cDow) return;
+            const k = `${cYMD}_${fs.time}`;
+            // 이미 sessions에 확정 등록되어있으면 자동 표시 X (확정이 우선)
+            if (futureSessKeys.has(k)) return;
+            if (slots.size < remaining) slots.add(k);
+          });
+        }
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      map.set(m.id, slots);
+    });
+    return map;
+  }, [members, sessions, todayYMD]);
 
   // 그날의 모든 수업을 시간순으로 모음 (확정 + 자동추천)
   const getDayClasses = (date) => {
@@ -3404,23 +3464,16 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     });
 
     // 2) 자동 추천 (회원 fixedSlots 기반) - 미래 날짜만, 그룹 슬롯에만
+    // 회수 기반: autoSlotsForMembers Map(member_id → Set of "YYYY-MM-DD_HH:MM")에 미리 계산된 거 사용
     const autoItems = [];
     if (!isPast) {
       groupSlots.forEach(time => {
         // 이미 확정된 시간이면 스킵
         if (explicit.some(e => e.time === time)) return;
-        const autoMembers = members.filter(m => {
-          if (!m.fixedSlots?.some(fs => fs.dow === dow && fs.time === time)) return false;
-          // 활성 수강권 + 그날 범위 안 + 홀딩 기간 제외
-          const validPass = (m.passes || []).find(p => 
-            !p.archived 
-            && p.startDate && p.expiryDate
-            && p.startDate <= ymd 
-            && ymd <= p.expiryDate
-            && !(p.holdStart && p.holdEnd && ymd >= p.holdStart && ymd <= p.holdEnd)
-          );
-          return !!validPass;
-        });
+        const slotStr = `${ymd}_${time}`;
+        const autoMembers = members.filter(m => 
+          autoSlotsForMembers.get(m.id)?.has(slotStr)
+        );
         if (autoMembers.length > 0) {
           autoItems.push({
             time,
