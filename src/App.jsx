@@ -1368,11 +1368,14 @@ function activePass(member, category) {
 }
 
 // 차감 판정 - 모든 곳에서 이 함수 하나만 사용 (saveSession, 마이그레이션, 통계)
-// 차감 대상: 출석(attended), 노쇼, 당일취소(charged)
-// 차감 안 함: 예약확정(reserved), 사전취소, 당일취소(no_charge), status 없음(=아직 처리 안 됨)
-function isPartCharged(p) {
+// 차감 대상: 출석(attended), 노쇼, 당일취소(charged), 그리고 수업 시작 시각 지난 일반 등록
+// 차감 안 함: 예약확정(reserved), 사전취소, 당일취소(no_charge), 수업 시작 전 등록
+//
+// sessionDateTime 인자: { date: 'YYYY-MM-DD', time: 'HH:MM' } - 옵셔널
+//   주어지면 "수업 시작 시각이 지났는지"로 자동 판정 (앞=차감, 뒤=미차감)
+function isPartCharged(p, sessionDateTime = null) {
   if (!p) return false;
-  // 새 status 시스템
+  // 새 status 시스템 (명시적 우선)
   if (p.status === 'reserved') return false;
   if (p.status === 'cancelled_advance') return false;
   if (p.status === 'cancelled_sameday') return p.cancelled === 'charged';
@@ -1381,8 +1384,17 @@ function isPartCharged(p) {
   // 옛 cancelled 시스템 호환
   if (p.cancelled === 'no_charge') return false;
   if (p.cancelled === 'charged') return true;
-  // 옛 데이터 호환: status도 cancelled도 없으면 → 출석으로 간주 (마이그레이션 대상)
-  // 단, 미래 날짜의 새 데이터는 status:'reserved'로 명시 박혀야 함
+  // status 명시 안 됐으면 → 수업 시작 시각 기준으로 자동 판정
+  if (sessionDateTime?.date && sessionDateTime?.time) {
+    const now = new Date();
+    const todayStr = toYMD(now);
+    const nowHHMM = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    const sessionStarted = 
+      sessionDateTime.date < todayStr ||
+      (sessionDateTime.date === todayStr && sessionDateTime.time <= nowHHMM);
+    return sessionStarted; // 시작 후 = 차감, 시작 전 = 미차감
+  }
+  // sessionDateTime 안 줬으면 (옛 호출) — 기본 차감
   return true;
 }
 
@@ -3205,10 +3217,13 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     // 옛 슬롯의 차감은 옛 날짜 기준으로 빼야 함 (sessionDates 보정)
     const oldDateStr = isMove ? oldKey.slice(0, 10) : dateStr;
 
-    // 차감 판정 - 모듈 레벨 isPartCharged 헬퍼 사용
-    const chargeOf = (p) => isPartCharged(p) && p.memberId && p.passId ? `${p.memberId}|${p.passId}` : null;
-    const oldCharges = oldParts.map(chargeOf).filter(Boolean);
-    const newCharges = newParts.map(chargeOf).filter(Boolean);
+    // 차감 판정 - 모듈 레벨 isPartCharged 헬퍼 사용 (시간 기준 자동 판정)
+    const oldDateTime = { date: oldDateStr, time: isMove ? oldKey.slice(11) : time };
+    const newDateTime = { date: dateStr, time };
+    const chargeOfOld = (p) => isPartCharged(p, oldDateTime) && p.memberId && p.passId ? `${p.memberId}|${p.passId}` : null;
+    const chargeOfNew = (p) => isPartCharged(p, newDateTime) && p.memberId && p.passId ? `${p.memberId}|${p.passId}` : null;
+    const oldCharges = oldParts.map(chargeOfOld).filter(Boolean);
+    const newCharges = newParts.map(chargeOfNew).filter(Boolean);
 
     // pass key별로 (delta, 빼야 할 옛 날짜 개수, 더해야 할 새 날짜 개수)를 추적
     const adjustments = {};
@@ -3664,7 +3679,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                                             textDecoration: isCancelled ? 'line-through' : 'none',
                                           }}>
                                             <span style={{ fontWeight: 600 }}>{p.memberName}</span>
-                                            {p.sessionNumber && p.totalSessions && !isCancelled && (
+                                            {p.sessionNumber && p.totalSessions && !isCancelled && isPartCharged(p, { date: toYMD(d), time: item.time }) && (
                                               <span style={{ color: theme.inkMute, fontSize: 11, fontWeight: 400 }}>
                                                 {' '}({p.sessionNumber}/{p.totalSessions})
                                               </span>
@@ -9806,17 +9821,18 @@ export default function App() {
     }
     
     // 마이그레이션 v3: 수강권 사용 회수 sessions와 동기화
-    // v2로 올림 - isPartCharged 통일 후 데이터 재보정
-    const passSyncFlag = await loadKey({ lkey: 'sosun:migration:pass-sync:v2', table: 'settings', id: 'migration_pass_sync_v2' }, false);
+    // v3로 올림 - 시간 기준 자동 차감 판정 도입 후 데이터 재보정
+    const passSyncFlag = await loadKey({ lkey: 'sosun:migration:pass-sync:v3', table: 'settings', id: 'migration_pass_sync_v3' }, false);
     if (!passSyncFlag) {
       // 회원별 / 수강권별로 sessions에서 차감 대상 회수 카운트
       // (isPartCharged 헬퍼 사용 — saveSession과 완전히 동일한 판정)
       const usageMap = {}; // { 'memberId|passId': { count, dates: [] } }
       Object.values(migratedS).forEach(s => {
+        const sessionDT = { date: s.date, time: s.time };
         (s.participants || []).forEach(p => {
           if (!p.memberId || !p.passId) return;
           if (p.isTrial) return;
-          if (!isPartCharged(p)) return;
+          if (!isPartCharged(p, sessionDT)) return;
           const key = `${p.memberId}|${p.passId}`;
           if (!usageMap[key]) usageMap[key] = { count: 0, dates: [] };
           usageMap[key].count++;
@@ -9850,7 +9866,7 @@ export default function App() {
         await saveKey(K.members, migratedM);
         console.log('[migration] 수강권 동기화', updated, '건');
       }
-      await saveKey({ lkey: 'sosun:migration:pass-sync:v2', table: 'settings', id: 'migration_pass_sync_v2' }, true);
+      await saveKey({ lkey: 'sosun:migration:pass-sync:v3', table: 'settings', id: 'migration_pass_sync_v3' }, true);
     }
     
     // 마이그레이션 v2: 기존 sessions의 메모/수업기록 → 회원별 progressLog 일괄 동기화
@@ -10207,9 +10223,10 @@ export default function App() {
       const usageMap = {};
       Object.values(migS).forEach(s => {
         if (!s?.date) return;
+        const sDT = { date: s.date, time: s.time };
         (s.participants || []).forEach(p => {
           if (!p.memberId || !p.passId || p.isTrial) return;
-          if (!isPartCharged(p)) return;
+          if (!isPartCharged(p, sDT)) return;
           const k = `${p.memberId}|${p.passId}`;
           if (!usageMap[k]) usageMap[k] = { count: 0, dates: [] };
           usageMap[k].count++;
@@ -10222,10 +10239,11 @@ export default function App() {
         usageMap[k].dates.sort();
         let sn = 1;
         Object.values(migS).forEach(s => {
+          const sDT2 = { date: s.date, time: s.time };
           (s.participants || []).forEach(p => {
             if (`${p.memberId}|${p.passId}` !== k) return;
             if (p.isTrial) return;
-            if (!isPartCharged(p)) return;
+            if (!isPartCharged(p, sDT2)) return;
             if (!p.sessionNumber) p.sessionNumber = sn;
             sn = Math.max(sn, p.sessionNumber) + 1;
           });
