@@ -172,6 +172,93 @@ const sb = {
       return { ok: false, error: e.message };
     }
   },
+
+  // === Storage 헬퍼 (member-files 버킷) ===
+  // 파일 업로드 (File/Blob → 버킷 경로)
+  async uploadFile(bucket, path, file) {
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/storage/v1/object/${bucket}/${encodeURIComponent(path)}`,
+        {
+          method: 'POST',
+          headers: {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${sbAuth.token || SUPABASE_ANON_KEY}`,
+            'Content-Type': file.type || 'application/octet-stream',
+            'x-upsert': 'true',
+          },
+          body: file,
+        }
+      );
+      if (!res.ok) {
+        const err = await res.text();
+        console.error('uploadFile error', err);
+        return { ok: false, error: err };
+      }
+      return { ok: true, path };
+    } catch (e) {
+      console.error('uploadFile exception', e);
+      return { ok: false, error: e.message };
+    }
+  },
+
+  // 파일 목록 (버킷 안 경로 prefix로 검색)
+  async listFiles(bucket, prefix) {
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/storage/v1/object/list/${bucket}`,
+        {
+          method: 'POST',
+          headers: {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${sbAuth.token || SUPABASE_ANON_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ prefix: prefix || '', limit: 1000, sortBy: { column: 'created_at', order: 'desc' } }),
+        }
+      );
+      if (!res.ok) return [];
+      return await res.json();
+    } catch { return []; }
+  },
+
+  // Signed URL 생성 (private 버킷 — 임시 보기/다운로드 URL, 1시간 유효)
+  async getSignedUrl(bucket, path, expiresIn = 3600) {
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/storage/v1/object/sign/${bucket}/${encodeURIComponent(path)}`,
+        {
+          method: 'POST',
+          headers: {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${sbAuth.token || SUPABASE_ANON_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ expiresIn }),
+        }
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      return `${SUPABASE_URL}/storage/v1${data.signedURL || data.signedUrl || ''}`;
+    } catch { return null; }
+  },
+
+  // 파일 삭제
+  async deleteFile(bucket, path) {
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/storage/v1/object/${bucket}/${encodeURIComponent(path)}`,
+        {
+          method: 'DELETE',
+          headers: {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${sbAuth.token || SUPABASE_ANON_KEY}`,
+          },
+        }
+      );
+      return res.ok;
+    } catch { return false; }
+  },
 };
 
 // Supabase 로그인
@@ -5082,6 +5169,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
             { id: 'memo', label: '메모' },
             { id: 'progress', label: '경과' },
             { id: 'assessment', label: '분석' },
+            { id: 'files', label: '파일' },
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className="py-1.5 px-3 rounded-md whitespace-nowrap"
@@ -5569,6 +5657,10 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
 
         {tab === 'assessment' && (
           <AssessmentPanel member={member} onUpdate={onUpdate} toast={toast} />
+        )}
+
+        {tab === 'files' && (
+          <FilesPanel member={member} toast={toast} />
         )}
 
         {editing && (
@@ -6280,6 +6372,244 @@ function AssessmentPanel({ member, onUpdate, toast }) {
               }}>삭제</Button>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
+   Files Panel - 영수증/회원권 등록증 첨부
+   ========================================================= */
+function FilesPanel({ member, toast }) {
+  const [category, setCategory] = useState('receipt'); // receipt | passcard
+  const [files, setFiles] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const fileInputRef = useRef(null);
+  
+  const BUCKET = 'member-files';
+  const PREFIX = `${member.id}/${category}`;
+  const CATEGORY_LABEL = { receipt: '영수증', passcard: '회원권 등록증' };
+  
+  // 파일 목록 로드
+  const loadFiles = async () => {
+    setLoading(true);
+    try {
+      const list = await sb.listFiles(BUCKET, PREFIX);
+      setFiles(Array.isArray(list) ? list : []);
+    } catch (e) {
+      console.error(e);
+      setFiles([]);
+    }
+    setLoading(false);
+  };
+  
+  useEffect(() => {
+    loadFiles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [member.id, category]);
+  
+  // 파일 업로드
+  const handleUpload = async (e) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    
+    setUploading(true);
+    let successCount = 0;
+    for (const file of files) {
+      // 이미지인지 확인
+      if (!file.type.startsWith('image/')) {
+        toast(`${file.name}은 이미지가 아니라 건너뜀`);
+        continue;
+      }
+      // 5MB 제한
+      if (file.size > 10 * 1024 * 1024) {
+        toast(`${file.name}은 10MB 초과 (건너뜀)`);
+        continue;
+      }
+      
+      // 파일명: {member_id}/{category}/{timestamp}-{원본파일명}
+      const ext = file.name.split('.').pop();
+      const timestamp = Date.now();
+      const safeName = `${timestamp}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+      const path = `${PREFIX}/${safeName}`;
+      
+      const result = await sb.uploadFile(BUCKET, path, file);
+      if (result.ok) successCount++;
+      else toast(`업로드 실패: ${file.name}`);
+    }
+    setUploading(false);
+    if (successCount > 0) {
+      toast(`✓ ${successCount}개 업로드 완료`);
+      await loadFiles();
+    }
+    // input 초기화 (같은 파일 다시 선택 가능하게)
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+  
+  // 파일 보기 (Signed URL)
+  const handleView = async (filename) => {
+    const path = `${PREFIX}/${filename}`;
+    const url = await sb.getSignedUrl(BUCKET, path, 3600);
+    if (url) {
+      setPreviewUrl(url);
+    } else {
+      toast('파일 열기 실패');
+    }
+  };
+  
+  // 파일 삭제
+  const handleDelete = async (filename) => {
+    if (!confirm(`이 파일을 삭제할까요?\n${filename}`)) return;
+    const path = `${PREFIX}/${filename}`;
+    const ok = await sb.deleteFile(BUCKET, path);
+    if (ok) {
+      toast('삭제 완료');
+      await loadFiles();
+    } else {
+      toast('삭제 실패');
+    }
+  };
+  
+  // 파일명에서 timestamp 빼고 보기 좋게
+  const displayName = (name) => {
+    const m = name.match(/^(\d+)-(.*)$/);
+    if (!m) return name;
+    const date = new Date(parseInt(m[1]));
+    const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+    return `${dateStr} · ${m[2]}`;
+  };
+  
+  return (
+    <div className="space-y-3 pb-4">
+      {/* 카테고리 탭 */}
+      <div className="flex gap-2">
+        {[
+          { id: 'receipt', label: '영수증' },
+          { id: 'passcard', label: '회원권 등록증' },
+        ].map(c => (
+          <button key={c.id} onClick={() => setCategory(c.id)}
+            style={{
+              flex: 1,
+              padding: '8px 12px',
+              borderRadius: 8,
+              fontSize: 13,
+              fontWeight: 600,
+              background: category === c.id ? theme.accent : theme.cardAlt,
+              color: category === c.id ? '#FFF' : theme.inkSoft,
+              border: `1px solid ${category === c.id ? theme.accent : theme.line}`,
+              cursor: 'pointer',
+            }}>
+            {c.label}
+          </button>
+        ))}
+      </div>
+      
+      {/* 업로드 버튼 */}
+      <div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={handleUpload}
+          style={{ display: 'none' }}
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          style={{
+            width: '100%',
+            padding: '10px',
+            borderRadius: 10,
+            background: theme.accent,
+            color: '#FFF',
+            border: 'none',
+            fontSize: 13,
+            fontWeight: 700,
+            cursor: 'pointer',
+            opacity: uploading ? 0.6 : 1,
+          }}>
+          {uploading ? '업로드 중...' : `📷 ${CATEGORY_LABEL[category]} 사진 추가`}
+        </button>
+        <div style={{ fontSize: 10.5, color: theme.inkMute, textAlign: 'center', marginTop: 4 }}>
+          이미지 · 최대 10MB · 여러 장 동시 업로드 가능
+        </div>
+      </div>
+      
+      {/* 파일 목록 */}
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 20, color: theme.inkMute, fontSize: 12 }}>
+          불러오는 중...
+        </div>
+      ) : files.length === 0 ? (
+        <div style={{ 
+          textAlign: 'center', padding: '24px 12px', 
+          color: theme.inkMute, fontSize: 12,
+          background: theme.cardAlt, borderRadius: 10,
+          border: `1px dashed ${theme.line}`,
+        }}>
+          {CATEGORY_LABEL[category]}이 없어요
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {files.map(f => (
+            <div key={f.name} style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '8px 10px',
+              background: theme.card,
+              border: `1px solid ${theme.line}`,
+              borderRadius: 8,
+            }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: theme.ink, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {displayName(f.name)}
+                </div>
+                {f.metadata?.size && (
+                  <div style={{ fontSize: 10, color: theme.inkMute, marginTop: 2 }}>
+                    {(f.metadata.size / 1024).toFixed(0)} KB
+                  </div>
+                )}
+              </div>
+              <button onClick={() => handleView(f.name)} style={{
+                padding: '5px 10px', fontSize: 11, fontWeight: 600,
+                background: theme.cardAlt, color: theme.ink,
+                border: `1px solid ${theme.line}`, borderRadius: 6, cursor: 'pointer',
+              }}>보기</button>
+              <button onClick={() => handleDelete(f.name)} style={{
+                padding: '5px 10px', fontSize: 11, fontWeight: 600,
+                background: 'transparent', color: theme.danger || '#C26B4A',
+                border: `1px solid ${theme.danger || '#C26B4A'}`, borderRadius: 6, cursor: 'pointer',
+              }}>삭제</button>
+            </div>
+          ))}
+        </div>
+      )}
+      
+      {/* 미리보기 모달 */}
+      {previewUrl && (
+        <div onClick={() => setPreviewUrl(null)} style={{
+          position: 'fixed', inset: 0,
+          background: 'rgba(0,0,0,0.85)',
+          zIndex: 9999,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: 16,
+        }}>
+          <img src={previewUrl} alt="preview" style={{
+            maxWidth: '100%', maxHeight: '100%',
+            objectFit: 'contain',
+            borderRadius: 8,
+          }} />
+          <button onClick={() => setPreviewUrl(null)} style={{
+            position: 'absolute', top: 16, right: 16,
+            width: 36, height: 36, borderRadius: '50%',
+            background: '#FFF', color: '#000', border: 'none',
+            fontSize: 20, fontWeight: 700, cursor: 'pointer',
+          }}>×</button>
+        </div>
       )}
     </div>
   );
