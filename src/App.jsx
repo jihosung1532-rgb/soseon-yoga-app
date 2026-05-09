@@ -3371,20 +3371,26 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     const map = new Map(); // member_id → Set("YYYY-MM-DD_HH:MM")
     members.forEach(m => {
       if (!m.fixedSlots || m.fixedSlots.length === 0) return;
-      // 활성 수강권 후보들 — 만료일이 오늘 이후면 다 포함 (시작일 미래여도 OK, 신규 등록 미시작 패스 포함)
+      
+      // 활성 패스 후보: 
+      //  - archived 아니고
+      //  - 시작일/만료일 있고
+      //  - 만료일이 오늘 이후 (아직 안 끝남)
+      //  - 회수 남아있음 (다 안 씀)
+      // → 그 중 시작일 가장 빠른 1개만 활성
       const activePasses = (m.passes || []).filter(p => 
         !p.archived 
         && p.startDate && p.expiryDate
         && todayYMD <= p.expiryDate
+        && (p.usedSessions || 0) < (p.totalSessions || 0)
       );
       if (activePasses.length === 0) return;
-      // 시작일 빠른 순으로 정렬 — 시간 순서대로 채우기 위함
       activePasses.sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''));
-      const validPass = activePasses[0];
+      const validPass = activePasses[0]; // 가장 빠른 1개만 활성
       
       const totalSessions = validPass.totalSessions || 0;
       const used = validPass.usedSessions || 0;
-      // 미래 sessions에 이미 등록된 회수 (sessions 우선)
+      // 이 패스로 미래 sessions에 등록된 회수 (passId 기준)
       let futureRegistered = 0;
       const futureSessKeys = new Set();
       Object.entries(sessions).forEach(([k, s]) => {
@@ -3392,17 +3398,15 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
         if (sDate < todayYMD) return;
         const myPart = (s?.participants || []).find(p => p.memberId === m.id);
         if (!myPart) return;
-        // cancelled는 제외, 그 외 등록은 회수 차지
         if (myPart.cancelled || myPart.status === 'cancelled_advance' || myPart.status === 'cancelled_sameday') return;
-        futureRegistered++;
-        futureSessKeys.add(k);
+        if (myPart.passId === validPass.id) futureRegistered++;
+        futureSessKeys.add(k); // 어떤 패스든 이미 확정된 슬롯은 자동 표시 X
       });
       
-      let remaining = totalSessions - used - futureRegistered;
-      if (remaining <= 0) return; // 이미 다 채움
+      const remaining = totalSessions - used - futureRegistered;
+      if (remaining <= 0) return;
       
-      // 패스 startDate부터 만료일까지 fixedSlots 매칭 날짜를 가까운 순서로 찾아서 remaining만큼 채움
-      // (오늘이 startDate보다 늦으면 오늘부터)
+      // 패스 startDate부터 만료일까지 fixedSlots 매칭 날짜를 가까운 순서로 remaining만큼 채움
       const slots = new Set();
       const cursorStart = validPass.startDate > todayYMD ? validPass.startDate : todayYMD;
       const cursor = new Date(cursorStart);
@@ -3410,21 +3414,22 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
       while (cursor <= limit && slots.size < remaining) {
         const cYMD = toYMD(cursor);
         const cDow = cursor.getDay();
-        // 휴일/홀딩 제외
         const isHol = HOLIDAYS.has(cYMD);
         const isHold = validPass.holdStart && validPass.holdEnd && cYMD >= validPass.holdStart && cYMD <= validPass.holdEnd;
         if (!isHol && !isHold) {
-          m.fixedSlots.forEach(fs => {
-            if (fs.dow !== cDow) return;
+          for (const fs of m.fixedSlots) {
+            if (fs.dow !== cDow) continue;
             const k = `${cYMD}_${fs.time}`;
-            // 이미 sessions에 확정 등록되어있으면 자동 표시 X (확정이 우선)
-            if (futureSessKeys.has(k)) return;
-            if (slots.size < remaining) slots.add(k);
-          });
+            if (futureSessKeys.has(k)) continue; // 확정 등록 우선
+            if (slots.has(k)) continue;
+            slots.add(k);
+            if (slots.size >= remaining) break;
+          }
         }
         cursor.setDate(cursor.getDate() + 1);
       }
-      map.set(m.id, slots);
+      
+      if (slots.size > 0) map.set(m.id, slots);
     });
     return map;
   }, [members, sessions, todayYMD]);
