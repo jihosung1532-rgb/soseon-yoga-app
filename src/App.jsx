@@ -8446,7 +8446,8 @@ function FinanceCard({ targetMonth, revenue, netRevenue }) {
   const [addNote, setAddNote] = useState('');
   const [showHistory, setShowHistory] = useState(false);
   
-  const MONTHLY_TARGET = 650000;
+  // 월 운영비 목표 (월세 45 + 관리비 15 + 통신/용품 등 20 = 80만원)
+  const MONTHLY_TARGET = 800000;
   
   // localStorage 불러오기 + 옛 데이터 마이그레이션
   useEffect(() => {
