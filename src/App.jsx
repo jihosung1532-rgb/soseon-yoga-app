@@ -178,7 +178,7 @@ const sb = {
   async uploadFile(bucket, path, file) {
     try {
       const res = await fetch(
-        `${SUPABASE_URL}/storage/v1/object/${bucket}/${encodeURIComponent(path)}`,
+        `${SUPABASE_URL}/storage/v1/object/${bucket}/${path.split('/').map(encodeURIComponent).join('/')}`,
         {
           method: 'POST',
           headers: {
@@ -226,7 +226,7 @@ const sb = {
   async getSignedUrl(bucket, path, expiresIn = 3600) {
     try {
       const res = await fetch(
-        `${SUPABASE_URL}/storage/v1/object/sign/${bucket}/${encodeURIComponent(path)}`,
+        `${SUPABASE_URL}/storage/v1/object/sign/${bucket}/${path.split('/').map(encodeURIComponent).join('/')}`,
         {
           method: 'POST',
           headers: {
@@ -237,17 +237,28 @@ const sb = {
           body: JSON.stringify({ expiresIn }),
         }
       );
-      if (!res.ok) return null;
+      if (!res.ok) {
+        const err = await res.text();
+        console.error('getSignedUrl error', res.status, err);
+        return null;
+      }
       const data = await res.json();
-      return `${SUPABASE_URL}/storage/v1${data.signedURL || data.signedUrl || ''}`;
-    } catch { return null; }
+      const signed = data.signedURL || data.signedUrl || '';
+      // signedURL이 /object/sign/... 형태면 storage/v1 prefix 붙여야 함
+      if (signed.startsWith('http')) return signed;
+      if (signed.startsWith('/storage/v1/')) return `${SUPABASE_URL}${signed}`;
+      return `${SUPABASE_URL}/storage/v1${signed.startsWith('/') ? '' : '/'}${signed}`;
+    } catch (e) {
+      console.error('getSignedUrl exception', e);
+      return null;
+    }
   },
 
   // 파일 삭제
   async deleteFile(bucket, path) {
     try {
       const res = await fetch(
-        `${SUPABASE_URL}/storage/v1/object/${bucket}/${encodeURIComponent(path)}`,
+        `${SUPABASE_URL}/storage/v1/object/${bucket}/${path.split('/').map(encodeURIComponent).join('/')}`,
         {
           method: 'DELETE',
           headers: {
