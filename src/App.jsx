@@ -5769,7 +5769,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
         )}
 
         {tab === 'progress' && (
-          <ProgressTimeline items={member.progressLog || []} onUpdate={updateProgressLog} toast={toast} memberName={member.name} />
+          <ProgressTimeline items={member.progressLog || []} passes={member.passes || []} onUpdate={updateProgressLog} toast={toast} memberName={member.name} />
         )}
 
         {tab === 'assessment' && (
@@ -6063,7 +6063,7 @@ function MemoTimeline({ items, onUpdate, toast, memberName }) {
 }
 
 /* ---------- Progress Timeline with AI photo import ---------- */
-function ProgressTimeline({ items, onUpdate, toast, memberName }) {
+function ProgressTimeline({ items, passes = [], onUpdate, toast, memberName }) {
   const [adding, setAdding] = useState(false);
   const [mode, setMode] = useState('text'); // text | photo
   const [date, setDate] = useState(toYMD(new Date()));
@@ -6246,35 +6246,143 @@ JSON만 출력. 코드펜스 금지.`;
       {items.length === 0 ? (
         <EmptyState icon={ClipboardList} title="아직 경과 기록이 없어요" hint="개인레슨 중심으로 기록해보세요" />
       ) : (
-        <div className="space-y-2">
-          {items.map(p => (
-            <div key={p.id} className="rounded-2xl p-3" style={{ backgroundColor: theme.card, border: `1px solid ${theme.lineLight}` }}>
-              <div className="flex justify-between items-baseline mb-2">
-                <div className="flex items-baseline gap-2">
-                  <div className="text-[12px] font-medium tabular-nums" style={{ color: theme.accent }}>{p.date}</div>
-                  {p.classType && <Chip tone="accent" size="sm">{p.classType}</Chip>}
+        <div className="space-y-4">
+          {(() => {
+            // 경과 기록을 수강권별로 그룹핑
+            // 각 기록의 날짜가 어느 수강권 기간(startDate~expiryDate)에 속하는지 매칭
+            // 매칭 안 되는 건 '기타' 그룹으로
+            const sortedPasses = [...passes]
+              .filter(p => p.startDate)
+              .sort((a, b) => (b.startDate || '').localeCompare(a.startDate || '')); // 최신 수강권 먼저
+            
+            // 각 record → passId 매칭
+            const matchPass = (recDate) => {
+              if (!recDate) return null;
+              // 날짜가 기간 안에 들어가는 수강권 (여러 개면 startDate 늦은 것 우선)
+              const candidates = sortedPasses.filter(p => 
+                p.startDate <= recDate && (!p.expiryDate || recDate <= p.expiryDate)
+              );
+              if (candidates.length > 0) return candidates[0];
+              // 기간 매칭 실패 — startDate가 가장 가까운(이전) 수강권
+              const before = sortedPasses.filter(p => p.startDate <= recDate);
+              if (before.length > 0) return before[0];
+              return null;
+            };
+            
+            // 그룹: passId → { pass, records[] }
+            const groups = new Map();
+            const noPassRecords = [];
+            [...items].forEach(rec => {
+              const pass = matchPass(rec.date);
+              if (!pass) { noPassRecords.push(rec); return; }
+              if (!groups.has(pass.id)) groups.set(pass.id, { pass, records: [] });
+              groups.get(pass.id).records.push(rec);
+            });
+            
+            // 수강권 라벨 만들기 (예: "5월 수강권 · 8회")
+            // 같은 월에 여러 수강권이면 시작일(일자)까지 붙여서 구분
+            const monthCount = {};
+            sortedPasses.forEach(p => {
+              const mm = p.startDate ? p.startDate.slice(0, 7) : '?';
+              monthCount[mm] = (monthCount[mm] || 0) + 1;
+            });
+            const passLabel = (pass) => {
+              const mm = pass.startDate ? pass.startDate.slice(0, 7) : '';
+              const startM = pass.startDate ? parseInt(pass.startDate.slice(5, 7)) : null;
+              const startD = pass.startDate ? parseInt(pass.startDate.slice(8, 10)) : null;
+              // 같은 월에 2개 이상이면 "5월 14일~"처럼 일자까지
+              const dateStr = (monthCount[mm] > 1 && startM && startD)
+                ? `${startM}월 ${startD}일~ `
+                : (startM ? `${startM}월 ` : '');
+              const typeStr = pass.type || `${pass.totalSessions || ''}회`;
+              return `${dateStr}수강권 · ${typeStr}`;
+            };
+            const passPeriod = (pass) => {
+              const s = pass.startDate ? pass.startDate.slice(5).replace('-', '/') : '';
+              const e = pass.expiryDate ? pass.expiryDate.slice(5).replace('-', '/') : '';
+              return s && e ? `${s} ~ ${e}` : '';
+            };
+            
+            // 섹션 렌더 순서: sortedPasses 순서대로 (그룹 있는 것만), 마지막에 기타
+            const sections = [];
+            sortedPasses.forEach(pass => {
+              const g = groups.get(pass.id);
+              if (g) sections.push(g);
+            });
+            // groups에 있지만 sortedPasses에 없는 경우 방어
+            groups.forEach((g, pid) => {
+              if (!sections.includes(g)) sections.push(g);
+            });
+            
+            const renderRecord = (p, sessionNo) => (
+              <div key={p.id} className="rounded-2xl p-3" style={{ backgroundColor: theme.card, border: `1px solid ${theme.lineLight}` }}>
+                <div className="flex justify-between items-baseline mb-2">
+                  <div className="flex items-baseline gap-2">
+                    <div className="text-[12px] font-medium tabular-nums" style={{ color: theme.accent }}>{p.date}</div>
+                    {sessionNo != null && <Chip tone="accent" size="sm">{sessionNo}회차</Chip>}
+                    {p.classType && !sessionNo && <Chip tone="accent" size="sm">{p.classType}</Chip>}
+                  </div>
+                  <button onClick={() => del(p.id)} className="p-1" style={{ color: theme.inkMute }}>
+                    <Trash2 size={12} />
+                  </button>
                 </div>
-                <button onClick={() => del(p.id)} className="p-1" style={{ color: theme.inkMute }}>
-                  <Trash2 size={12} />
-                </button>
+                {p.bodyState && (
+                  <div className="mb-1.5">
+                    <div className="text-[10px] font-semibold" style={{ color: theme.inkSoft }}>그날의 몸 상태</div>
+                    <div className="text-[13px] whitespace-pre-wrap" style={{ color: theme.ink }}>{p.bodyState}</div>
+                  </div>
+                )}
+                {p.afterChange && (
+                  <div className="mb-1.5">
+                    <div className="text-[10px] font-semibold" style={{ color: theme.accent2 }}>수업 후 변화</div>
+                    <div className="text-[13px] whitespace-pre-wrap" style={{ color: theme.ink }}>{p.afterChange}</div>
+                  </div>
+                )}
+                {p.memo && (
+                  <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>메모: {p.memo}</div>
+                )}
               </div>
-              {p.bodyState && (
-                <div className="mb-1.5">
-                  <div className="text-[10px] font-semibold" style={{ color: theme.inkSoft }}>그날의 몸 상태</div>
-                  <div className="text-[13px] whitespace-pre-wrap" style={{ color: theme.ink }}>{p.bodyState}</div>
-                </div>
-              )}
-              {p.afterChange && (
-                <div className="mb-1.5">
-                  <div className="text-[10px] font-semibold" style={{ color: theme.accent2 }}>수업 후 변화</div>
-                  <div className="text-[13px] whitespace-pre-wrap" style={{ color: theme.ink }}>{p.afterChange}</div>
-                </div>
-              )}
-              {p.memo && (
-                <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>메모: {p.memo}</div>
-              )}
-            </div>
-          ))}
+            );
+            
+            return (
+              <>
+                {sections.map(({ pass, records }) => {
+                  // 섹션 안: 날짜 오름차순으로 회차 매기고, 표시는 내림차순(최신 위)
+                  const byDateAsc = [...records].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+                  const sessionNoMap = new Map();
+                  byDateAsc.forEach((r, i) => sessionNoMap.set(r.id, i + 1));
+                  const byDateDesc = [...records].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+                  return (
+                    <div key={pass.id}>
+                      <div className="flex items-baseline gap-2 mb-2 px-1">
+                        <div className="text-[12px] font-bold" style={{ color: theme.ink }}>
+                          {passLabel(pass)}
+                        </div>
+                        <div className="text-[10px]" style={{ color: theme.inkMute }}>
+                          {passPeriod(pass)}
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        {byDateDesc.map(r => renderRecord(r, sessionNoMap.get(r.id)))}
+                      </div>
+                    </div>
+                  );
+                })}
+                {noPassRecords.length > 0 && (
+                  <div>
+                    <div className="text-[12px] font-bold mb-2 px-1" style={{ color: theme.inkMute }}>
+                      기타 기록
+                    </div>
+                    <div className="space-y-2">
+                      {[...noPassRecords]
+                        .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+                        .map(r => renderRecord(r, null))}
+                    </div>
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
     </div>
