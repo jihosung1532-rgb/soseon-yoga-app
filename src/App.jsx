@@ -2469,7 +2469,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
     
     // 2) 자동 일정 (회원 fixedSlots 기반) — 확정 슬롯 외에 표시
     // 휴일/휴강 체크
-    const isHol = HOLIDAYS_2026?.has?.(todayYMD);
+    const isHol = HOLIDAYS.has(todayYMD);
     const isClosed = closedDays?.includes?.(todayYMD);
     const autoList = [];
     if (!isHol && !isClosed) {
