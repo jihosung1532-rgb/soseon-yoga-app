@@ -1625,8 +1625,11 @@ function rhythmStatus(p, closedDays = []) {
   // 출석한 날짜
   const attendedSet = new Set(sortedDates);
   
-  // 결석 검증: validSlots 중 오늘까지 지나간 날들 점검 (화·목인데 안 온 날)
-  const passedSlots = validSlots.filter(d => d <= todayStr);
+  // 결석 검증: validSlots 중 "어제까지" 지나간 날들만 점검 (화·목인데 안 온 날)
+  // ⭐ 오늘 슬롯은 제외 — 수업이 아직 안 끝났을 수 있으므로 결석 판정하지 않음
+  //    (오늘 수업 끝난 뒤 강사가 출석 처리하면 sessionDates에 추가되어 다음날부터 정상 반영)
+  const yesterdayStr = toYMD(addDays(new Date(), -1));
+  const passedSlots = validSlots.filter(d => d <= yesterdayStr);
   const missedDays = passedSlots.filter(d => !attendedSet.has(d));
   
   // requiredDays = 수강권 총 회수 (8 / 16 / 24)
@@ -2459,10 +2462,53 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
 
   // Today's classes
   const todaySessions = useMemo(() => {
-    return Object.values(sessions)
-      .filter(s => s.date === todayYMD)
+    // 1) sessions에 확정된 것
+    const confirmed = Object.values(sessions)
+      .filter(s => s.date === todayYMD);
+    const confirmedTimes = new Set(confirmed.map(s => s.time));
+    
+    // 2) 자동 일정 (회원 fixedSlots 기반) — 확정 슬롯 외에 표시
+    // 휴일/휴강 체크
+    const isHol = HOLIDAYS_2026?.has?.(todayYMD);
+    const isClosed = closedDays?.includes?.(todayYMD);
+    const autoList = [];
+    if (!isHol && !isClosed) {
+      const todayDate = new Date(todayYMD);
+      const todayDow = todayDate.getDay();
+      // 화/목만 그룹 슬롯 운영 (smallGroupDay)
+      if (todayDow === 2 || todayDow === 4) {
+        // 그룹 슬롯 시간대별로 자동 등록될 회원 카운트
+        (groupSlots || []).forEach(time => {
+          if (confirmedTimes.has(time)) return; // 확정 슬롯 우선
+          const autoMembers = members.filter(m => {
+            const slotKey = `${todayYMD}_${time}`;
+            // autoSlotsForMembers와 동일한 계산 — 활성 패스 + 회수 체크
+            if (!m.fixedSlots?.some(fs => fs.dow === todayDow && fs.time === time)) return false;
+            const validPasses = (m.passes || []).filter(p =>
+              !p.archived 
+              && p.startDate && p.expiryDate
+              && todayYMD <= p.expiryDate
+              && (p.usedSessions || 0) < (p.totalSessions || 0)
+            );
+            if (validPasses.length === 0) return false;
+            return true; // 활성 패스 있으면 일단 표시
+          });
+          if (autoMembers.length > 0) {
+            autoList.push({
+              date: todayYMD,
+              time,
+              category: 'group',
+              isAuto: true,
+              participants: autoMembers.map(m => ({ memberId: m.id, memberName: m.name })),
+            });
+          }
+        });
+      }
+    }
+    
+    return [...confirmed, ...autoList]
       .sort((a, b) => a.time.localeCompare(b.time));
-  }, [sessions, todayYMD]);
+  }, [sessions, todayYMD, members, groupSlots, closedDays]);
 
   const dismiss = async (id) => {
     const next = { ...dashDismiss, [todayYMD]: [...dismissedToday, id] };
@@ -3967,11 +4013,20 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
     || (slot.autoFill ? slot.autoFill.map(p => {
         const m = members.find(x => x.id === p.memberId);
         const pass = m && activePass(m, 'group');
+        // 자동 표시 슬롯은 미래 또는 오늘 수업 전 → reserved로 명시 박음
+        // (수업 끝난 뒤 강사가 출석/노쇼로 변경)
+        const slotDateStr = slot.date ? toYMD(slot.date) : toYMD(new Date());
+        const slotTime = slot.time || '';
+        const now = new Date();
+        const nowYMD = toYMD(now);
+        const nowHHMM = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+        const beforeClass = slotDateStr > nowYMD || (slotDateStr === nowYMD && slotTime > nowHHMM);
         return {
           memberId: p.memberId, memberName: p.memberName,
           passId: pass?.id,
           sessionNumber: pass ? pass.usedSessions + 1 : undefined,
           totalSessions: pass?.totalSessions,
+          ...(beforeClass ? { status: 'reserved' } : {}),
         };
       }) : []);
 
