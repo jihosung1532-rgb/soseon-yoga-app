@@ -3534,12 +3534,14 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
       
       const totalSessions = validPass.totalSessions || 0;
       const used = validPass.usedSessions || 0;
-      // 이 패스로 미래 sessions에 등록된 회수 (passId 기준)
+      // 이 패스로 "미래" sessions에 등록된 회수 (passId 기준)
+      // ⭐ 오늘(todayYMD) 수업은 이미 used에 반영되므로 미래 카운트에서 제외 → 내일부터가 미래
+      const tomorrowYMD = toYMD(addDays(new Date(), 1));
       let futureRegistered = 0;
       const futureSessKeys = new Set();
       Object.entries(sessions).forEach(([k, s]) => {
         const sDate = k.split('_')[0];
-        if (sDate < todayYMD) return;
+        if (sDate < tomorrowYMD) return; // 오늘까지는 과거 취급 (used에 이미 반영)
         const myPart = (s?.participants || []).find(p => p.memberId === m.id);
         if (!myPart) return;
         if (myPart.cancelled || myPart.status === 'cancelled_advance' || myPart.status === 'cancelled_sameday') return;
@@ -3551,9 +3553,10 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
       if (remaining <= 0) return;
       
       // 패스 startDate부터 만료일까지 fixedSlots 매칭 날짜를 가까운 순서로 remaining만큼 채움
+      // ⭐ 자동 표시는 "내일부터" — 오늘 수업은 일정 화면에서 따로 처리, 자동 추천은 미래만
       const slots = new Set();
-      const cursorStart = validPass.startDate > todayYMD ? validPass.startDate : todayYMD;
-      const cursor = new Date(cursorStart);
+      const startBase = validPass.startDate > tomorrowYMD ? validPass.startDate : tomorrowYMD;
+      const cursor = new Date(startBase);
       const limit = new Date(validPass.expiryDate);
       while (cursor <= limit && slots.size < remaining) {
         const cYMD = toYMD(cursor);
@@ -3628,20 +3631,36 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     const autoItems = [];
     if (!isPast) {
       groupSlots.forEach(time => {
-        // 이미 확정된 시간이면 스킵
-        if (explicit.some(e => e.time === time)) return;
         const slotStr = `${ymd}_${time}`;
         const autoMembers = members.filter(m => 
           autoSlotsForMembers.get(m.id)?.has(slotStr)
         );
-        if (autoMembers.length > 0) {
-          autoItems.push({
-            time,
-            category: 'group',
-            isAuto: true,
-            participants: autoMembers.map(m => ({ memberId: m.id, memberName: m.name })),
-          });
+        if (autoMembers.length === 0) return;
+        
+        // 이 시간에 확정 슬롯이 있는 경우
+        const existingExplicit = explicit.find(e => e.time === time);
+        if (existingExplicit) {
+          // 확정 슬롯에 아직 안 들어간 자동 회원만 골라서 "추가 예정"으로 합침
+          const existingIds = new Set(
+            (existingExplicit.participants || []).map(p => p.memberId)
+          );
+          const missingAuto = autoMembers.filter(m => !existingIds.has(m.id));
+          if (missingAuto.length > 0) {
+            // 확정 슬롯에 autoAppend 정보 부착 — 카드에서 "+이름" 흐리게 표시
+            existingExplicit.autoAppend = missingAuto.map(m => ({ 
+              memberId: m.id, memberName: m.name 
+            }));
+          }
+          return; // autoItems에는 별도로 안 넣음 (확정 카드에 합침)
         }
+        
+        // 확정 슬롯 없으면 통째로 자동 카드
+        autoItems.push({
+          time,
+          category: 'group',
+          isAuto: true,
+          participants: autoMembers.map(m => ({ memberId: m.id, memberName: m.name })),
+        });
       });
     }
 
@@ -3693,11 +3712,15 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
   // 카드 탭 핸들러: 확정 카드면 그 카드 모달, 자동 카드면 그 시간대로 새 모달
   const onCardClick = (date, item) => {
     if (HOLIDAYS.has(toYMD(date))) return;
+    // 자동 카드: 전체가 자동 후보 / 확정 카드: autoAppend(추가 예정 자동 회원)만
+    const autoFill = item.isAuto 
+      ? item.participants 
+      : (item.autoAppend && item.autoAppend.length > 0 ? item.autoAppend : null);
     setSlotModal({
       date,
       time: item.time,
       existing: sessions[`${toYMD(date)}_${item.time}`],
-      autoFill: item.isAuto ? item.participants : null,
+      autoFill,
       category: item.category,
     });
   };
@@ -3925,6 +3948,19 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                                     })}
                                   </div>
                                 )}
+                                {/* 확정 카드에 아직 안 들어간 자동(고정) 회원 — 흐리게 "추가 예정" 표시 */}
+                                {item.autoAppend && item.autoAppend.length > 0 && (
+                                  <div className="text-[11.5px] leading-snug mt-0.5"
+                                    style={{ color: theme.inkMute, fontStyle: 'italic' }}>
+                                    {item.autoAppend.map((p, j) => (
+                                      <React.Fragment key={`aa-${j}`}>
+                                        <span style={{ fontWeight: 500 }}>+ {p.memberName}</span>
+                                        {j < item.autoAppend.length - 1 && <span> · </span>}
+                                      </React.Fragment>
+                                    ))}
+                                    <span style={{ fontSize: 10, marginLeft: 3 }}>고정 · 탭해서 추가</span>
+                                  </div>
+                                )}
                               </>
                             );
                           })()}
@@ -4009,26 +4045,41 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
   // 원래 키 (이동 감지용)
   const originalKey = !isNewMode && slot.date && slot.time ? `${toYMD(slot.date)}_${slot.time}` : null;
   
-  const initial = existing?.participants
-    || (slot.autoFill ? slot.autoFill.map(p => {
-        const m = members.find(x => x.id === p.memberId);
-        const pass = m && activePass(m, 'group');
-        // 자동 표시 슬롯은 미래 또는 오늘 수업 전 → reserved로 명시 박음
-        // (수업 끝난 뒤 강사가 출석/노쇼로 변경)
-        const slotDateStr = slot.date ? toYMD(slot.date) : toYMD(new Date());
-        const slotTime = slot.time || '';
-        const now = new Date();
-        const nowYMD = toYMD(now);
-        const nowHHMM = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-        const beforeClass = slotDateStr > nowYMD || (slotDateStr === nowYMD && slotTime > nowHHMM);
-        return {
-          memberId: p.memberId, memberName: p.memberName,
-          passId: pass?.id,
-          sessionNumber: pass ? pass.usedSessions + 1 : undefined,
-          totalSessions: pass?.totalSessions,
-          ...(beforeClass ? { status: 'reserved' } : {}),
-        };
-      }) : []);
+  // autoFill 멤버를 참가자 객체로 변환하는 헬퍼
+  const buildAutoPart = (p) => {
+    const m = members.find(x => x.id === p.memberId);
+    const pass = m && activePass(m, 'group');
+    // 자동 표시 슬롯은 미래 또는 오늘 수업 전 → reserved로 명시 박음
+    const slotDateStr = slot.date ? toYMD(slot.date) : toYMD(new Date());
+    const slotTime = slot.time || '';
+    const now = new Date();
+    const nowYMD = toYMD(now);
+    const nowHHMM = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    const beforeClass = slotDateStr > nowYMD || (slotDateStr === nowYMD && slotTime > nowHHMM);
+    return {
+      memberId: p.memberId, memberName: p.memberName,
+      passId: pass?.id,
+      sessionNumber: pass ? pass.usedSessions + 1 : undefined,
+      totalSessions: pass?.totalSessions,
+      ...(beforeClass ? { status: 'reserved' } : {}),
+    };
+  };
+
+  const initial = (() => {
+    // 확정 슬롯이 있으면: 기존 참가자 + autoFill(아직 안 들어간 자동 회원) 합침
+    if (existing?.participants) {
+      const existingIds = new Set(existing.participants.map(p => p.memberId));
+      const appended = (slot.autoFill || [])
+        .filter(p => !existingIds.has(p.memberId))
+        .map(buildAutoPart);
+      return [...existing.participants, ...appended];
+    }
+    // 확정 슬롯 없으면: autoFill 전체를 자동 참가자로
+    if (slot.autoFill) {
+      return slot.autoFill.map(buildAutoPart);
+    }
+    return [];
+  })();
 
   const [parts, setParts] = useState(initial);
   const [note, setNote] = useState(existing?.note || '');
