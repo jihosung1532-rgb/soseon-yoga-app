@@ -2808,7 +2808,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
     members.forEach(m => {
       const pass = activePass(m);
       if (!pass) return;
-      const rs = rhythmStatus(pass, closedDays);
+      const rs = rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, m.id, pass.id));
       if (rs?.achieved) {
         alerts.push({ icon: '🏆', name: m.name, suffix: '님 리듬 수련 대상자에요' });
       }
@@ -3195,7 +3195,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
         const achievers = members
           .map(m => {
             const pass = activePass(m);
-            const rs = pass ? rhythmStatus(pass, closedDays) : null;
+            const rs = pass ? rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, m.id, pass.id)) : null;
             return rs?.achieved ? { member: m, pass, rs } : null;
           })
           .filter(Boolean);
@@ -4615,7 +4615,7 @@ function MembersView({ members, setMembers, sessions, setSessions, groupSlots, c
         <EmptyState icon={Users} title="해당 회원이 없어요" />
       ) : (
         <div className="space-y-2">
-          {sorted.map(m => <MemberCard key={m.id} member={m} onClick={() => setOpenId(m.id)} closedDays={closedDays} />)}
+          {sorted.map(m => <MemberCard key={m.id} member={m} onClick={() => setOpenId(m.id)} closedDays={closedDays} sessions={sessions} />)}
         </div>
       )}
       {adding && <MemberEditor onClose={() => setAdding(false)} onSave={createMember} groupSlots={groupSlots} />}
@@ -4632,10 +4632,11 @@ function MembersView({ members, setMembers, sessions, setSessions, groupSlots, c
   );
 }
 
-function MemberCard({ member, onClick, closedDays = [] }) {
+function MemberCard({ member, onClick, closedDays = [], sessions = {} }) {
   const pass = activePass(member);
   const ps = passStatus(pass);
-  const rs = pass ? rhythmStatus(pass, closedDays) : null;
+  // 리듬 수련 — sessions의 취소 기록 반영 (취소한 날은 결석 처리)
+  const rs = pass ? rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, member.id, pass.id)) : null;
   const progress = pass ? (pass.usedSessions / pass.totalSessions) : 0;
   const fixedLabel = member.fixedSlots?.length
     ? member.fixedSlots.map(fs => `${WEEK_KR[fs.dow]}${fs.time}`).join(' · ')
@@ -9437,7 +9438,7 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
       if (!pass) return;
       const att = memberAtt[m.id] || { attend: 0, total: 0, lastDate: '' };
       const attRate = att.total > 0 ? Math.round((att.attend / att.total) * 100) : 0;
-      const rs = rhythmStatus(pass, closedDays);
+      const rs = rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, m.id, pass.id));
       
       if (rs?.challenging) challengingCount++;
       
