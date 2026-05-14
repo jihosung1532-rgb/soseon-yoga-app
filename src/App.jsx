@@ -1564,7 +1564,7 @@ function isExemptDay(ymd, pass, closedDays) {
   return false;
 }
 
-function rhythmStatus(p, closedDays = []) {
+function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   if (!p) return null;
   if (p.archived) return null;
   if (p.category === 'trial') return null;
@@ -1625,12 +1625,18 @@ function rhythmStatus(p, closedDays = []) {
   // 출석한 날짜
   const attendedSet = new Set(sortedDates);
   
-  // 결석 검증: validSlots 중 "어제까지" 지나간 날들만 점검 (화·목인데 안 온 날)
-  // ⭐ 오늘 슬롯은 제외 — 수업이 아직 안 끝났을 수 있으므로 결석 판정하지 않음
-  //    (오늘 수업 끝난 뒤 강사가 출석 처리하면 sessionDates에 추가되어 다음날부터 정상 반영)
+  // 결석 검증: validSlots 중 "어제까지" 지나간 날 중 출석 안 한 날 + "취소 확정"한 날(오늘 포함)
+  // ⭐ 오늘 슬롯은 기본적으로 결석 판정 제외 — 수업이 아직 안 끝났을 수 있으므로
+  //    단, 명시적으로 취소(cancelled_advance 등)한 날은 오늘이어도 결석 확정
   const yesterdayStr = toYMD(addDays(new Date(), -1));
-  const passedSlots = validSlots.filter(d => d <= yesterdayStr);
-  const missedDays = passedSlots.filter(d => !attendedSet.has(d));
+  const cancelledSet = cancelledDates instanceof Set ? cancelledDates : new Set();
+  const missedDays = validSlots.filter(d => {
+    // 취소 확정한 날 → 무조건 결석 (오늘이어도)
+    if (cancelledSet.has(d)) return true;
+    // 어제까지 지나간 날 중 출석 안 한 날 → 결석
+    if (d <= yesterdayStr && !attendedSet.has(d)) return true;
+    return false;
+  });
   
   // requiredDays = 수강권 총 회수 (8 / 16 / 24)
   // attendedDays = 실제 출석한 회수 (sessionDates 길이)
@@ -1697,6 +1703,26 @@ function memberRhythmStatus(member, closedDays = []) {
   const active = member.passes.find(p => !p.archived && p.category === 'group' && p.totalSessions);
   if (!active) return null;
   return rhythmStatus(active, closedDays);
+}
+
+// sessions에서 특정 회원+패스의 "취소 확정" 날짜 Set 추출
+// (cancelled_advance / cancelled_sameday / cancelled 상태인 participant의 날짜)
+// rhythmStatus에 넘기면 — 취소한 날은 오늘이어도 결석으로 카운트됨
+function getCancelledDatesForPass(sessions, memberId, passId) {
+  const set = new Set();
+  if (!sessions || !memberId) return set;
+  Object.entries(sessions).forEach(([key, s]) => {
+    const date = key.split('_')[0];
+    const part = (s?.participants || []).find(p => 
+      p.memberId === memberId 
+      && (passId ? p.passId === passId : true)
+    );
+    if (!part) return;
+    if (part.status === 'cancelled_advance' || part.status === 'cancelled_sameday' || part.cancelled) {
+      set.add(date);
+    }
+  });
+  return set;
 }
 
 /* =========================================================
@@ -5097,6 +5123,14 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
   const [convertingPass, setConvertingPass] = useState(null);
 
   const pass = activePass(member);
+  
+  // ⭐ 리듬 수련 상태 계산 — sessions의 취소 기록까지 반영
+  // (취소한 날은 오늘이어도 결석 처리되도록 cancelledDates 전달)
+  const rhythmFor = (p) => {
+    if (!p) return null;
+    const cancelledDates = getCancelledDatesForPass(sessions, member.id, p.id);
+    return rhythmStatus(p, closedDays, cancelledDates);
+  };
 
   const history = useMemo(() => {
     const arr = [];
@@ -5439,7 +5473,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                     </div>
                     {/* 리듬 트래커 박스 */}
                     {(() => {
-                      const rsP = rhythmStatus(p, closedDays);
+                      const rsP = rhythmFor(p);
                       if (!rsP) return null;
                       if (rsP.achieved) {
                         return (
@@ -5560,7 +5594,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                       {st && (() => {
                         if (st.label === '진행중') {
                           // 진행중일 땐 리듬 수련 칩으로
-                          const rsP = rhythmStatus(p, closedDays);
+                          const rsP = rhythmFor(p);
                           if (rsP?.achieved) return <Chip tone="gold" size="sm">🏆 대상자</Chip>;
                           if (rsP?.challenging) return <Chip tone="goldSoft" size="sm">도전중</Chip>;
                           return null;
@@ -5583,14 +5617,14 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                   <div className="h-1.5 rounded-full overflow-hidden mb-2" style={{ backgroundColor: theme.card }}>
                     <div className="h-full rounded-full" style={{
                       width: `${progress * 100}%`,
-                      backgroundColor: rhythmStatus(p, closedDays)?.achieved ? '#C9A961' : theme.accent,
-                      backgroundImage: rhythmStatus(p, closedDays)?.achieved ? 'linear-gradient(90deg, #C9A961, #E5C870)' : 'none',
+                      backgroundColor: rhythmFor(p)?.achieved ? '#C9A961' : theme.accent,
+                      backgroundImage: rhythmFor(p)?.achieved ? 'linear-gradient(90deg, #C9A961, #E5C870)' : 'none',
                     }} />
                   </div>
                   
                   {/* 리듬 수련 트래커 박스 */}
                   {(() => {
-                    const rsP = rhythmStatus(p, closedDays);
+                    const rsP = rhythmFor(p);
                     if (!rsP) return null;
                     if (rsP.achieved) {
                       return (
