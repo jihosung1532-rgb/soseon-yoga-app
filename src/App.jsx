@@ -6314,13 +6314,31 @@ JSON만 출력. 코드펜스 금지.`;
               if (!sections.includes(g)) sections.push(g);
             });
             
-            const renderRecord = (p, sessionNo) => (
-              <div key={p.id} className="rounded-2xl p-3" style={{ backgroundColor: theme.card, border: `1px solid ${theme.lineLight}` }}>
+            // 캔슬/취소성 기록 판별 (afterChange/bodyState가 '캔슬','취소' 등)
+            const isCancelRecord = (p) => {
+              const txt = `${p.afterChange || ''} ${p.bodyState || ''} ${p.classType || ''}`.trim();
+              return /캔슬|취소|결석|노쇼|no.?show|cancel/i.test(txt) && txt.length < 30;
+            };
+            
+            const renderRecord = (p, sessionNo) => {
+              const cancelled = isCancelRecord(p);
+              return (
+              <div key={p.id} className="rounded-2xl p-3" style={{ 
+                backgroundColor: cancelled ? theme.cardAlt : theme.card, 
+                border: `1px solid ${theme.lineLight}`,
+                opacity: cancelled ? 0.7 : 1,
+              }}>
                 <div className="flex justify-between items-baseline mb-2">
                   <div className="flex items-baseline gap-2">
-                    <div className="text-[12px] font-medium tabular-nums" style={{ color: theme.accent }}>{p.date}</div>
-                    {sessionNo != null && <Chip tone="accent" size="sm">{sessionNo}회차</Chip>}
-                    {p.classType && !sessionNo && <Chip tone="accent" size="sm">{p.classType}</Chip>}
+                    <div className="text-[12px] font-medium tabular-nums" 
+                      style={{ color: cancelled ? theme.inkMute : theme.accent }}>{p.date}</div>
+                    {cancelled ? (
+                      <Chip tone="neutral" size="sm">취소/결석</Chip>
+                    ) : sessionNo != null ? (
+                      <Chip tone="accent" size="sm">{sessionNo}회차</Chip>
+                    ) : (
+                      <Chip tone="neutral" size="sm">미차감</Chip>
+                    )}
                   </div>
                   <button onClick={() => del(p.id)} className="p-1" style={{ color: theme.inkMute }}>
                     <Trash2 size={12} />
@@ -6334,7 +6352,9 @@ JSON만 출력. 코드펜스 금지.`;
                 )}
                 {p.afterChange && (
                   <div className="mb-1.5">
-                    <div className="text-[10px] font-semibold" style={{ color: theme.accent2 }}>수업 후 변화</div>
+                    <div className="text-[10px] font-semibold" style={{ color: theme.accent2 }}>
+                      {cancelled ? '메모' : '수업 후 변화'}
+                    </div>
                     <div className="text-[13px] whitespace-pre-wrap" style={{ color: theme.ink }}>{p.afterChange}</div>
                   </div>
                 )}
@@ -6342,15 +6362,24 @@ JSON만 출력. 코드펜스 금지.`;
                   <div className="text-[11px] mt-1" style={{ color: theme.inkMute }}>메모: {p.memo}</div>
                 )}
               </div>
-            );
+              );
+            };
             
             return (
               <>
                 {sections.map(({ pass, records }) => {
-                  // 섹션 안: 날짜 오름차순으로 회차 매기고, 표시는 내림차순(최신 위)
-                  const byDateAsc = [...records].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+                  // ⭐ 회차는 progressLog 개수가 아니라 "실제 출석(sessionDates)" 기준으로 매김
+                  // 캔슬/미출석 기록(sessionDates에 없는 날짜)은 회차 안 매김
+                  const attendedDates = [...(pass.sessionDates || [])].sort();
+                  const dateToSessionNo = new Map();
+                  attendedDates.forEach((dt, i) => dateToSessionNo.set(dt, i + 1));
+                  
+                  // 각 record의 회차: 그 날짜가 sessionDates에 있으면 순번, 없으면 null
                   const sessionNoMap = new Map();
-                  byDateAsc.forEach((r, i) => sessionNoMap.set(r.id, i + 1));
+                  records.forEach(r => {
+                    sessionNoMap.set(r.id, dateToSessionNo.get(r.date) ?? null);
+                  });
+                  
                   const byDateDesc = [...records].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
                   return (
                     <div key={pass.id}>
