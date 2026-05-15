@@ -5161,15 +5161,44 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
     const arr = [];
     const passById = {};
     (member.passes || []).forEach(p => { passById[p.id] = p; });
+    
+    // 각 패스별 sessionDates 순번 맵 미리 (회차 재계산용)
+    // part.sessionNumber는 슬롯 만든 순서 따라 잘못 박힐 수 있어서 sessionDates로 재계산
+    const passDateToNum = {};
+    (member.passes || []).forEach(p => {
+      const sortedDates = [...(p.sessionDates || [])].sort();
+      passDateToNum[p.id] = { 
+        map: Object.fromEntries(sortedDates.map((dt, i) => [dt, i + 1])),
+        total: p.totalSessions,
+      };
+    });
+    
     Object.values(sessions).forEach(s => {
       s.participants.forEach(p => {
         if (p.memberId === member.id) {
           // 카테고리 추론: passId가 있으면 그 수강권의 category, 없으면 p.classType
           const pass = p.passId ? passById[p.passId] : null;
           const category = pass?.category || (p.classType === '개인' ? 'private' : null);
+          
+          // 회차 재계산: 차감된 경우(출석/당일취소charged/노쇼)만 sessionDates 기준 순번
+          // 예약취소·예약상태는 회차 없음
+          const isCharged = !(
+            p.cancelled === 'no_charge' 
+            || p.status === 'cancelled_advance' 
+            || p.status === 'cancelled_sameday' 
+            || p.status === 'reserved'
+          );
+          let recalcSn = null, recalcTot = null;
+          if (isCharged && p.passId && passDateToNum[p.passId]) {
+            const pinfo = passDateToNum[p.passId];
+            recalcSn = pinfo.map[s.date] || null;
+            recalcTot = pinfo.total;
+          }
+          
           arr.push({
             date: s.date, time: s.time,
-            sessionNumber: p.sessionNumber, totalSessions: p.totalSessions,
+            sessionNumber: recalcSn, // sessionDates 기준 재계산값
+            totalSessions: recalcTot,
             cancelled: p.cancelled, cancelNote: p.cancelNote,
             classType: p.classType,
             category, // 'private' | 'group' | null
