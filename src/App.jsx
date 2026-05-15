@@ -3435,7 +3435,20 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     // 이동인 경우 옛 키 삭제
     if (isMove) delete next[oldKey];
     if (!data || !newParts.length) delete next[key];
-    else next[key] = { ...data, date: dateStr, time };
+    else {
+      // ⭐ 차감 처리되는 회원(newCharges) → status가 None이면 자동으로 'attended' 박기
+      //    (sessionDates에 추가되는 회원은 출석 처리된 것으로 간주)
+      const newChargesSet = new Set(newCharges);
+      const fixedParts = (data.participants || []).map(p => {
+        const k = `${p.memberId}|${p.passId}`;
+        if (!newChargesSet.has(k)) return p;
+        // 이미 명시적 상태(취소/노쇼/attended 등)면 건드리지 않음
+        if (p.status) return p;
+        if (p.cancelled) return p;
+        return { ...p, status: 'attended' };
+      });
+      next[key] = { ...data, participants: fixedParts, date: dateStr, time };
+    }
     setSessions(next);
     await saveKey(K.sessions, next);
     
@@ -3477,8 +3490,19 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     
     if (newParts.length > 0) {
       // 진행 가능한 newCharges 회원들 (체험자 X, 차감 대상 회원만)
+      // ⭐ 실제 차감된 회원만 포함 — 취소/예약대기/아직 출석처리 안 된 회원은 제외
+      //    (안 들어온 사람한테 진도가 박히는 문제 방지)
       const memberIds = newParts
-        .filter(p => p.memberId && !p.isTrial)
+        .filter(p => {
+          if (!p.memberId || p.isTrial) return false;
+          // 명시적 취소 → 제외
+          if (p.cancelled === 'no_charge') return false;
+          if (p.status === 'cancelled_advance' || p.status === 'cancelled_sameday') return false;
+          // 예약 상태(아직 출석 처리 전) → 제외
+          if (p.status === 'reserved') return false;
+          // 그 외(출석/당일취소charged/노쇼) → 포함
+          return true;
+        })
         .map(p => p.memberId);
       
       if (memberIds.length > 0) {
