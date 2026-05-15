@@ -5141,6 +5141,229 @@ function MemberEditor({ member, onClose, onSave, groupSlots }) {
 /* =========================================================
    Member Detail — passes + history + memo + progress + assessment
    ========================================================= */
+// 수강이력 탭 콘텐츠 — 수강권별 섹션 + 전체보기 토글 + 드롭다운 (C+A 혼합)
+function HistoryTabContent({ history, passes }) {
+  const [viewMode, setViewMode] = useState('active'); // 'active' | 'all' | pass.id
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  
+  const todayStr = toYMD(new Date());
+  const isActivePass = (p) => {
+    if (p.archived) return false;
+    if (p.expiryDate && p.expiryDate < todayStr) return false;
+    const used = p.usedSessions || (p.sessionDates || []).length;
+    if (used >= (p.totalSessions || 0)) return false;
+    return true;
+  };
+  const activePasses = (passes || []).filter(isActivePass);
+  const archivedPasses = (passes || []).filter(p => !isActivePass(p));
+  const allPasses = [...activePasses, ...archivedPasses];
+  
+  let visiblePasses = activePasses;
+  if (viewMode === 'all') visiblePasses = allPasses;
+  else if (viewMode !== 'active') visiblePasses = allPasses.filter(p => p.id === viewMode);
+  
+  const sortedPasses = [...visiblePasses].sort((a, b) => 
+    (b.startDate || '').localeCompare(a.startDate || '')
+  );
+  
+  const groups = sortedPasses.map(p => {
+    const records = (history || []).filter(h => h.passId === p.id);
+    return { pass: p, records };
+  }).filter(g => g.records.length > 0);
+  
+  const orphans = (history || []).filter(h => !h.passId);
+  
+  const sameMonth = (passes || []).reduce((acc, p) => {
+    const mm = p.startDate ? p.startDate.slice(0, 7) : '?';
+    acc[mm] = (acc[mm] || 0) + 1;
+    return acc;
+  }, {});
+  const passLabel = (p) => {
+    const mm = p.startDate ? p.startDate.slice(0, 7) : '';
+    const m = mm ? parseInt(mm.slice(5, 7)) : null;
+    const dayPart = (sameMonth[mm] > 1 && p.startDate) 
+      ? `${m}월 ${parseInt(p.startDate.slice(8, 10))}일~ ` 
+      : (m ? `${m}월 ` : '');
+    return `${dayPart}수강권 · ${p.type || `${p.totalSessions || ''}회`}`;
+  };
+  const passPeriod = (p) => {
+    if (!p.startDate) return '';
+    const s = `${parseInt(p.startDate.slice(5, 7))}/${parseInt(p.startDate.slice(8, 10))}`;
+    const e = p.expiryDate ? `${parseInt(p.expiryDate.slice(5, 7))}/${parseInt(p.expiryDate.slice(8, 10))}` : '';
+    return e ? `${s} ~ ${e}` : s;
+  };
+  
+  const filterLabel = (() => {
+    if (viewMode === 'active') return '현재 진행 수강권만';
+    if (viewMode === 'all') return '전체 수강권';
+    const p = allPasses.find(pp => pp.id === viewMode);
+    return p ? passLabel(p) : '수강권 선택';
+  })();
+  
+  const hasArchived = archivedPasses.length > 0;
+  const hasAnyHistory = (history || []).length > 0;
+  
+  // 출석 카드 렌더
+  const renderRecord = (h) => {
+    const isFuture = h.date > todayStr;
+    let statusChip = null;
+    let bgColor = theme.cardAlt;
+    let borderColor = theme.lineLight;
+    let timeColor = theme.accent2;
+    
+    if (h.status === 'no_show') {
+      statusChip = <Chip tone="danger" size="sm">노쇼</Chip>;
+      bgColor = theme.dangerBg; borderColor = '#D19B91';
+      timeColor = theme.danger;
+    } else if (h.status === 'cancelled_sameday' || (h.cancelled && !h.status)) {
+      if (h.cancelled === 'charged' || h.status === 'cancelled_sameday') {
+        statusChip = <Chip tone="warn" size="sm">당일 취소{h.cancelled === 'charged' ? ' (차감)' : ''}</Chip>;
+        bgColor = theme.warnBg; borderColor = '#C8A366';
+      } else if (h.cancelled === 'no_charge') {
+        statusChip = <Chip tone="neutral" size="sm">예약 취소</Chip>;
+      }
+    } else if (h.status === 'cancelled_advance') {
+      statusChip = <Chip tone="neutral" size="sm">예약 취소</Chip>;
+    } else if (h.status === 'reserved' || isFuture) {
+      statusChip = <Chip tone="accent" size="sm">예약 확정</Chip>;
+      bgColor = '#F5F4EC';
+    } else {
+      statusChip = <Chip tone="success" size="sm">출석</Chip>;
+    }
+    
+    const legacyAutoNotes = ['오늘 수업 빠짐', '미차감 취소', '차감 취소', '취소'];
+    const showCancelNote = h.cancelNote && !legacyAutoNotes.includes(h.cancelNote.trim());
+    
+    return (
+      <div key={`${h.date}_${h.time}`} className="px-3 py-2 rounded-lg flex items-center gap-3"
+        style={{ backgroundColor: bgColor, border: `1px solid ${borderColor}` }}>
+        <span className="text-[12px] tabular-nums shrink-0" style={{ color: theme.inkMute }}>{h.date}</span>
+        <span className="text-[12px] font-medium tabular-nums shrink-0" style={{ color: timeColor, fontFamily: theme.serif, fontSize: 13 }}>{h.time}</span>
+        {showCancelNote && <span className="text-[10px] flex-1" style={{ color: theme.inkMute }}>· {h.cancelNote}</span>}
+        {!showCancelNote && <div className="flex-1"></div>}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {h.category === 'private' && <Chip tone="accent" size="sm">개인</Chip>}
+          {h.sessionNumber && h.totalSessions && !h.cancelled && h.status !== 'cancelled_advance' && h.status !== 'reserved' && !isFuture && (
+            <span className="text-[11px] tabular-nums" style={{ color: theme.inkSoft }}>{h.sessionNumber}/{h.totalSessions}</span>
+          )}
+          {statusChip}
+        </div>
+      </div>
+    );
+  };
+  
+  if (!hasAnyHistory) {
+    return <EmptyState icon={Clock} title="아직 수업 이력이 없어요" />;
+  }
+  
+  return (
+    <div className="max-h-[420px] overflow-y-auto">
+      {/* 필터 바 */}
+      {allPasses.length > 0 && (
+        <div className="relative mb-3">
+          <div className="flex justify-between items-center px-3 py-2.5 rounded-xl transition-all"
+            style={{ 
+              backgroundColor: dropdownOpen ? theme.goldBg : theme.card,
+              border: `1px solid ${dropdownOpen ? theme.gold : theme.lineLight}`,
+            }}>
+            <button onClick={() => setDropdownOpen(!dropdownOpen)}
+              className="flex items-center gap-1.5"
+              style={{ background: 'transparent', border: 'none', fontSize: 12, fontWeight: 600, color: theme.ink }}>
+              {filterLabel}
+              <span style={{ fontSize: 9, color: theme.inkMute }}>{dropdownOpen ? '▴' : '▾'}</span>
+            </button>
+            {hasArchived && (
+              <button onClick={() => setViewMode(viewMode === 'all' ? 'active' : 'all')}
+                style={{ 
+                  background: 'transparent', border: 'none', fontSize: 11, fontWeight: 500,
+                  color: viewMode === 'all' ? theme.inkMute : theme.terra,
+                }}>
+                {viewMode === 'all' ? '현재만 ←' : '전체 보기 →'}
+              </button>
+            )}
+          </div>
+          
+          {/* 드롭다운 */}
+          {dropdownOpen && (
+            <div className="absolute left-0 right-0 mt-1.5 p-1.5 rounded-xl z-50"
+              style={{ 
+                top: '100%', backgroundColor: theme.card, 
+                border: `1px solid ${theme.lineLight}`,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+              }}>
+              {[
+                { id: 'active', label: '현재 진행 수강권만' },
+                ...activePasses.map(p => ({ id: p.id, label: passLabel(p) + ' · ' + passPeriod(p) })),
+                ...archivedPasses.map(p => ({ id: p.id, label: passLabel(p) + ' · ' + passPeriod(p), archived: true })),
+                { id: 'all', label: '전체 수강권' },
+              ].map(opt => {
+                const selected = viewMode === opt.id;
+                return (
+                  <div key={opt.id}
+                    onClick={() => { setViewMode(opt.id); setDropdownOpen(false); }}
+                    className="px-3 py-2.5 flex items-center gap-2 rounded-lg cursor-pointer"
+                    style={{
+                      backgroundColor: selected ? theme.goldBg : 'transparent',
+                      color: selected ? '#8A6418' : (opt.archived ? theme.inkMute : theme.ink),
+                      fontWeight: selected ? 600 : 400,
+                      fontSize: 12,
+                    }}>
+                    <span style={{ width: 14, color: theme.terra, fontWeight: 700 }}>
+                      {selected ? '✓' : ''}
+                    </span>
+                    <span>{opt.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* 수강권별 섹션 */}
+      {groups.length === 0 && orphans.length === 0 && (
+        <div className="text-center py-10" style={{ color: theme.inkMute, fontSize: 12, fontStyle: 'italic' }}>
+          표시할 수업 이력이 없어요
+        </div>
+      )}
+      
+      {groups.map(({ pass, records }) => {
+        const isArch = !isActivePass(pass);
+        return (
+          <div key={pass.id} className="mb-4" style={{ opacity: isArch ? 0.85 : 1 }}>
+            <div className="flex items-baseline gap-2 mb-2 px-1">
+              <div className="text-[12px] font-bold" style={{ color: isArch ? theme.inkMute : theme.ink }}>
+                {passLabel(pass)}
+              </div>
+              <div className="text-[10px]" style={{ color: theme.inkMute }}>
+                {passPeriod(pass)}{isArch && ' · 완료'}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              {records.map(renderRecord)}
+            </div>
+          </div>
+        );
+      })}
+      
+      {orphans.length > 0 && viewMode === 'all' && (
+        <div className="mb-4" style={{ opacity: 0.85 }}>
+          <div className="text-[12px] font-bold mb-2 px-1" style={{ color: theme.inkMute }}>기타 기록</div>
+          <div className="space-y-1.5">
+            {orphans.map(renderRecord)}
+          </div>
+        </div>
+      )}
+      
+      {hasArchived && viewMode === 'active' && (
+        <div className="text-center pt-3 pb-1" style={{ color: theme.inkMute, fontSize: 11, fontStyle: 'italic' }}>
+          — 옛 수강권 기록은 '전체 보기' →
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlots, closedDays = [], toast, onSendSMS }) {
   const [tab, setTab] = useState('passes');
   const [editing, setEditing] = useState(false);
@@ -5203,6 +5426,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
             classType: p.classType,
             category, // 'private' | 'group' | null
             status: p.status,
+            passId: p.passId || null, // 수강권 그룹핑용
           });
         }
       });
@@ -5788,68 +6012,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
         )}
 
         {tab === 'history' && (
-          <div>
-            {!history.length ? (
-              <EmptyState icon={Clock} title="아직 수업 이력이 없어요" />
-            ) : (
-              <div className="space-y-1.5 max-h-[420px] overflow-y-auto">
-                {history.map((h, i) => {
-                  // 상태 판단
-                  const todayStr = toYMD(new Date());
-                  const isFuture = h.date > todayStr;
-                  
-                  // 상태 라벨/색상
-                  let statusChip = null;
-                  let bgColor = theme.cardAlt;
-                  let borderColor = theme.lineLight;
-                  let timeColor = theme.accent2;
-                  
-                  if (h.status === 'no_show') {
-                    statusChip = <Chip tone="danger" size="sm">노쇼</Chip>;
-                    bgColor = theme.dangerBg; borderColor = '#D19B91';
-                    timeColor = theme.danger;
-                  } else if (h.status === 'cancelled_sameday' || (h.cancelled && !h.status)) {
-                    // 기존 cancelled 데이터 호환
-                    if (h.cancelled === 'charged' || h.status === 'cancelled_sameday') {
-                      statusChip = <Chip tone="warn" size="sm">당일 취소{h.cancelled === 'charged' ? ' (차감)' : ''}</Chip>;
-                      bgColor = theme.warnBg; borderColor = '#C8A366';
-                    } else if (h.cancelled === 'no_charge') {
-                      statusChip = <Chip tone="neutral" size="sm">예약 취소</Chip>;
-                    }
-                  } else if (h.status === 'cancelled_advance') {
-                    statusChip = <Chip tone="neutral" size="sm">예약 취소</Chip>;
-                  } else if (h.status === 'reserved' || isFuture) {
-                    statusChip = <Chip tone="accent" size="sm">예약 확정</Chip>;
-                    bgColor = '#F5F4EC';
-                  } else {
-                    // 출석 (default)
-                    statusChip = <Chip tone="success" size="sm">출석</Chip>;
-                  }
-                  
-                  // 옛 시스템이 자동으로 넣은 cancelNote는 표시 안 함
-                  const legacyAutoNotes = ['오늘 수업 빠짐', '미차감 취소', '차감 취소', '취소'];
-                  const showCancelNote = h.cancelNote && !legacyAutoNotes.includes(h.cancelNote.trim());
-                  
-                  return (
-                    <div key={`${h.date}_${h.time}`} className="px-3 py-2 rounded-lg flex items-center gap-3"
-                      style={{ backgroundColor: bgColor, border: `1px solid ${borderColor}` }}>
-                      <span className="text-[12px] tabular-nums shrink-0" style={{ color: theme.inkMute }}>{h.date}</span>
-                      <span className="text-[12px] font-medium tabular-nums shrink-0" style={{ color: timeColor, fontFamily: theme.serif, fontSize: 13 }}>{h.time}</span>
-                      {showCancelNote && <span className="text-[10px] flex-1" style={{ color: theme.inkMute }}>· {h.cancelNote}</span>}
-                      {!showCancelNote && <div className="flex-1"></div>}
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {h.category === 'private' && <Chip tone="accent" size="sm">개인</Chip>}
-                        {h.sessionNumber && h.totalSessions && !h.cancelled && h.status !== 'cancelled_advance' && h.status !== 'reserved' && !isFuture && (
-                          <span className="text-[11px] tabular-nums" style={{ color: theme.inkSoft }}>{h.sessionNumber}/{h.totalSessions}</span>
-                        )}
-                        {statusChip}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          <HistoryTabContent history={history} passes={member.passes || []} />
         )}
 
         {tab === 'memo' && (
