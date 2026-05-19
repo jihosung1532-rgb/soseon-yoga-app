@@ -7540,7 +7540,7 @@ function PassConvertDialog({ oldPass, onClose, onConvert }) {
 /* =========================================================
    Class Log — monthly calendar with expanded cells (B option)
    ========================================================= */
-function ClassLogView({ classLog, setClassLog, sessions, setSessions, toast }) {
+function ClassLogView({ classLog, setClassLog, sessions, setSessions, members = [], toast }) {
   const [month, setMonth] = useState(() => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d; });
 
   const days = useMemo(() => {
@@ -7563,6 +7563,7 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, toast }) {
   }, [month]);
 
   const [editingDate, setEditingDate] = useState(null);
+  const [recDate, setRecDate] = useState(null); // 추천 모달 — 빈 셀 탭하면 열림
 
   // ===== 검색 (캘린더 인라인, 한글 글자찾기 스타일) =====
   const [searchOpen, setSearchOpen] = useState(false);
@@ -7793,8 +7794,13 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, toast }) {
             const isToday = sameDay(d, new Date());
             const isHoliday = HOLIDAYS.has(key);
             const isSmGroup = d.getDay() === 2 || d.getDay() === 4;
+            const isEmpty = entries.length === 0;
             return (
-              <button key={key} onClick={() => setEditingDate(key)}
+              <button key={key} onClick={() => {
+                // 빈 셀(휴일/주말 제외) → 추천 모달, 수업 있으면 편집기
+                if (isEmpty && !isHoliday) setRecDate(key);
+                else setEditingDate(key);
+              }}
                 className="relative text-left p-1.5 transition-colors overflow-hidden active:scale-95 min-h-[150px]"
                 style={{
                   borderBottom: `1px solid ${theme.lineLight}`,
@@ -7869,7 +7875,298 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, toast }) {
           onSave={async (entries) => { await saveEntries(editingDate, entries); setEditingDate(null); toast('저장되었어요'); }}
         />
       )}
+
+      {recDate && (
+        <ClassRecommendModal
+          date={recDate}
+          members={members}
+          sessions={sessions}
+          classLog={classLog}
+          onClose={() => setRecDate(null)}
+          onPick={async (time, content) => {
+            // 추천 시퀀스 그대로 저장 — 셀에 바로 반영됨
+            const cur = classLog[recDate] || [];
+            const next = [...cur, { id: uid(), time, content }]
+              .sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+            await saveEntries(recDate, next);
+            setRecDate(null);
+            toast('추천 시퀀스로 저장했어요');
+          }}
+          onEditDirect={() => {
+            setRecDate(null);
+            setEditingDate(recDate);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function ClassRecommendModal({ date, members, sessions, classLog, onClose, onPick, onEditDirect }) {
+  // date: 'YYYY-MM-DD'
+  const dateObj = fromYMD(date);
+  const dow = dateObj.getDay(); // 0=일 .. 6=토
+  const isSmGroup = dow === 2 || dow === 4; // 화목
+
+  // 그룹 시간대 후보 (소그룹이면 11/19:20/20:50, 아니면 빈 list)
+  const groupTimes = isSmGroup ? ['11:00', '19:20', '20:50'] : [];
+
+  const [time, setTime] = useState(groupTimes[0] || '');
+
+  // 그 요일/시간에 고정 슬롯 가진 활성 회원
+  const fixedMembers = useMemo(() => {
+    if (!time) return [];
+    return (members || []).filter(m => {
+      const fs = m.fixedSlots || [];
+      const hasSlot = fs.some(s => s.dow === dow && s.time === time);
+      if (!hasSlot) return false;
+      // 그 날짜에 활성 패스 보유
+      const passes = m.passes || [];
+      return passes.some(p =>
+        !p.archived && p.category === 'group'
+        && p.startDate && p.expiryDate
+        && p.startDate <= date && p.expiryDate >= date
+        && (p.usedSessions || 0) < (p.totalSessions || 0)
+      );
+    });
+  }, [members, dow, time, date]);
+
+  // 자세 토큰화 (콤마/+/공백 등 구분자로 쪼개기)
+  const tokenize = (text) => {
+    if (!text) return [];
+    // 괄호 안 제거 (메모성)
+    let t = text.replace(/\([^)]*\)/g, ' ');
+    const parts = t.split(/[,\+\>\n]/);
+    const tokens = [];
+    parts.forEach(p => {
+      p = p.trim();
+      if (!p) return;
+      // 무시할 키워드
+      if (/^(캔슬|노쇼|취소|개인레슨|체험|감기|반복|준비|풀기|이완)$/.test(p)) return;
+      tokens.push(p);
+    });
+    return tokens;
+  };
+
+  // 회원별 출석한 sessions 모으기 → classNote에서 자세 추출
+  // poseHistory: { [poseName]: { lastDate, memberLastDate: {memberId: date}, count } }
+  const recommendations = useMemo(() => {
+    if (!fixedMembers.length) return { rare: [], notDone: [] };
+    const today = toYMD(new Date());
+    const memberIds = new Set(fixedMembers.map(m => m.id));
+
+    // 1) 전체 classLog에서 자세 → 마지막 등장 날짜
+    const poseGlobalLast = {}; // pose → date
+    const poseCount = {}; // pose → 등장 횟수
+    Object.entries(classLog).forEach(([d, entries]) => {
+      if (d > today) return;
+      entries.forEach(e => {
+        tokenize(e.content || '').forEach(t => {
+          if (!poseGlobalLast[t] || d > poseGlobalLast[t]) poseGlobalLast[t] = d;
+          poseCount[t] = (poseCount[t] || 0) + 1;
+        });
+      });
+    });
+
+    // 2) 우리 고정 회원들이 참여한 sessions에서만 자세 → 회원별 마지막 날짜
+    const poseMemberLast = {}; // pose → date (회원들 중 가장 최근)
+    Object.entries(sessions || {}).forEach(([key, sess]) => {
+      if (!sess || !sess.classNote) return;
+      const [d] = key.split('_');
+      if (d > today) return;
+      const participated = (sess.participants || []).some(p =>
+        memberIds.has(p.memberId) && !p.cancelled
+        && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday'
+      );
+      if (!participated) return;
+      tokenize(sess.classNote).forEach(t => {
+        if (!poseMemberLast[t] || d > poseMemberLast[t]) poseMemberLast[t] = d;
+      });
+    });
+
+    // 3) 추천: 전체 자세 중 우리 회원들이 최근 8주 안에 안 한 것 (오래된 순)
+    const eightWeeksAgo = (() => {
+      const d = new Date();
+      d.setDate(d.getDate() - 56);
+      return toYMD(d);
+    })();
+    const rare = []; // 우리 회원들이 8주+ 안 한 자세
+    Object.keys(poseGlobalLast).forEach(pose => {
+      const memberLast = poseMemberLast[pose];
+      // 우리 회원들 중 마지막으로 한 게 없거나 8주 전이면 추천
+      if (!memberLast || memberLast < eightWeeksAgo) {
+        rare.push({
+          pose,
+          memberLast: memberLast || null,
+          globalLast: poseGlobalLast[pose],
+          count: poseCount[pose] || 0,
+        });
+      }
+    });
+    // 오래된 순 (마지막으로 한 날짜가 오래된 것부터)
+    rare.sort((a, b) => {
+      const aDate = a.memberLast || '0000-00-00';
+      const bDate = b.memberLast || '0000-00-00';
+      return aDate.localeCompare(bDate);
+    });
+
+    // 우리 회원이 아예 안 한 자세
+    const notDone = rare.filter(r => !r.memberLast).slice(0, 5);
+    // 8주+ 오래된 자세
+    const longTime = rare.filter(r => r.memberLast).slice(0, 5);
+
+    return { rare: longTime, notDone };
+  }, [fixedMembers, classLog, sessions]);
+
+  const [selected, setSelected] = useState([]); // 선택한 자세
+  const togglePose = (pose) => {
+    setSelected(s => s.includes(pose) ? s.filter(x => x !== pose) : [...s, pose]);
+  };
+
+  const handlePick = () => {
+    if (!selected.length) return;
+    const content = selected.join(', ');
+    onPick(time, content);
+  };
+
+  // 주차/요일 표시
+  const weekday = ['일','월','화','수','목','금','토'][dow];
+
+  return (
+    <Modal open={true} onClose={onClose} title={`${fmtKR(dateObj)} (${weekday}) · 수업 추천`}>
+      <div className="space-y-3">
+        {/* 시간 선택 */}
+        {groupTimes.length > 0 ? (
+          <div>
+            <div className="text-[11px] mb-1.5" style={{ color: theme.inkMute }}>시간대</div>
+            <div className="flex gap-1.5">
+              {groupTimes.map(t => (
+                <button key={t} onClick={() => setTime(t)}
+                  className="flex-1 py-1.5 rounded-lg text-[13px] font-medium active:scale-95"
+                  style={{
+                    backgroundColor: t === time ? theme.accent : theme.cardAlt,
+                    color: t === time ? '#FFF' : theme.ink,
+                    border: `1px solid ${t === time ? theme.accent : theme.line}`,
+                  }}>
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="text-[12px] py-2 px-3 rounded-lg" style={{ backgroundColor: theme.cardAlt, color: theme.inkMute }}>
+            소그룹 요일(화/목)이 아니라 추천 정보가 적어요. 직접 입력하세요.
+          </div>
+        )}
+
+        {/* 고정 회원 */}
+        {time && (
+          <div>
+            <div className="text-[11px] mb-1.5" style={{ color: theme.inkMute }}>
+              이 시간 고정 회원 {fixedMembers.length > 0 && `(${fixedMembers.length}명)`}
+            </div>
+            {fixedMembers.length === 0 ? (
+              <div className="text-[12px] py-2 px-3 rounded-lg" style={{ backgroundColor: theme.cardAlt, color: theme.inkMute }}>
+                {dow !== 2 && dow !== 4 ? '소그룹 요일이 아닙니다' : '이 시간에 고정된 활성 회원이 없어요'}
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {fixedMembers.map(m => (
+                  <span key={m.id} className="px-2 py-0.5 rounded-md text-[11px] font-medium"
+                    style={{ backgroundColor: theme.accent, color: '#FFF' }}>
+                    {m.name}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 추천 자세 */}
+        {time && fixedMembers.length > 0 && (
+          <div className="rounded-xl p-3" style={{ background: 'linear-gradient(135deg, #FFF8ED 0%, #F5EBC8 100%)', border: '1px solid #D4B574' }}>
+            <div className="flex items-center gap-1 mb-2">
+              <Sparkles size={14} style={{ color: '#8B6F2E' }} />
+              <span className="text-[12px] font-semibold" style={{ color: '#8B6F2E' }}>
+                오래 안 한 동작 추천
+              </span>
+            </div>
+
+            {recommendations.rare.length === 0 && recommendations.notDone.length === 0 ? (
+              <div className="text-[11px]" style={{ color: '#8B6F2E' }}>
+                수업 기록이 부족해 추천할 데이터가 없어요.
+              </div>
+            ) : (
+              <>
+                {recommendations.rare.length > 0 && (
+                  <div className="mb-2">
+                    <div className="text-[10px] mb-1" style={{ color: '#8B6F2E' }}>최근 8주+ 안 함 (오래된 순)</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {recommendations.rare.map(r => (
+                        <button key={r.pose} onClick={() => togglePose(r.pose)}
+                          className="px-2 py-1 rounded-full text-[11px] font-medium active:scale-95"
+                          style={{
+                            backgroundColor: selected.includes(r.pose) ? '#C9A961' : '#FFF',
+                            color: selected.includes(r.pose) ? '#FFF' : '#8B6F2E',
+                            border: '1px solid #C9A961',
+                          }}>
+                          {r.pose}
+                          <span className="ml-1 opacity-60 text-[9px]">·{r.memberLast?.slice(5).replace('-','/')}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {recommendations.notDone.length > 0 && (
+                  <div>
+                    <div className="text-[10px] mb-1" style={{ color: '#8B6F2E' }}>이 회원들 한 적 없음</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {recommendations.notDone.map(r => (
+                        <button key={r.pose} onClick={() => togglePose(r.pose)}
+                          className="px-2 py-1 rounded-full text-[11px] font-medium active:scale-95"
+                          style={{
+                            backgroundColor: selected.includes(r.pose) ? '#C9A961' : '#FFF',
+                            color: selected.includes(r.pose) ? '#FFF' : '#8B6F2E',
+                            border: '1px solid #C9A961',
+                          }}>
+                          {r.pose}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* 선택된 시퀀스 */}
+        {selected.length > 0 && (
+          <div className="rounded-lg p-2.5" style={{ backgroundColor: theme.accentSoft, border: `1px solid ${theme.accent}33` }}>
+            <div className="text-[11px] mb-1" style={{ color: theme.accent }}>선택한 시퀀스</div>
+            <div className="text-[13px]" style={{ color: theme.ink }}>{selected.join(', ')}</div>
+          </div>
+        )}
+
+        {/* 액션 버튼 */}
+        <div className="flex gap-2 pt-1">
+          <button onClick={onEditDirect}
+            className="px-3 py-2 rounded-lg text-[13px] font-medium active:scale-95"
+            style={{ backgroundColor: theme.cardAlt, color: theme.ink, border: `1px solid ${theme.line}` }}>
+            직접 입력
+          </button>
+          <button onClick={handlePick} disabled={!selected.length || !time}
+            className="flex-1 py-2 rounded-lg text-[13px] font-medium active:scale-95"
+            style={{
+              backgroundColor: selected.length && time ? theme.accent : theme.cardAlt,
+              color: selected.length && time ? '#FFF' : theme.inkMute,
+              opacity: selected.length && time ? 1 : 0.6,
+            }}>
+            이 시퀀스로 수업 만들기
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -11472,7 +11769,7 @@ export default function App() {
           toast={toast} onSendSMS={onSendSMS} />
       )}
       {tab === 'classlog' && (
-        <ClassLogView classLog={classLog} setClassLog={setClassLog} sessions={sessions} setSessions={setSessions} toast={toast} />
+        <ClassLogView classLog={classLog} setClassLog={setClassLog} sessions={sessions} setSessions={setSessions} members={members} toast={toast} />
       )}
       {tab === 'stats' && (
         <StatsView members={members} trials={trials} sessions={sessions} closedDays={closedDays} />
