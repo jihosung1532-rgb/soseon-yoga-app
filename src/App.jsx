@@ -4,7 +4,7 @@ import {
   ChevronLeft, ChevronRight, Upload, FileText, Trash2,
   Edit3, Check, Camera, Loader2, CreditCard, Leaf, Home,
   MessageSquare, Bell, RefreshCw, TrendingUp, UserPlus,
-  AlertCircle, Copy, Phone, ChevronDown, Settings, Download
+  AlertCircle, Copy, Phone, ChevronDown, Settings, Download, Search, ChevronUp
 } from "lucide-react";
 
 /* =========================================================
@@ -7564,6 +7564,106 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, toast }) {
 
   const [editingDate, setEditingDate] = useState(null);
 
+  // ===== 검색 (캘린더 인라인, 한글 글자찾기 스타일) =====
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [matchIdx, setMatchIdx] = useState(0);
+  const searchInputRef = useRef(null);
+
+  // 검색어를 정규화 (공백/대소문자 무시)
+  const normalize = (s) => (s || '').toLowerCase().replace(/\s+/g, '');
+
+  // 전체 classLog에서 매칭된 항목 모두 인덱싱 (날짜순)
+  // 각 매칭: { date, entryId, time, content }
+  const matches = useMemo(() => {
+    const q = normalize(searchQuery);
+    if (!q) return [];
+    const results = [];
+    const dates = Object.keys(classLog).sort();
+    dates.forEach(date => {
+      const entries = classLog[date] || [];
+      entries.forEach(e => {
+        const content = e.content || '';
+        if (normalize(content).includes(q)) {
+          results.push({ date, entryId: e.id, time: e.time, content });
+        }
+      });
+    });
+    return results;
+  }, [classLog, searchQuery]);
+
+  // 검색어 바뀌면 첫 매칭으로 이동
+  useEffect(() => {
+    setMatchIdx(0);
+  }, [searchQuery]);
+
+  // 현재 매칭이 다른 달이면 자동으로 그 달로 이동
+  useEffect(() => {
+    if (!matches.length) return;
+    const cur = matches[matchIdx];
+    if (!cur) return;
+    const [y, m] = cur.date.split('-').map(Number);
+    if (month.getFullYear() !== y || month.getMonth() !== m - 1) {
+      setMonth(new Date(y, m - 1, 1));
+    }
+  }, [matchIdx, matches]);
+
+  const goPrev = () => {
+    if (!matches.length) return;
+    setMatchIdx((matchIdx - 1 + matches.length) % matches.length);
+  };
+  const goNext = () => {
+    if (!matches.length) return;
+    setMatchIdx((matchIdx + 1) % matches.length);
+  };
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setSearchQuery('');
+    setMatchIdx(0);
+  };
+
+  // 셀 안에서 텍스트 하이라이트용
+  // text를 query에 맞춰 쪼개서 노란/주황 marker 적용
+  // currentMatch가 이 entry의 매칭이면 첫 매칭을 주황으로
+  const renderHighlighted = (text, isCurrentEntry) => {
+    const q = normalize(searchQuery);
+    if (!q) return text;
+    const lower = (text || '').toLowerCase();
+    const parts = [];
+    let i = 0;
+    let firstMatch = true;
+    while (i < text.length) {
+      // 공백 무시 검색이라 단순 indexOf 안 됨 → 위치 매핑 필요
+      // 간단히: 공백 빼고 매칭 위치 찾기
+      // 정확도보다 시각 표시 우선이므로, 원본 텍스트에서 q를 직접 검색
+      // (검색어에 공백 있는 경우만 별도 처리 — 일단 공백 없다고 가정)
+      const idx = lower.indexOf(q, i);
+      if (idx === -1) {
+        parts.push(text.slice(i));
+        break;
+      }
+      if (idx > i) parts.push(text.slice(i, idx));
+      const matched = text.slice(idx, idx + q.length);
+      const isFirst = firstMatch && isCurrentEntry;
+      parts.push(
+        <mark key={`m${idx}`} style={{
+          backgroundColor: isFirst ? '#FF9A3D' : '#FFE066',
+          color: isFirst ? '#FFF' : 'inherit',
+          fontWeight: isFirst ? 700 : 600,
+          borderRadius: 2,
+          padding: '0 2px',
+          boxShadow: isFirst ? '0 0 0 2px #FFD9B3' : 'none',
+        }}>{matched}</mark>
+      );
+      firstMatch = false;
+      i = idx + q.length;
+    }
+    return parts;
+  };
+
+  // 현재 매칭의 entryId
+  const currentMatchEntryId = matches[matchIdx]?.entryId;
+
   const saveEntries = async (date, entries) => {
     const next = { ...classLog };
     if (!entries.length) delete next[date]; else next[date] = entries;
@@ -7617,6 +7717,45 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, toast }) {
 
   return (
     <div className="px-3 pb-28 pt-2" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
+      {/* 검색바 (열려있을 때만) */}
+      {searchOpen && (
+        <div className="mb-2 flex items-center gap-2 px-3 py-2 rounded-xl"
+          style={{ backgroundColor: theme.card, border: `1.5px solid ${theme.accent}`, boxShadow: '0 2px 8px rgba(74,107,92,0.08)' }}>
+          <Search size={16} style={{ color: theme.accent }} />
+          <input
+            ref={searchInputRef}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="동작·메모 검색"
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); goNext(); }
+              else if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
+            }}
+            className="flex-1 text-[14px] outline-none bg-transparent"
+            style={{ color: theme.ink }}
+          />
+          {searchQuery && (
+            <span className="text-[12px] font-semibold tabular-nums" style={{ color: matches.length ? theme.accent : theme.inkMute, minWidth: 44, textAlign: 'right' }}>
+              {matches.length ? `${matchIdx + 1} / ${matches.length}` : '0건'}
+            </span>
+          )}
+          <button onClick={goPrev} disabled={!matches.length}
+            className="w-7 h-7 rounded-md flex items-center justify-center active:scale-95"
+            style={{ backgroundColor: theme.cardAlt, border: `1px solid ${theme.line}`, color: matches.length ? theme.accent : theme.inkMute, opacity: matches.length ? 1 : 0.5 }}>
+            <ChevronUp size={14} />
+          </button>
+          <button onClick={goNext} disabled={!matches.length}
+            className="w-7 h-7 rounded-md flex items-center justify-center active:scale-95"
+            style={{ backgroundColor: theme.cardAlt, border: `1px solid ${theme.line}`, color: matches.length ? theme.accent : theme.inkMute, opacity: matches.length ? 1 : 0.5 }}>
+            <ChevronDown size={14} />
+          </button>
+          <button onClick={closeSearch} className="p-1 active:scale-95" style={{ color: theme.inkMute }}>
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-3">
         <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} className="p-1.5 rounded-lg" style={{ color: theme.ink, backgroundColor: theme.cardAlt }}>
           <ChevronLeft size={16} />
@@ -7627,9 +7766,17 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, toast }) {
             {month.getMonth() + 1}월
           </div>
         </div>
-        <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} className="p-1.5 rounded-lg" style={{ color: theme.ink, backgroundColor: theme.cardAlt }}>
-          <ChevronRight size={16} />
-        </button>
+        <div className="flex items-center gap-1">
+          {!searchOpen && (
+            <button onClick={() => setSearchOpen(true)} className="p-1.5 rounded-lg active:scale-95"
+              style={{ color: theme.ink, backgroundColor: theme.cardAlt }}>
+              <Search size={16} />
+            </button>
+          )}
+          <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} className="p-1.5 rounded-lg" style={{ color: theme.ink, backgroundColor: theme.cardAlt }}>
+            <ChevronRight size={16} />
+          </button>
+        </div>
       </div>
 
       <div className="rounded-2xl overflow-hidden" style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
@@ -7662,16 +7809,35 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, toast }) {
                 <div className="mt-1 space-y-0.5">
                   {entries.slice(0, 6).map((e, j) => {
                     const isCancelled = /캔슬|노쇼|취소/.test(e.content || '') || !e.content;
+                    const isCurrentMatch = e.id === currentMatchEntryId;
+                    const isMatchEntry = searchQuery && normalize(e.content || '').includes(normalize(searchQuery));
+                    // 26자 잘림 — 매칭이 뒤쪽에 있을 때 매칭 부분이 보이도록 윈도우 조정
+                    let shortContent = e.content || '(미기록)';
+                    if (e.content && e.content.length > 26) {
+                      if (isMatchEntry) {
+                        const q = normalize(searchQuery);
+                        const matchPos = normalize(e.content).indexOf(q);
+                        if (matchPos > 13) {
+                          const start = Math.max(0, matchPos - 8);
+                          shortContent = (start > 0 ? '…' : '') + e.content.slice(start, start + 25);
+                        } else {
+                          shortContent = e.content.slice(0, 26);
+                        }
+                      } else {
+                        shortContent = e.content.slice(0, 26);
+                      }
+                    }
                     return (
                       <div key={j} className="text-[10px] leading-[1.3] px-1 py-0.5 rounded"
                         style={{
                           backgroundColor: isCancelled ? theme.cardAlt : theme.accentSoft,
                           color: isCancelled ? theme.inkMute : theme.accent,
-                          border: `1px solid ${isCancelled ? theme.line : theme.accent + '33'}`,
+                          border: `1px solid ${isCurrentMatch ? '#FF9A3D' : (isCancelled ? theme.line : theme.accent + '33')}`,
                           textDecoration: isCancelled && e.content ? 'line-through' : 'none',
+                          boxShadow: isCurrentMatch ? '0 0 0 2px #FFD9B3' : 'none',
                         }}>
                         {e.time && <span className="font-semibold">{e.time} </span>}
-                        {e.content?.slice(0, 26) || '(미기록)'}
+                        {isMatchEntry && e.content ? renderHighlighted(shortContent, isCurrentMatch) : shortContent}
                       </div>
                     );
                   })}
