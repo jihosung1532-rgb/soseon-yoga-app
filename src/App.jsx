@@ -1476,6 +1476,7 @@ function isPartCharged(p, sessionDateTime = null) {
   // 새 status 시스템 (명시적 우선)
   if (p.status === 'reserved') return false;
   if (p.status === 'cancelled_advance') return false;
+  if (p.status === 'cancelled_by_teacher') return false;
   if (p.status === 'cancelled_sameday') return p.cancelled === 'charged';
   if (p.status === 'no_show') return true;
   if (p.status === 'attended') return true;
@@ -1718,7 +1719,7 @@ function getCancelledDatesForPass(sessions, memberId, passId) {
       && (passId ? p.passId === passId : true)
     );
     if (!part) return;
-    if (part.status === 'cancelled_advance' || part.status === 'cancelled_sameday' || part.cancelled) {
+    if (part.status === 'cancelled_advance' || part.status === 'cancelled_sameday' || part.status === 'cancelled_by_teacher' || part.cancelled) {
       set.add(date);
     }
   });
@@ -2611,38 +2612,65 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
     
     if (isCancelReq) {
       // === 취소 요청 승인 ===
-      // sessions의 participants에서 해당 회원을 통째로 제거 (이전엔 cancelled_advance로 두었지만, 회원 앱이 헷갈려서 완전 제거로 변경)
-      // 취소 이력은 bookings 테이블의 cancel_approved status에 남음
-      if (existing && existing.participants) {
-        const oldPart = existing.participants.find(p => p.memberId === booking.member_id);
-        const newParts = existing.participants.filter(p => p.memberId !== booking.member_id);
-        const newSession = { ...existing, participants: newParts };
-        const newSessions = { ...sessions, [sessKey]: newSession };
-        setSessions(newSessions);
-        await saveKey(K.sessions, newSessions);
-        
-        // 회원 수강권 회수 보정 (취소는 차감 안 함)
-        if (oldPart && oldPart.passId && isPartCharged(oldPart)) {
-          // 원래 차감됐던 것 → 되돌리기
-          const updatedMembers = members.map(m => {
-            if (m.id !== booking.member_id) return m;
-            return {
-              ...m,
-              passes: (m.passes || []).map(p => {
-                if (p.id !== oldPart.passId) return p;
-                const newUsed = Math.max(0, p.usedSessions - 1);
-                const sessionDates = (p.sessionDates || []).filter((d, idx, arr) => {
-                  // booking.date 한 개만 제거
-                  if (d !== booking.date) return true;
-                  return arr.indexOf(d) !== idx; // 첫 매치만 제거
-                });
-                return { ...p, usedSessions: newUsed, sessionDates };
-              }),
-            };
-          });
-          setMembers(updatedMembers);
-          await saveKey(K.members, updatedMembers);
-        }
+      // sessions의 participants에서 해당 회원을 cancelled_advance 상태로 박음 (통째 제거 X)
+      // → 회원 앱 fixedActive 로직이 "취소된 슬롯"으로 인식해서 "예약됨 · 고정" 안 뜨게 됨
+      // 취소 이력은 bookings 테이블의 cancel_approved status에도 남음
+      const oldPart = existing?.participants?.find(p => p.memberId === booking.member_id);
+      const wasCharged = oldPart && oldPart.passId && isPartCharged(oldPart);
+      
+      // 취소된 회원 정보 만들기 (기존 oldPart 있으면 그것 기반, 없으면 새로)
+      const cancelledPart = oldPart 
+        ? { ...oldPart, status: 'cancelled_advance', cancelled: 'no_charge', cancelNote: '회원 앱 취소 요청 승인' }
+        : {
+            memberId: booking.member_id,
+            memberName: booking.member_name,
+            classType: booking.class_type === '개인' ? '개인' : '그룹',
+            status: 'cancelled_advance',
+            cancelled: 'no_charge',
+            cancelNote: '회원 앱 취소 요청 승인',
+          };
+      
+      let newSession;
+      if (existing) {
+        // 기존 슬롯 있으면 해당 회원만 업데이트
+        const newParts = existing.participants.find(p => p.memberId === booking.member_id)
+          ? existing.participants.map(p => p.memberId === booking.member_id ? cancelledPart : p)
+          : [...(existing.participants || []), cancelledPart];
+        newSession = { ...existing, participants: newParts };
+      } else {
+        // 슬롯이 아예 없으면 새로 만들고 그 회원만 cancelled로 박음
+        newSession = {
+          date: booking.date,
+          time: booking.time,
+          participants: [cancelledPart],
+          note: '',
+          classNote: '',
+        };
+      }
+      const newSessions = { ...sessions, [sessKey]: newSession };
+      setSessions(newSessions);
+      await saveKey(K.sessions, newSessions);
+      
+      // 회원 수강권 회수 보정 (취소는 차감 안 함)
+      if (wasCharged) {
+        // 원래 차감됐던 것 → 되돌리기
+        const updatedMembers = members.map(m => {
+          if (m.id !== booking.member_id) return m;
+          return {
+            ...m,
+            passes: (m.passes || []).map(p => {
+              if (p.id !== oldPart.passId) return p;
+              const newUsed = Math.max(0, p.usedSessions - 1);
+              const sessionDates = (p.sessionDates || []).filter((d, idx, arr) => {
+                if (d !== booking.date) return true;
+                return arr.indexOf(d) !== idx;
+              });
+              return { ...p, usedSessions: newUsed, sessionDates };
+            }),
+          };
+        });
+        setMembers(updatedMembers);
+        await saveKey(K.members, updatedMembers);
       }
       toast(`${booking.member_name}님 ${booking.date} 취소 처리 완료`);
     } else {
@@ -3317,6 +3345,12 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
   const [slotModal, setSlotModal] = useState(null);
   const [slotsManagerOpen, setSlotsManagerOpen] = useState(false);
 
+  // members 저장 헬퍼 (setMembers + DB)
+  const saveMembers = async (list) => {
+    setMembers(list);
+    await saveKey(K.members, list);
+  };
+
   // 휴강일 토글
   const toggleClosedDay = async (ymd) => {
     const exists = closedDays.some(c => c.date === ymd);
@@ -3497,7 +3531,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
           if (!p.memberId || p.isTrial) return false;
           // 명시적 취소 → 제외
           if (p.cancelled === 'no_charge') return false;
-          if (p.status === 'cancelled_advance' || p.status === 'cancelled_sameday') return false;
+          if (p.status === 'cancelled_advance' || p.status === 'cancelled_sameday' || p.status === 'cancelled_by_teacher') return false;
           // 예약 상태(아직 출석 처리 전) → 제외
           if (p.status === 'reserved') return false;
           // 그 외(출석/당일취소charged/노쇼) → 포함
@@ -3594,7 +3628,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
         if (sDate < tomorrowYMD) return; // 오늘까지는 과거 취급 (used에 이미 반영)
         const myPart = (s?.participants || []).find(p => p.memberId === m.id);
         if (!myPart) return;
-        if (myPart.cancelled || myPart.status === 'cancelled_advance' || myPart.status === 'cancelled_sameday') return;
+        if (myPart.cancelled || myPart.status === 'cancelled_advance' || myPart.status === 'cancelled_sameday' || myPart.status === 'cancelled_by_teacher') return;
         if (myPart.passId === validPass.id) futureRegistered++;
         futureSessKeys.add(k); // 어떤 패스든 이미 확정된 슬롯은 자동 표시 X
       });
@@ -4038,7 +4072,8 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
 
       {slotModal && (
         <SessionEditor
-          slot={slotModal} members={members} groupSlots={groupSlots}
+          slot={slotModal} members={members} setMembers={setMembers} saveMembers={saveMembers} groupSlots={groupSlots}
+          toast={toast}
           onClose={() => setSlotModal(null)}
           onSave={async (data) => {
             const saveTime = data.time || slotModal.time;
@@ -4074,7 +4109,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
   );
 }
 
-function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
+function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toast, onClose, onSave }) {
   const existing = slot.existing;
   const isNewMode = !!slot.isNew;
   
@@ -4111,6 +4146,7 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
       passId: pass?.id,
       sessionNumber: pass ? pass.usedSessions + 1 : undefined,
       totalSessions: pass?.totalSessions,
+      _isAutoAdded: true, // 자동 추천으로 채워진 회원 — X 누르면 의도 물어봄
       ...(beforeClass ? { status: 'reserved' } : {}),
     };
   };
@@ -4137,6 +4173,8 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
   const [addingMember, setAddingMember] = useState('');
   const [trialName, setTrialName] = useState('');
   const [mode, setMode] = useState('member');
+  // 자동 추천 회원 제외 의도 모달
+  const [excludeTarget, setExcludeTarget] = useState(null); // { idx, member }
 
   const addExisting = () => {
     if (!addingMember) return;
@@ -4315,6 +4353,7 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
                         {p.status === 'reserved' && <Chip tone="accent" size="sm">예약 확정</Chip>}
                         {p.status === 'no_show' && <Chip tone="danger" size="sm">노쇼</Chip>}
                         {p.status === 'cancelled_advance' && <Chip tone="neutral" size="sm">예약 취소</Chip>}
+                        {p.status === 'cancelled_by_teacher' && <Chip tone="neutral" size="sm">강사 제외</Chip>}
                         {p.status === 'cancelled_sameday' && <Chip tone="warn" size="sm">당일 취소{p.cancelled === 'charged' ? ' (차감)' : ''}</Chip>}
                         {/* 호환: 옛 데이터 */}
                         {!p.status && p.cancelled === 'no_charge' && <Chip tone="neutral" size="sm">취소(미차감)</Chip>}
@@ -4322,7 +4361,14 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
                       </div>
                       {/* X 버튼은 활성 회원만 - 취소/노쇼 기록은 통계 보존 위해 유지 (상태 해제로 풀거나 그대로 둠) */}
                       {!isCancelled && p.status !== 'no_show' && (
-                        <button onClick={() => setParts(parts.filter((_, j) => j !== i))} className="p-1 rounded" style={{ color: theme.danger }}>
+                        <button onClick={() => {
+                          // 자동 추천으로 들어온 회원이면 의도 모달
+                          if (p._isAutoAdded) {
+                            setExcludeTarget({ idx: i, member: p });
+                          } else {
+                            setParts(parts.filter((_, j) => j !== i));
+                          }
+                        }} className="p-1 rounded" style={{ color: theme.danger }}>
                           <X size={14} />
                         </button>
                       )}
@@ -4417,6 +4463,80 @@ function SessionEditor({ slot, members, groupSlots, onClose, onSave }) {
           </div>
         </div>
       </div>
+
+      {/* 자동 추천 회원 제외 의도 모달 */}
+      {excludeTarget && (
+        <Modal open={true} onClose={() => setExcludeTarget(null)} title={`${excludeTarget.member.memberName} 회원 제외`} maxWidth="max-w-sm">
+          <div className="space-y-3">
+            <div className="text-[13px]" style={{ color: theme.inkSoft }}>
+              자동 추천에서 빼는 이유를 알려주세요. 회원 앱에도 반영돼요.
+            </div>
+
+            {/* 옵션 1: 이날만 못 와요 */}
+            <button
+              onClick={() => {
+                // 그 회원을 제외 + status='cancelled_by_teacher'로 슬롯 저장
+                // 그러려면 일단 parts에서 빼고, 저장 시 의도된 회원을 cancelled 상태로 넣어야 함
+                // 단순화: 그 회원을 parts에서 cancelled_by_teacher 상태로 박아두고, 저장 시 같이 저장
+                setParts(parts.map((p, i) =>
+                  i === excludeTarget.idx
+                    ? {
+                        memberId: p.memberId, memberName: p.memberName,
+                        passId: p.passId, sessionNumber: p.sessionNumber, totalSessions: p.totalSessions,
+                        status: 'cancelled_by_teacher',
+                        cancelled: 'no_charge',
+                        cancelNote: '강사 제외 (이날만)',
+                      }
+                    : p
+                ));
+                setExcludeTarget(null);
+                toast?.('저장하면 이날만 제외돼요');
+              }}
+              className="w-full text-left p-3 rounded-lg active:scale-95"
+              style={{ backgroundColor: theme.cardAlt, border: `1px solid ${theme.line}` }}>
+              <div className="text-[13px] font-semibold" style={{ color: theme.ink }}>이날만 못 와요</div>
+              <div className="text-[11px] mt-0.5" style={{ color: theme.inkMute }}>
+                이 날짜만 1회 제외 · 다음 주는 다시 자동으로 잡혀요
+              </div>
+            </button>
+
+            {/* 옵션 2: 고정 해제 */}
+            <button
+              onClick={async () => {
+                // 회원의 fixedSlots에서 (dow, time) 제거
+                const memberId = excludeTarget.member.memberId;
+                const targetDow = (date ? fromYMD(date) : new Date()).getDay();
+                const targetTime = time;
+                const updated = (members || []).map(m => {
+                  if (m.id !== memberId) return m;
+                  return {
+                    ...m,
+                    fixedSlots: (m.fixedSlots || []).filter(fs => !(fs.dow === targetDow && fs.time === targetTime)),
+                  };
+                });
+                if (saveMembers) await saveMembers(updated);
+                else setMembers?.(updated);
+                // parts에서도 제거
+                setParts(parts.filter((_, j) => j !== excludeTarget.idx));
+                setExcludeTarget(null);
+                toast?.('고정 시간을 해제했어요');
+              }}
+              className="w-full text-left p-3 rounded-lg active:scale-95"
+              style={{ backgroundColor: theme.cardAlt, border: `1px solid ${theme.line}` }}>
+              <div className="text-[13px] font-semibold" style={{ color: theme.ink }}>이 고정 시간 해제</div>
+              <div className="text-[11px] mt-0.5" style={{ color: theme.inkMute }}>
+                앞으로 이 요일·시간에 자동 추천 안 됨 · 회원 fixedSlots에서 삭제
+              </div>
+            </button>
+
+            <button onClick={() => setExcludeTarget(null)}
+              className="w-full py-2 rounded-lg text-[12px]"
+              style={{ color: theme.inkMute }}>
+              취소
+            </button>
+          </div>
+        </Modal>
+      )}
     </Modal>
   );
 }
@@ -5661,7 +5781,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
               const activePassSum = activePass(member);
               const todayStr = toYMD(new Date());
               const latestSession = history.length > 0 
-                ? history.find(h => !h.cancelled && h.date <= todayStr && h.status !== 'reserved' && h.status !== 'cancelled_advance' && h.status !== 'cancelled_sameday')
+                ? history.find(h => !h.cancelled && h.date <= todayStr && h.status !== 'reserved' && h.status !== 'cancelled_advance' && h.status !== 'cancelled_sameday' && h.status !== 'cancelled_by_teacher')
                 : null;
               return (
                 <div className="rounded-2xl p-3" style={{ backgroundColor: theme.accentSoft, border: `1px solid ${theme.accent}44` }}>
@@ -7976,7 +8096,7 @@ function ClassRecommendModal({ date, members, sessions, classLog, onClose, onPic
       if (d > today) return;
       const participated = (sess.participants || []).some(p =>
         memberIds.has(p.memberId) && !p.cancelled
-        && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday'
+        && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'cancelled_by_teacher'
       );
       if (!participated) return;
       tokenize(sess.classNote).forEach(t => {
@@ -9923,7 +10043,7 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
       if (s.date > todayStr) return;
       
       const hasAttended = s.participants?.some(p => 
-        !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'no_show'
+        !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'cancelled_by_teacher' && p.status !== 'no_show'
       );
       if (!hasAttended) return;
       total++;
@@ -9939,7 +10059,7 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
       
       // 그 수업의 수익: 회원 회당 단가 + (체험자 미전환&입금완료만 1만원)
       (s.participants || []).forEach(p => {
-        if (p.cancelled || p.status === 'reserved' || p.status === 'cancelled_advance' || p.status === 'cancelled_sameday') return;
+        if (p.cancelled || p.status === 'reserved' || p.status === 'cancelled_advance' || p.status === 'cancelled_sameday' || p.status === 'cancelled_by_teacher') return;
         if (p.isTrial) {
           const trial = trialByName[p.memberName];
           if (trial?.status === '회원전환') return; // 무료 체험
@@ -9995,7 +10115,7 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
         // status 또는 cancelled 필드 보고 분류
         if (p.status === 'no_show' || p.cancelled === 'no_show') {
           noShow++;
-        } else if (p.status === 'cancelled_advance' || p.status === 'cancelled_sameday' || p.cancelled) {
+        } else if (p.status === 'cancelled_advance' || p.status === 'cancelled_sameday' || p.status === 'cancelled_by_teacher' || p.cancelled) {
           cancel++;
         } else if (p.status === 'reserved') {
           // 미래 예약 — 제외
@@ -10202,13 +10322,13 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
     Object.values(sessions).forEach(s => {
       if (!s?.date?.startsWith(targetYM) || s.date > todayStr) return;
       const hasAttended = s.participants?.some(p => 
-        !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'no_show'
+        !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'cancelled_by_teacher' && p.status !== 'no_show'
       );
       if (!hasAttended) return;
       if (!slots[s.time]) slots[s.time] = { time: s.time, count: 0, totalPpl: 0, totalRevenue: 0 };
       slots[s.time].count++;
       const attendees = s.participants?.filter(p => 
-        !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'no_show'
+        !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'cancelled_by_teacher' && p.status !== 'no_show'
       ) || [];
       slots[s.time].totalPpl += attendees.length;
       // 수업당 수익:
