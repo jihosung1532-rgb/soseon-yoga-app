@@ -3628,9 +3628,12 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
         if (sDate < tomorrowYMD) return; // 오늘까지는 과거 취급 (used에 이미 반영)
         const myPart = (s?.participants || []).find(p => p.memberId === m.id);
         if (!myPart) return;
+        // 이 슬롯에 본인이 이미 박혀있으면 (cancelled든 reserved든) 자동 추천 X
+        // → sessions에 본인이 들어있는 슬롯은 강사가 명시적으로 처리한 거니까 자동이 끼어들면 안 됨
+        futureSessKeys.add(k);
+        // 차감 카운트(futureRegistered)는 cancelled 회원은 제외
         if (myPart.cancelled || myPart.status === 'cancelled_advance' || myPart.status === 'cancelled_sameday' || myPart.status === 'cancelled_by_teacher') return;
         if (myPart.passId === validPass.id) futureRegistered++;
-        futureSessKeys.add(k); // 어떤 패스든 이미 확정된 슬롯은 자동 표시 X
       });
       
       const remaining = totalSessions - used - futureRegistered;
