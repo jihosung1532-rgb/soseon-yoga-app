@@ -499,6 +499,13 @@ const startOfWeek = (d) => {
 const WEEK_KR = ['일', '월', '화', '수', '목', '금', '토'];
 const fmtKR = (d) => `${d.getMonth() + 1}월 ${d.getDate()}일 (${WEEK_KR[d.getDay()]})`;
 const fmtKRShort = (ymd) => { const d = fromYMD(ymd); return `${d.getMonth() + 1}/${d.getDate()}`; };
+// "7:20" → "07:20", "19:20" → "19:20", 항상 24시간 hh:mm 형식
+const fmtTime24 = (t) => {
+  if (!t) return '';
+  const m = String(t).match(/^(\d{1,2}):(\d{1,2})$/);
+  if (!m) return t;
+  return `${pad(parseInt(m[1], 10))}:${pad(parseInt(m[2], 10))}`;
+};
 const daysBetween = (a, b) => Math.round((fromYMD(b) - fromYMD(a)) / 86400000);
 
 // 친밀한 호칭: 이름 두 글자 + 님 (예: 김재영 → 재영님, 이은조 → 은조님)
@@ -632,7 +639,7 @@ ${fmtKRShort(pass.expiryDate)}까지 이용 가능합니다.
     body: `안녕하세요 ${friendlyName(trial.name)} ☺️
 소선요가입니다
 
-${fmtKRShort(trial.date)} ${trial.time} 체험 수업 예약되어 있어요.
+${fmtKRShort(trial.date)} ${fmtTime24(trial.time)} 체험 수업 예약되어 있어요.
 
 편안한 복장으로
 5분 전 도착 부탁드려요.
@@ -2423,7 +2430,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
           kind: 'trial',
           priority: 3,
           trial: t,
-          title: `${t.name} · ${fmtKRShort(t.date)} ${t.time} 체험 예약`,
+          title: `${t.name} · ${fmtKRShort(t.date)} ${fmtTime24(t.time)} 체험 예약`,
           desc: '체험 예약 안내 문자',
           template: SMS_TEMPLATES.trial(t),
         });
@@ -2461,7 +2468,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
       if (futurePrivate.length > 0) {
         futurePrivate.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
         const schedule = futurePrivate.slice(0, 5)
-          .map(s => `${fmtKRShort(s.date)} ${s.time}`)
+          .map(s => `${fmtKRShort(s.date)} ${fmtTime24(s.time)}`)
           .join('\n');
         list.push({
           id: `pvtlesson-${m.id}`,
@@ -2596,8 +2603,8 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
   const approveBooking = async (booking) => {
     const isCancelReq = booking.status === 'pending_cancel';
     const confirmMsg = isCancelReq
-      ? `${booking.member_name}님의 ${booking.date} ${booking.time} 취소 요청을 승인할까요?\n(이번 회차만 취소되고, 사전취소로 처리됩니다 - 회수 차감 X)`
-      : `${booking.member_name}님의 ${booking.date} ${booking.time} 예약을 승인할까요?`;
+      ? `${booking.member_name}님의 ${booking.date} ${fmtTime24(booking.time)} 취소 요청을 승인할까요?\n(이번 회차만 취소되고, 사전취소로 처리됩니다 - 회수 차감 X)`
+      : `${booking.member_name}님의 ${booking.date} ${fmtTime24(booking.time)} 예약을 승인할까요?`;
     if (!confirm(confirmMsg)) return;
     
     // 1. bookings 상태 업데이트
@@ -2985,7 +2992,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
                 </div>
                 <div className="text-[11px]" style={{ color: '#A0573B' }}>
                   {pendingBookings.slice(0, 2).map(b => 
-                    `${b.member_name}님 ${b.date} ${b.time}${b.status === 'pending_cancel' ? ' (취소)' : ''}`
+                    `${b.member_name}님 ${b.date} ${fmtTime24(b.time)}${b.status === 'pending_cancel' ? ' (취소)' : ''}`
                   ).join(' · ')}
                   {pendingBookings.length > 2 && ` 외 ${pendingBookings.length - 2}건`}
                 </div>
@@ -8552,7 +8559,7 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
     const parts = [];
     // 1) 체험 날짜·시간
     if (trial.date && trial.time) {
-      parts.push(`${trial.date} ${trial.time} 체험`);
+      parts.push(`${trial.date} ${fmtTime24(trial.time)} 체험`);
     } else if (trial.date) {
       parts.push(`${trial.date} 체험`);
     }
@@ -8736,7 +8743,7 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
                 {t.date && (
                   <div className="text-[13px] font-semibold ml-3 shrink-0"
                     style={{ color: theme.inkSoft, fontFamily: theme.serif, fontSize: 15 }}>
-                    {fmtKRShort(t.date)}{t.time && ` ${t.time}`}
+                    {fmtKRShort(t.date)}{t.time && ` ${fmtTime24(t.time)}`}
                   </div>
                 )}
               </div>
@@ -9245,7 +9252,7 @@ function TrialDetail({ trial, onClose, onUpdate, onDelete, onConvert, onSendSMS 
             trial.status === '취소' || trial.status === '미참석' ? 'danger' :
             'warn'
           } size="sm">{trial.status}</Chip>
-          {trial.date && <Chip tone="accent" size="sm">{trial.date} {trial.time}</Chip>}
+          {trial.date && <Chip tone="accent" size="sm">{trial.date} {fmtTime24(trial.time)}</Chip>}
         </div>
         <div className="space-y-2 text-sm">
           <InfoRow label="연락처" value={trial.phone} />
@@ -11528,7 +11535,7 @@ export default function App() {
     if (!trialHistoryFlag) {
       const buildTrialHistoryNote = (trial) => {
         const parts = [];
-        if (trial.date && trial.time) parts.push(`${trial.date} ${trial.time} 체험`);
+        if (trial.date && trial.time) parts.push(`${trial.date} ${fmtTime24(trial.time)} 체험`);
         else if (trial.date) parts.push(`${trial.date} 체험`);
         if (trial.source) parts.push(`유입: ${trial.source}`);
         if (trial.paid === true) parts.push('체험비 입금완료');
@@ -11575,13 +11582,25 @@ export default function App() {
     }
     
     // 매번 실행: 체험 시간 + 1시간 지났는데 '예약확정' 상태면 '수업완료'로 자동 변경
+    // 단, sessions에 같은 회원/날짜로 등록된 슬롯이 있으면 그 슬롯의 시간을 우선 사용 (trial의 time이 잘못 박혔을 수 있음)
     const now = new Date();
     let trialsChanged = false;
     const updatedTrials = finalT.map(t => {
       if (t.status !== '예약확정') return t;
       if (!t.date || !t.time) return t;
       try {
-        const trialEnd = fromYMDHM(t.date, t.time);
+        // sessions에서 이 체험 회원의 실제 슬롯 찾기 (이름 + 날짜 기준)
+        let actualTime = t.time;
+        Object.entries(migratedS).forEach(([key, sess]) => {
+          if (!key.startsWith(t.date + '_')) return;
+          const found = (sess?.participants || []).some(p => 
+            p.isTrial && p.memberName === t.name
+          );
+          if (found) {
+            actualTime = key.split('_')[1] || t.time;
+          }
+        });
+        const trialEnd = fromYMDHM(t.date, actualTime);
         trialEnd.setHours(trialEnd.getHours() + 1);
         if (now > trialEnd) {
           trialsChanged = true;
