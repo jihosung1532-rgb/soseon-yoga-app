@@ -1578,14 +1578,14 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   if (p.category === 'trial') return null;
   if (p.category === 'private') return null; // 개인레슨은 대상 X
   
-  // 자격 대상 수강권 종류 판단
-  let weeks, bonus;
-  if (p.totalSessions === 8) {
-    weeks = 4; bonus = 1; // 1개월 8회
-  } else if (p.totalSessions === 16) {
-    weeks = 8; bonus = 2; // 2개월 16회 (단종, 옛 회원만)
-  } else if (p.totalSessions === 24) {
-    weeks = 12; bonus = 3; // 3개월 24회
+  // 자격 대상 수강권 종류 판단 (체험 보너스 +1 포함 인정)
+  let weeks, bonus, baseSessions;
+  if (p.totalSessions === 8 || p.totalSessions === 9) {
+    weeks = 4; bonus = 1; baseSessions = 8; // 1개월 8회 (또는 +체험 1회)
+  } else if (p.totalSessions === 16 || p.totalSessions === 17) {
+    weeks = 8; bonus = 2; baseSessions = 16; // 2개월 16회 (단종)
+  } else if (p.totalSessions === 24 || p.totalSessions === 25) {
+    weeks = 12; bonus = 3; baseSessions = 24; // 3개월 24회
   } else {
     return null; // 대상 아님
   }
@@ -1646,9 +1646,8 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
     return false;
   });
   
-  // requiredDays = 수강권 총 회수 (8 / 16 / 24)
-  // attendedDays = 실제 출석한 회수 (sessionDates 길이)
-  const requiredCount = p.totalSessions;
+  // requiredDays = 정규 회수 (8 / 16 / 24) — 체험 보너스(+1)는 보너스로 두고 도전 기준은 base
+  const requiredCount = baseSessions;
   const attendedCount = sortedDates.length;
   const remaining = Math.max(0, requiredCount - attendedCount);
   
@@ -4119,6 +4118,85 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
   );
 }
 
+function MemberSearchPicker({ members, selectedId, onChange, onAdd, existingPartIds = [] }) {
+  const [query, setQuery] = useState('');
+  const [focused, setFocused] = useState(false);
+  const inputRef = useRef(null);
+  const existingSet = new Set(existingPartIds);
+
+  // 선택된 회원 이름 표시용
+  const selectedMember = members.find(m => m.id === selectedId);
+
+  // 검색 필터링 — 이름 부분 매칭 (대소문자/공백 무시)
+  const filtered = useMemo(() => {
+    const q = (query || '').toLowerCase().replace(/\s+/g, '');
+    if (!q) return members;
+    return members.filter(m => (m.name || '').toLowerCase().replace(/\s+/g, '').includes(q));
+  }, [members, query]);
+
+  const handlePick = (m) => {
+    onChange(m.id);
+    setQuery(m.name);
+    setFocused(false);
+    inputRef.current?.blur();
+  };
+
+  const handleAdd = () => {
+    if (!selectedId) return;
+    onAdd();
+    setQuery('');
+    setFocused(false);
+  };
+
+  return (
+    <div className="flex gap-2 relative">
+      <div className="flex-1 relative">
+        <input
+          ref={inputRef}
+          value={focused ? query : (selectedMember ? selectedMember.name : query)}
+          onChange={(e) => { setQuery(e.target.value); if (selectedId) onChange(''); }}
+          onFocus={() => { setFocused(true); if (selectedMember) setQuery(''); }}
+          onBlur={() => setTimeout(() => setFocused(false), 200)}
+          placeholder="회원 이름 검색"
+          className="w-full px-3 py-2 rounded-lg text-[13px] outline-none"
+          style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}`, color: theme.ink }}
+        />
+        {focused && (
+          <div className="absolute top-full left-0 right-0 mt-1 max-h-64 overflow-y-auto rounded-lg shadow-lg z-50"
+            style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
+            {filtered.length === 0 ? (
+              <div className="py-3 px-3 text-[12px] text-center" style={{ color: theme.inkMute }}>
+                일치하는 회원이 없어요
+              </div>
+            ) : (
+              filtered.map(m => {
+                const already = existingSet.has(m.id);
+                return (
+                  <button key={m.id}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => !already && handlePick(m)}
+                    disabled={already}
+                    className="w-full text-left px-3 py-2 text-[13px] active:opacity-70 flex items-center justify-between"
+                    style={{
+                      color: already ? theme.inkMute : theme.ink,
+                      borderBottom: `1px solid ${theme.lineLight}`,
+                      opacity: already ? 0.5 : 1,
+                      cursor: already ? 'not-allowed' : 'pointer',
+                    }}>
+                    <span>{m.name}</span>
+                    {already && <span className="text-[10px]" style={{ color: theme.inkMute }}>이미 추가됨</span>}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        )}
+      </div>
+      <Button icon={Plus} onClick={handleAdd} disabled={!selectedId}>추가</Button>
+    </div>
+  );
+}
+
 function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toast, onClose, onSave }) {
   const existing = slot.existing;
   const isNewMode = !!slot.isNew;
@@ -4438,13 +4516,13 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
         </div>
 
         {mode === 'member' ? (
-          <div className="flex gap-2">
-            <Select value={addingMember} onChange={(e) => setAddingMember(e.target.value)} placeholder="회원 선택"
-              options={members
-                .filter(m => activePass(m, category === 'private' ? 'private' : 'group'))
-                .map(m => ({ value: m.id, label: m.name }))} />
-            <Button icon={Plus} onClick={addExisting}>추가</Button>
-          </div>
+          <MemberSearchPicker
+            members={members.filter(m => activePass(m, category === 'private' ? 'private' : 'group'))}
+            selectedId={addingMember}
+            onChange={setAddingMember}
+            onAdd={addExisting}
+            existingPartIds={parts.filter(p => !p.cancelled).map(p => p.memberId)}
+          />
         ) : (
           <div className="flex gap-2">
             <Input value={trialName} onChange={(e) => setTrialName(e.target.value)} placeholder="이름 (예: 박세린)" />
