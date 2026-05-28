@@ -11294,6 +11294,57 @@ export default function App() {
     }
   };
 
+  // 가벼운 자동 출석 처리 — 현재 sessions state 기준으로 시간 지난 reserved → attended
+  // (loadAll 전체를 다시 안 돌리고 sessions만 빠르게 갱신)
+  const autoMarkAttendance = async () => {
+    try {
+      const now = new Date();
+      let changed = false;
+      const updated = { ...sessions };
+      Object.keys(updated).forEach(key => {
+        const s = updated[key];
+        if (!s?.date || !s?.time || !s?.participants) return;
+        try {
+          const sessionEnd = fromYMDHM(s.date, s.time);
+          sessionEnd.setHours(sessionEnd.getHours() + 1);
+          if (now <= sessionEnd) return;
+          let partsChanged = false;
+          const newParts = s.participants.map(p => {
+            if (p.cancelled) return p;
+            if (p.status !== 'reserved') return p;
+            if (p.isTrial) return p;
+            if (!p.memberId || !p.passId) return p;
+            partsChanged = true;
+            return { ...p, status: 'attended' };
+          });
+          if (partsChanged) {
+            updated[key] = { ...s, participants: newParts };
+            changed = true;
+          }
+        } catch (e) { /* skip */ }
+      });
+      if (changed) {
+        setSessions(updated);
+        await saveKey(K.sessions, updated);
+        console.log('[auto] 주기적 자동 출석 처리');
+      }
+    } catch (e) {
+      console.warn('autoMarkAttendance 실패', e);
+    }
+  };
+
+  // 1분마다 + 앱 포커스 복귀 시 자동 출석 처리
+  useEffect(() => {
+    if (!authed) return;
+    const interval = setInterval(() => { autoMarkAttendance(); }, 60000); // 1분
+    const onVisible = () => { if (document.visibilityState === 'visible') autoMarkAttendance(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [authed, sessions]);
+
   const loadAll = async () => {
     // 먼저 4개 핵심 데이터 로드 (loadKey가 자동 마이그레이션 처리)
     const [m, s, c, t, dd] = await Promise.all([
