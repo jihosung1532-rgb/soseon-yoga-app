@@ -11278,10 +11278,17 @@ export default function App() {
   const autoMarkAttendance = async () => {
     try {
       const now = new Date();
-      let changed = false;
-      const updated = { ...sessions };
-      Object.keys(updated).forEach(key => {
-        const s = updated[key];
+      const todayYMD = toYMD(now);
+      let sessionsChanged = false;
+      let membersChanged = false;
+      const updatedSessions = { ...sessions };
+      // 회원 데이터도 같이 갱신 (패스 차감)
+      const memberMap = new Map((members || []).map(m => [m.id, m]));
+      // 이번 실행에서 새로 차감해야 할 항목 모음: memberId → [{passId, date}]
+      const pendingCharges = new Map();
+
+      Object.keys(updatedSessions).forEach(key => {
+        const s = updatedSessions[key];
         if (!s?.date || !s?.time || !s?.participants) return;
         try {
           const sessionEnd = fromYMDHM(s.date, s.time);
@@ -11292,20 +11299,80 @@ export default function App() {
             if (p.cancelled) return p;
             if (p.status !== 'reserved') return p;
             if (p.isTrial) return p;
-            if (!p.memberId || !p.passId) return p;
+            if (!p.memberId) return p;
+
+            // passId 있으면 기존대로 attended만
+            if (p.passId) {
+              partsChanged = true;
+              return { ...p, status: 'attended' };
+            }
+
+            // passId 없음 → 회원의 활성 패스 중 회수 남은 거 자동 매칭
+            const member = memberMap.get(p.memberId);
+            if (!member?.passes?.length) return p;
+            const candidates = member.passes.filter(pp =>
+              !pp.archived && pp.category === 'group'
+              && pp.startDate && pp.expiryDate
+              && pp.startDate <= s.date && pp.expiryDate >= s.date
+            );
+            // 회수 남은 패스 우선
+            const matched = candidates.find(pp =>
+              (pp.sessionDates || []).length < (pp.totalSessions || 0)
+            ) || candidates[0];
+            if (!matched) {
+              // 매칭 패스 없으면 attended만 박고 차감은 안 함
+              partsChanged = true;
+              return { ...p, status: 'attended' };
+            }
+
+            // 차감 예약 (members 한 번에 업데이트)
+            if (!pendingCharges.has(p.memberId)) pendingCharges.set(p.memberId, []);
+            pendingCharges.get(p.memberId).push({ passId: matched.id, date: s.date });
+
             partsChanged = true;
-            return { ...p, status: 'attended' };
+            return { ...p, status: 'attended', passId: matched.id };
           });
           if (partsChanged) {
-            updated[key] = { ...s, participants: newParts };
-            changed = true;
+            updatedSessions[key] = { ...s, participants: newParts };
+            sessionsChanged = true;
           }
         } catch (e) { /* skip */ }
       });
-      if (changed) {
-        setSessions(updated);
-        await saveKey(K.sessions, updated);
-        console.log('[auto] 주기적 자동 출석 처리');
+
+      // 패스 차감 적용
+      let updatedMembers = members;
+      if (pendingCharges.size > 0) {
+        updatedMembers = members.map(m => {
+          const charges = pendingCharges.get(m.id);
+          if (!charges?.length) return m;
+          const newPasses = (m.passes || []).map(pp => {
+            const my = charges.filter(c => c.passId === pp.id);
+            if (!my.length) return pp;
+            const existing = new Set(pp.sessionDates || []);
+            const toAdd = my.filter(c => !existing.has(c.date)).map(c => c.date);
+            if (!toAdd.length) return pp;
+            const newDates = [...(pp.sessionDates || []), ...toAdd].sort();
+            return {
+              ...pp,
+              sessionDates: newDates,
+              usedSessions: Math.min(pp.totalSessions || 0, (pp.usedSessions || 0) + toAdd.length),
+            };
+          });
+          return { ...m, passes: newPasses };
+        });
+        membersChanged = true;
+      }
+
+      if (sessionsChanged) {
+        setSessions(updatedSessions);
+        await saveKey(K.sessions, updatedSessions);
+      }
+      if (membersChanged) {
+        setMembers(updatedMembers);
+        await saveKey(K.members, updatedMembers);
+      }
+      if (sessionsChanged || membersChanged) {
+        console.log('[auto] 자동 출석 + 차감 처리', { sessionsChanged, membersChanged });
       }
     } catch (e) {
       console.warn('autoMarkAttendance 실패', e);
@@ -11322,7 +11389,7 @@ export default function App() {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [authed, sessions]);
+  }, [authed, sessions, members]);
 
   const loadAll = async () => {
     // 먼저 4개 핵심 데이터 로드 (loadKey가 자동 마이그레이션 처리)
