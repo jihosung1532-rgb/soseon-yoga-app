@@ -5353,7 +5353,7 @@ function MemberEditor({ member, onClose, onSave, groupSlots }) {
    Member Detail — passes + history + memo + progress + assessment
    ========================================================= */
 // 수강이력 탭 콘텐츠 — 수강권별 섹션 + 전체보기 토글 + 드롭다운 (C+A 혼합)
-function HistoryTabContent({ history, passes }) {
+function HistoryTabContent({ history, passes, onEditRecord }) {
   const [viewMode, setViewMode] = useState('active'); // 'active' | 'all' | pass.id
   const [dropdownOpen, setDropdownOpen] = useState(false);
   
@@ -5446,7 +5446,8 @@ function HistoryTabContent({ history, passes }) {
     const showCancelNote = h.cancelNote && !legacyAutoNotes.includes(h.cancelNote.trim());
     
     return (
-      <div key={`${h.date}_${h.time}`} className="px-3 py-2 rounded-lg flex items-center gap-3"
+      <div key={`${h.date}_${h.time}`} className="px-3 py-2 rounded-lg flex items-center gap-3 cursor-pointer hover:opacity-80"
+        onClick={() => onEditRecord && onEditRecord(h)}
         style={{ backgroundColor: bgColor, border: `1px solid ${borderColor}` }}>
         <span className="text-[12px] tabular-nums shrink-0" style={{ color: theme.inkMute }}>{h.date}</span>
         <span className="text-[12px] font-medium tabular-nums shrink-0" style={{ color: timeColor, fontFamily: theme.serif, fontSize: 13 }}>{h.time}</span>
@@ -5580,6 +5581,8 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
   const [editing, setEditing] = useState(false);
   const [addingPass, setAddingPass] = useState(false);
   const [convertingPass, setConvertingPass] = useState(null);
+  const [editingPass, setEditingPass] = useState(null);
+  const [editingHistory, setEditingHistory] = useState(null); // {passId, date, time}
 
   const pass = activePass(member);
   
@@ -6017,6 +6020,9 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                           <RotateCcw size={11} /> 홀딩취소
                         </Button>
                       )}
+                      <Button size="sm" variant="ghost" onClick={() => setEditingPass(p)}>
+                        ✏️ 수정
+                      </Button>
                       <Button size="sm" variant="ghost" onClick={() => setConvertingPass(p)}>
                         <RefreshCw size={11} /> 전환
                       </Button>
@@ -6174,6 +6180,9 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                         홀딩 취소
                       </Button>
                     )}
+                    <Button size="sm" variant="ghost" onClick={() => setEditingPass(p)}>
+                      ✏️ 수정
+                    </Button>
                     <Button size="sm" variant="ghost" onClick={() => setConvertingPass(p)}>
                       <RefreshCw size={11} /> 전환
                     </Button>
@@ -6222,7 +6231,7 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
         )}
 
         {tab === 'history' && (
-          <HistoryTabContent history={history} passes={member.passes || []} />
+          <HistoryTabContent history={history} passes={member.passes || []} onEditRecord={(h) => setEditingHistory({ ...h, memberId: member.id })} />
         )}
 
         {tab === 'memo' && (
@@ -6275,6 +6284,68 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
             oldPass={convertingPass}
             onClose={() => setConvertingPass(null)}
             onConvert={doConvert}
+          />
+        )}
+        {editingPass && (
+          <PassEditModal
+            pass={editingPass}
+            onClose={() => setEditingPass(null)}
+            onSave={(updated) => {
+              setMembers(prev => prev.map(m => m.id === member.id
+                ? { ...m, passes: (m.passes || []).map(p => p.id === editingPass.id ? { ...p, ...updated } : p) }
+                : m
+              ));
+              setEditingPass(null);
+              toast('✓ 수강권 수정 완료');
+            }}
+          />
+        )}
+        {editingHistory && (
+          <HistoryEditModal
+            record={editingHistory}
+            onClose={() => setEditingHistory(null)}
+            onSave={(updated) => {
+              // sessions에서 해당 슬롯 찾아 participant status/cancelled 변경
+              const oldKey = `${editingHistory.date}_${editingHistory.time}`;
+              const newKey = `${updated.date}_${updated.time}`;
+              setSessions(prev => {
+                const next = { ...prev };
+                // 옛 키에서 참여자 제거
+                if (next[oldKey]) {
+                  const oldParts = (next[oldKey].participants || []).filter(p => p.memberId !== editingHistory.memberId);
+                  next[oldKey] = { ...next[oldKey], participants: oldParts };
+                }
+                // 새 키에 참여자 추가 (없으면 만들기)
+                if (!next[newKey]) {
+                  next[newKey] = { date: updated.date, time: updated.time, participants: [] };
+                }
+                const myPart = {
+                  memberId: editingHistory.memberId,
+                  memberName: editingHistory.memberName,
+                  passId: editingHistory.passId,
+                  status: updated.status,
+                  sessionNumber: editingHistory.sessionNumber,
+                  totalSessions: editingHistory.totalSessions,
+                };
+                next[newKey] = { ...next[newKey], participants: [...(next[newKey].participants || []).filter(p => p.memberId !== editingHistory.memberId), myPart] };
+                return next;
+              });
+              setEditingHistory(null);
+              toast('✓ 수강이력 수정 완료');
+            }}
+            onDelete={() => {
+              const key = `${editingHistory.date}_${editingHistory.time}`;
+              setSessions(prev => {
+                const next = { ...prev };
+                if (next[key]) {
+                  const parts = (next[key].participants || []).filter(p => p.memberId !== editingHistory.memberId);
+                  next[key] = { ...next[key], participants: parts };
+                }
+                return next;
+              });
+              setEditingHistory(null);
+              toast('✓ 수강이력 삭제 완료');
+            }}
           />
         )}
       </div>
@@ -12157,3 +12228,148 @@ export default function App() {
   );
 }
 
+
+// ───────── 수강권 수정 모달 ─────────
+function PassEditModal({ pass, onClose, onSave }) {
+  const [type, setType] = useState(pass.type || '');
+  const [price, setPrice] = useState(pass.price || 0);
+  const [totalSessions, setTotalSessions] = useState(pass.totalSessions || 0);
+  const [startDate, setStartDate] = useState(pass.startDate || '');
+  const [expiryDate, setExpiryDate] = useState(pass.expiryDate || '');
+  const [paymentDate, setPaymentDate] = useState(pass.paymentDate || '');
+  const [note, setNote] = useState(pass.note || '');
+  const [paymentMethod, setPaymentMethod] = useState(pass.paymentMethod || '');
+
+  const handleSave = () => {
+    const usedCount = (pass.sessionDates || []).length;
+    if (totalSessions < usedCount) {
+      if (!confirm(`총 회수(${totalSessions})가 이미 사용한 회수(${usedCount})보다 적어요. 그대로 저장할까요?`)) return;
+    }
+    const pricePerSession = totalSessions > 0 ? Math.round(price / totalSessions) : 0;
+    onSave({
+      type, price: Number(price) || 0,
+      totalSessions: Number(totalSessions) || 0,
+      pricePerSession,
+      startDate, expiryDate, paymentDate,
+      note, paymentMethod,
+    });
+  };
+
+  return (
+    <Modal open={true} onClose={onClose} title="수강권 수정">
+      <div className="space-y-2.5">
+        <div>
+          <label className="text-[11px]" style={{ color: theme.inkMute }}>수강권 이름</label>
+          <input type="text" value={type} onChange={e => setType(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[11px]" style={{ color: theme.inkMute }}>가격(원)</label>
+            <input type="number" value={price} onChange={e => setPrice(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg text-sm"
+              style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
+          </div>
+          <div>
+            <label className="text-[11px]" style={{ color: theme.inkMute }}>총 회수</label>
+            <input type="number" value={totalSessions} onChange={e => setTotalSessions(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg text-sm"
+              style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[11px]" style={{ color: theme.inkMute }}>시작일</label>
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg text-sm"
+              style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
+          </div>
+          <div>
+            <label className="text-[11px]" style={{ color: theme.inkMute }}>만료일</label>
+            <input type="date" value={expiryDate} onChange={e => setExpiryDate(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg text-sm"
+              style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
+          </div>
+        </div>
+        <div>
+          <label className="text-[11px]" style={{ color: theme.inkMute }}>결제일</label>
+          <input type="date" value={paymentDate} onChange={e => setPaymentDate(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
+        </div>
+        <div>
+          <label className="text-[11px]" style={{ color: theme.inkMute }}>결제수단</label>
+          <input type="text" value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}
+            placeholder="예: 계좌이체, 카드, 지역화폐"
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
+        </div>
+        <div>
+          <label className="text-[11px]" style={{ color: theme.inkMute }}>메모</label>
+          <textarea value={note} onChange={e => setNote(e.target.value)} rows={2}
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
+        </div>
+        <div className="flex gap-2 pt-2">
+          <Button variant="outline" onClick={onClose} className="flex-1">취소</Button>
+          <Button onClick={handleSave} className="flex-1">저장</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ───────── 수강이력 수정 모달 ─────────
+function HistoryEditModal({ record, onClose, onSave, onDelete }) {
+  const [date, setDate] = useState(record.date || '');
+  const [time, setTime] = useState(record.time || '11:00');
+  const [status, setStatus] = useState(record.status || (record.cancelled ? 'cancelled_sameday' : 'attended'));
+
+  const statusOptions = [
+    { value: 'attended', label: '출석' },
+    { value: 'reserved', label: '예약 확정' },
+    { value: 'cancelled_advance', label: '예약 취소 (사전, 차감 X)' },
+    { value: 'cancelled_sameday', label: '당일 취소 (차감)' },
+    { value: 'no_show', label: '노쇼' },
+  ];
+
+  return (
+    <Modal open={true} onClose={onClose} title="수강이력 수정">
+      <div className="space-y-2.5">
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[11px]" style={{ color: theme.inkMute }}>날짜</label>
+            <input type="date" value={date} onChange={e => setDate(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg text-sm"
+              style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
+          </div>
+          <div>
+            <label className="text-[11px]" style={{ color: theme.inkMute }}>시간</label>
+            <select value={time} onChange={e => setTime(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg text-sm"
+              style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }}>
+              {TIME_PRESETS.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className="text-[11px]" style={{ color: theme.inkMute }}>상태</label>
+          <select value={status} onChange={e => setStatus(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg text-sm"
+            style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }}>
+            {statusOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+        <div className="rounded-lg p-2 text-[10.5px]" style={{ backgroundColor: theme.cardAlt2, color: theme.inkMute }}>
+          💡 수강이력을 수정하면 sessions 데이터가 바뀌어요. 차감(usedSessions)은 자동 처리되지 않으니 필요 시 수강권 수정으로 회수 조정하세요.
+        </div>
+        <div className="flex gap-2 pt-2">
+          <Button variant="outline" onClick={() => { if(confirm('이 수강이력을 삭제할까요?')) onDelete(); }} className="flex-1" style={{ color: theme.danger }}>삭제</Button>
+          <Button variant="outline" onClick={onClose} className="flex-1">취소</Button>
+          <Button onClick={() => onSave({ date, time, status })} className="flex-1">저장</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
