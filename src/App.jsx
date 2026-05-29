@@ -574,6 +574,7 @@ const PASS_PRESETS = [
 const DEFAULT_GROUP_SLOTS = ['11:00', '19:20', '20:50'];
 // 호환성 유지용 (기존 코드에서 사용)
 const TIME_PRESETS = ['11:00', '12:30', '15:00', '19:20', '20:50'];
+const TRIAL_FEE = 30000; // 체험비 (3만원)
 
 /* =========================================================
    SMS Templates
@@ -1651,42 +1652,24 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   const attendedCount = sortedDates.length;
   const remaining = Math.max(0, requiredCount - attendedCount);
   
-  // 도전 기간 종료 후 판정
+  // 도전 기간 종료 후 판정 — 결석 개념 없이 출석 회수만 본다
   if (todayMs > challengeEndMs) {
-    const allCovered = missedDays.length === 0 && attendedCount >= requiredCount;
+    const achieved = attendedCount >= requiredCount;
     return {
       eligible: true,
       completed: true,
-      achieved: allCovered,
+      achieved,
       weeks, bonus,
       challengeEndYMD,
       requiredDays: requiredCount,
       attendedDays: attendedCount,
-      missedDays,
-      message: allCovered 
-        ? `${weeks}주 빠짐없이 완주`
-        : `${missedDays.length}회 결석 (목표 미달)`,
+      message: achieved
+        ? `${requiredCount}회 출석 완주`
+        : `${requiredCount}회 미달 (${attendedCount}회 출석)`,
     };
   }
-  
-  // 진행 중 — 이미 결석이 있으면 탈락 확정
-  if (missedDays.length > 0) {
-    return {
-      eligible: true,
-      completed: false,
-      achieved: false,
-      challenging: false,
-      expired: true,
-      weeks, bonus,
-      challengeEndYMD,
-      requiredDays: requiredCount,
-      attendedDays: attendedCount,
-      missedDays,
-      message: `${missedDays.length}회 결석으로 탈락`,
-    };
-  }
-  
-  // 도전 중 — 아직 결석 없음
+
+  // 도전 중 — 기간 내 출석 채우면 됨 (안 온 날을 결석으로 치지 않음)
   return {
     eligible: true,
     completed: false,
@@ -1698,7 +1681,7 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
     attendedDays: attendedCount,
     remaining,
     message: remaining > 0 
-      ? `남은 ${remaining}회 빠짐없이`
+      ? `남은 ${remaining}회`
       : `완주 직전`,
   };
 }
@@ -5989,13 +5972,11 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                           </div>
                         );
                       }
-                      if (rsP.expired || (rsP.completed && !rsP.achieved)) {
-                        const missDates = (rsP.missedDays || []).map(d => fmtKRShort(d)).join(', ');
+                      if (rsP.completed && !rsP.achieved) {
                         return (
                           <div className="rounded-lg p-1.5 mt-2" style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }}>
                             <div className="text-[10.5px]" style={{ color: theme.inkMute }}>
-                              리듬 수련 — {rsP.missedDays?.length || 0}회 결석으로 대상 제외
-                              {missDates && <span style={{ color: theme.inkSoft }}> · {missDates}</span>}
+                              리듬 수련 — 기간 내 {rsP.requiredDays}회 미달 ({rsP.attendedDays}회 출석)
                             </div>
                           </div>
                         );
@@ -6147,14 +6128,12 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                         </div>
                       );
                     }
-                    // 탈락(진행 중 결석) 또는 미달성(도전 기간 종료, 결석 있음)
-                    if (rsP.expired || (rsP.completed && !rsP.achieved)) {
-                      const missDates = (rsP.missedDays || []).map(d => fmtKRShort(d)).join(', ');
+                    // 도전 기간 종료, 회수 미달
+                    if (rsP.completed && !rsP.achieved) {
                       return (
                         <div className="rounded-lg p-2 mb-2" style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }}>
                           <div className="text-[10.5px]" style={{ color: theme.inkMute }}>
-                            리듬 수련 — {rsP.missedDays?.length || 0}회 결석으로 대상 제외
-                            {missDates && <span style={{ color: theme.inkSoft }}> · {missDates}</span>}
+                            리듬 수련 — 기간 내 {rsP.requiredDays}회 미달 ({rsP.attendedDays}회 출석)
                           </div>
                         </div>
                       );
@@ -10107,11 +10086,11 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
     const converted = monthTrials.filter(t => t.status === '회원전환').length;
     const conversionRate = monthTrials.length > 0 ? Math.round(converted / monthTrials.length * 100) : 0;
     
-    // 체험 수익: 미전환 + 입금완료 = 1만원
+    // 체험 수익: 미전환 + 입금완료 = 체험비
     const trialPaidCount = monthTrials.filter(t => 
       t.status !== '회원전환' && t.paid === true
     ).length;
-    const trialRevenue = trialPaidCount * 10000;
+    const trialRevenue = trialPaidCount * TRIAL_FEE;
     revenue += trialRevenue;
     netRevenue += trialRevenue; // 체험비는 보통 계좌이체라 수수료 X
     byCat.trial = (byCat.trial || 0) + trialRevenue;
@@ -10169,7 +10148,7 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
           const trial = trialByName[p.memberName];
           if (trial?.status === '회원전환') return; // 무료 체험
           if (trial?.paid === true) {
-            byTimeMap[time].revenue += 10000;
+            byTimeMap[time].revenue += TRIAL_FEE;
             byTimeMap[time].attendees++;
           }
           return;
@@ -10252,7 +10231,7 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
       });
     });
     const prevTrials = trials.filter(t => (t.date || t.createdAt || '').startsWith(prevYM) && t.status !== '회원전환' && t.paid === true);
-    prevRevenue += prevTrials.length * 10000;
+    prevRevenue += prevTrials.length * TRIAL_FEE;
     
     const prevMonthDelta = prevRevenue > 0 ? Math.round(((stats.revenue - prevRevenue) / prevRevenue) * 100) : null;
     const avgPerMember = activeMembers > 0 ? Math.round(stats.revenue / activeMembers / 1000) * 1000 : 0;
@@ -10449,8 +10428,8 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
             return;
           }
           if (trial?.paid === true) {
-            // 미전환 + 입금완료 → 1만원
-            slots[s.time].totalRevenue += 10000;
+            // 미전환 + 입금완료 → 체험비
+            slots[s.time].totalRevenue += TRIAL_FEE;
           }
           return;
         }
@@ -10582,7 +10561,7 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
               />
             )}
             <InsightRow label="회원당 평균 객단가" value={<strong>{revenueInsight.avgPerMember.toLocaleString()}원</strong>} />
-            <InsightRow label="체험 수익" value={<strong>{(stats.trialRevenue || 0).toLocaleString()}원</strong>} sub={`미전환 입금 ${revenueInsight.trialPaidCount}명 × 1만원`} />
+            <InsightRow label="체험 수익" value={<strong>{(stats.trialRevenue || 0).toLocaleString()}원</strong>} sub={`미전환 입금 ${revenueInsight.trialPaidCount}명 × 3만원`} />
             {revenueInsight.expectedNextMonth > 0 && (
               <InsightRow label="예상 다음달 수익" value={<strong>{revenueInsight.expectedNextMonth.toLocaleString()}원</strong>} sub={`시작예정 ${revenueInsight.expectedCount}건`} />
             )}
