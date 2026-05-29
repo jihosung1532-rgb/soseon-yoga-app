@@ -1652,9 +1652,9 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   const attendedCount = sortedDates.length;
   const remaining = Math.max(0, requiredCount - attendedCount);
   
-  // 도전 기간 종료 후 판정 — 결석 개념 없이 출석 회수만 본다
+  // 도전 기간 종료 후 판정 — 결석 0회 + 회수 달성 필요
   if (todayMs > challengeEndMs) {
-    const achieved = attendedCount >= requiredCount;
+    const achieved = missedDays.length === 0 && attendedCount >= requiredCount;
     return {
       eligible: true,
       completed: true,
@@ -1663,13 +1663,33 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
       challengeEndYMD,
       requiredDays: requiredCount,
       attendedDays: attendedCount,
+      missedDays,
       message: achieved
         ? `${requiredCount}회 출석 완주`
-        : `${requiredCount}회 미달 (${attendedCount}회 출석)`,
+        : (missedDays.length > 0
+            ? `${missedDays.length}회 결석으로 미달`
+            : `${requiredCount}회 미달 (${attendedCount}회 출석)`),
     };
   }
 
-  // 도전 중 — 기간 내 출석 채우면 됨 (안 온 날을 결석으로 치지 않음)
+  // 진행 중 — 이미 결석(지나간 화/목 중 안 온 날)이 있으면 탈락 확정
+  if (missedDays.length > 0) {
+    return {
+      eligible: true,
+      completed: false,
+      achieved: false,
+      challenging: false,
+      expired: true,
+      weeks, bonus,
+      challengeEndYMD,
+      requiredDays: requiredCount,
+      attendedDays: attendedCount,
+      missedDays,
+      message: `${missedDays.length}회 결석으로 대상 제외`,
+    };
+  }
+
+  // 도전 중 — 아직 결석 없음
   return {
     eligible: true,
     completed: false,
@@ -1681,7 +1701,7 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
     attendedDays: attendedCount,
     remaining,
     message: remaining > 0 
-      ? `남은 ${remaining}회`
+      ? `남은 ${remaining}회 빠짐없이`
       : `완주 직전`,
   };
 }
@@ -5972,11 +5992,13 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                           </div>
                         );
                       }
-                      if (rsP.completed && !rsP.achieved) {
+                      if (rsP.expired || (rsP.completed && !rsP.achieved)) {
                         return (
                           <div className="rounded-lg p-1.5 mt-2" style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }}>
                             <div className="text-[10.5px]" style={{ color: theme.inkMute }}>
-                              리듬 수련 — 기간 내 {rsP.requiredDays}회 미달 ({rsP.attendedDays}회 출석)
+                              리듬 수련 — {rsP.missedDays?.length > 0
+                                ? `${rsP.missedDays.length}회 결석으로 대상 제외`
+                                : `기간 내 ${rsP.requiredDays}회 미달 (${rsP.attendedDays}회 출석)`}
                             </div>
                           </div>
                         );
@@ -6128,12 +6150,13 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
                         </div>
                       );
                     }
-                    // 도전 기간 종료, 회수 미달
-                    if (rsP.completed && !rsP.achieved) {
+                    if (rsP.expired || (rsP.completed && !rsP.achieved)) {
                       return (
                         <div className="rounded-lg p-2 mb-2" style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }}>
                           <div className="text-[10.5px]" style={{ color: theme.inkMute }}>
-                            리듬 수련 — 기간 내 {rsP.requiredDays}회 미달 ({rsP.attendedDays}회 출석)
+                            리듬 수련 — {rsP.missedDays?.length > 0
+                              ? `${rsP.missedDays.length}회 결석으로 대상 제외`
+                              : `기간 내 ${rsP.requiredDays}회 미달 (${rsP.attendedDays}회 출석)`}
                           </div>
                         </div>
                       );
