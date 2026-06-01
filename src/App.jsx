@@ -4738,6 +4738,95 @@ function MembersView({ members, setMembers, sessions, setSessions, groupSlots, c
     toast('회원이 삭제되었어요');
   };
 
+  // ───────── 수강이력 수정/삭제 (MemberDetail에서 호출) ─────────
+  // sessions 슬롯의 participant status/날짜/시간을 바꾸고 DB 저장.
+  // 차감(usedSessions/sessionDates)도 isPartCharged 기준으로 자동 동기화.
+  const applyChargeAdjust = async (memberId, passId, oldDateStr, newDateStr, oldCharged, newCharged) => {
+    if (!passId) return; // 패스 연결 없으면 차감 처리 대상 아님
+    if (oldCharged === newCharged && oldDateStr === newDateStr) return;
+    const updatedMembers = members.map(m => {
+      if (m.id !== memberId) return m;
+      return {
+        ...m,
+        passes: (m.passes || []).map(p => {
+          if (p.id !== passId) return p;
+          let sessionDates = [...(p.sessionDates || [])];
+          let used = p.usedSessions || 0;
+          // 옛 차감 제거
+          if (oldCharged) {
+            const idx = sessionDates.lastIndexOf(oldDateStr);
+            if (idx >= 0) sessionDates.splice(idx, 1);
+            used = Math.max(0, used - 1);
+          }
+          // 새 차감 추가
+          if (newCharged) {
+            sessionDates.push(newDateStr);
+            used = Math.min(p.totalSessions ?? used + 1, used + 1);
+          }
+          return { ...p, sessionDates, usedSessions: used };
+        }),
+      };
+    });
+    setMembers(updatedMembers);
+    await saveKey(K.members, updatedMembers);
+  };
+
+  const saveHistoryRecord = async (rec, updated) => {
+    // rec: 기존 기록 {memberId, memberName, passId, date, time, status, sessionNumber, totalSessions}
+    // updated: {date, time, status}
+    const oldKey = `${rec.date}_${rec.time}`;
+    const newKey = `${updated.date}_${updated.time}`;
+    const oldDateTime = { date: rec.date, time: rec.time };
+    const newDateTime = { date: updated.date, time: updated.time };
+    const oldPart = { status: rec.status, cancelled: rec.cancelled, passId: rec.passId, memberId: rec.memberId };
+    const newPart = { status: updated.status, passId: rec.passId, memberId: rec.memberId };
+    const oldCharged = !!(rec.passId && isPartCharged(oldPart, oldDateTime));
+    const newCharged = !!(rec.passId && isPartCharged(newPart, newDateTime));
+
+    const next = { ...(sessions || {}) };
+    // 옛 슬롯에서 제거
+    if (next[oldKey]) {
+      const op = (next[oldKey].participants || []).filter(p => p.memberId !== rec.memberId);
+      if (op.length) next[oldKey] = { ...next[oldKey], participants: op };
+      else delete next[oldKey];
+    }
+    // 새 슬롯에 추가
+    if (!next[newKey]) next[newKey] = { date: updated.date, time: updated.time, participants: [] };
+    const myPart = {
+      memberId: rec.memberId,
+      memberName: rec.memberName,
+      passId: rec.passId,
+      status: updated.status,
+      sessionNumber: rec.sessionNumber,
+      totalSessions: rec.totalSessions,
+    };
+    next[newKey] = {
+      ...next[newKey],
+      participants: [...(next[newKey].participants || []).filter(p => p.memberId !== rec.memberId), myPart],
+    };
+    setSessions(next);
+    await saveKey(K.sessions, next);
+
+    // 차감 동기화
+    await applyChargeAdjust(rec.memberId, rec.passId, rec.date, updated.date, oldCharged, newCharged);
+  };
+
+  const deleteHistoryRecord = async (rec) => {
+    const key = `${rec.date}_${rec.time}`;
+    const oldPart = { status: rec.status, cancelled: rec.cancelled, passId: rec.passId, memberId: rec.memberId };
+    const oldCharged = !!(rec.passId && isPartCharged(oldPart, { date: rec.date, time: rec.time }));
+    const next = { ...(sessions || {}) };
+    if (next[key]) {
+      const op = (next[key].participants || []).filter(p => p.memberId !== rec.memberId);
+      if (op.length) next[key] = { ...next[key], participants: op };
+      else delete next[key];
+    }
+    setSessions(next);
+    await saveKey(K.sessions, next);
+    // 삭제 = 차감되어 있었으면 회수 되돌리기
+    await applyChargeAdjust(rec.memberId, rec.passId, rec.date, rec.date, oldCharged, false);
+  };
+
   // Classify member by active pass category
   const memberCategory = (m) => {
     const activePasses = (m.passes || []).filter(p => !p.archived);
@@ -4860,6 +4949,7 @@ function MembersView({ members, setMembers, sessions, setSessions, groupSlots, c
           onClose={() => setOpenId(null)}
           onUpdate={updateMember}
           onDelete={() => deleteMember(openMember.id)}
+          onSaveHistory={saveHistoryRecord} onDeleteHistory={deleteHistoryRecord}
           sessions={sessions} groupSlots={groupSlots} closedDays={closedDays} toast={toast} onSendSMS={onSendSMS}
         />
       )}
@@ -5576,7 +5666,7 @@ function HistoryTabContent({ history, passes, onEditRecord }) {
   );
 }
 
-function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlots, closedDays = [], toast, onSendSMS }) {
+function MemberDetail({ member, onClose, onUpdate, onDelete, onSaveHistory, onDeleteHistory, sessions, groupSlots, closedDays = [], toast, onSendSMS }) {
   const [tab, setTab] = useState('passes');
   const [editing, setEditing] = useState(false);
   const [addingPass, setAddingPass] = useState(false);
@@ -6304,45 +6394,13 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, sessions, groupSlot
           <HistoryEditModal
             record={editingHistory}
             onClose={() => setEditingHistory(null)}
-            onSave={(updated) => {
-              // sessions에서 해당 슬롯 찾아 participant status/cancelled 변경
-              const oldKey = `${editingHistory.date}_${editingHistory.time}`;
-              const newKey = `${updated.date}_${updated.time}`;
-              setSessions(prev => {
-                const next = { ...prev };
-                // 옛 키에서 참여자 제거
-                if (next[oldKey]) {
-                  const oldParts = (next[oldKey].participants || []).filter(p => p.memberId !== editingHistory.memberId);
-                  next[oldKey] = { ...next[oldKey], participants: oldParts };
-                }
-                // 새 키에 참여자 추가 (없으면 만들기)
-                if (!next[newKey]) {
-                  next[newKey] = { date: updated.date, time: updated.time, participants: [] };
-                }
-                const myPart = {
-                  memberId: editingHistory.memberId,
-                  memberName: editingHistory.memberName,
-                  passId: editingHistory.passId,
-                  status: updated.status,
-                  sessionNumber: editingHistory.sessionNumber,
-                  totalSessions: editingHistory.totalSessions,
-                };
-                next[newKey] = { ...next[newKey], participants: [...(next[newKey].participants || []).filter(p => p.memberId !== editingHistory.memberId), myPart] };
-                return next;
-              });
+            onSave={async (updated) => {
+              await onSaveHistory(editingHistory, updated);
               setEditingHistory(null);
               toast('✓ 수강이력 수정 완료');
             }}
-            onDelete={() => {
-              const key = `${editingHistory.date}_${editingHistory.time}`;
-              setSessions(prev => {
-                const next = { ...prev };
-                if (next[key]) {
-                  const parts = (next[key].participants || []).filter(p => p.memberId !== editingHistory.memberId);
-                  next[key] = { ...next[key], participants: parts };
-                }
-                return next;
-              });
+            onDelete={async () => {
+              await onDeleteHistory(editingHistory);
               setEditingHistory(null);
               toast('✓ 수강이력 삭제 완료');
             }}
@@ -12362,7 +12420,7 @@ function HistoryEditModal({ record, onClose, onSave, onDelete }) {
           </select>
         </div>
         <div className="rounded-lg p-2 text-[10.5px]" style={{ backgroundColor: theme.cardAlt2, color: theme.inkMute }}>
-          💡 수강이력을 수정하면 sessions 데이터가 바뀌어요. 차감(usedSessions)은 자동 처리되지 않으니 필요 시 수강권 수정으로 회수 조정하세요.
+          💡 상태를 출석↔취소로 바꾸면 수강권 차감(횟수)도 자동으로 맞춰져요.
         </div>
         <div className="flex gap-2 pt-2">
           <Button variant="outline" onClick={() => { if(confirm('이 수강이력을 삭제할까요?')) onDelete(); }} className="flex-1" style={{ color: theme.danger }}>삭제</Button>
