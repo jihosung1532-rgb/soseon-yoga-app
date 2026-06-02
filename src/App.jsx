@@ -3821,6 +3821,54 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     });
   };
 
+  // "수업 완료" — 그 슬롯의 미처리(reserved) 회원 전원을 출석+차감 처리
+  const completeSession = async (date, item) => {
+    const dateStr = toYMD(date);
+    const key = `${dateStr}_${item.time}`;
+    const sess = sessions[key];
+    if (!sess?.participants?.length) { toast('처리할 참여자가 없어요'); return; }
+    const cat = item.category === 'private' ? 'private' : 'group';
+
+    const newParts = sess.participants.map(p => {
+      // 이미 출석/취소/노쇼 처리된 사람은 그대로
+      if (p.cancelled || p.status === 'attended' || p.status === 'no_show') return p;
+      const next = { ...p, status: 'attended' };
+      // 체험/게스트는 차감 없음
+      if (next.isTrial || !next.memberId) return next;
+      // passId 이미 있으면 그대로 (저장 시 차감됨)
+      if (next.passId) return next;
+      // passId 없으면 회수 남은 패스 우선 매칭
+      const member = (members || []).find(m => m.id === next.memberId);
+      if (!member?.passes?.length) return next;
+      const cands = member.passes.filter(pp =>
+        !pp.archived && pp.category === cat
+        && pp.startDate && pp.expiryDate
+        && pp.startDate <= dateStr && pp.expiryDate >= dateStr
+      );
+      const matched = cands.find(pp => (pp.sessionDates || []).length < (pp.totalSessions || 0)) || cands[0];
+      if (matched) {
+        next.passId = matched.id;
+        next.totalSessions = matched.totalSessions;
+        const dates = matched.sessionDates || [];
+        next.sessionNumber = dates.includes(dateStr) ? dates.length : dates.length + 1;
+      }
+      return next;
+    });
+
+    await saveSession(date, item.time, { ...sess, participants: newParts });
+    const n = newParts.filter(p => !p.cancelled && p.status === 'attended' && !p.isTrial).length;
+    toast(`✓ 수업 완료 — ${n}명 출석 처리`);
+  };
+
+  // 슬롯에 아직 출석 안 된(reserved) 정규 회원이 있는지
+  const hasPendingAttendance = (date, item) => {
+    const sess = sessions[`${toYMD(date)}_${item.time}`];
+    if (!sess?.participants?.length) return false;
+    return sess.participants.some(p =>
+      !p.isTrial && !p.cancelled && p.status !== 'attended' && p.status !== 'no_show'
+    );
+  };
+
   // "+ 수업 추가" 버튼: 새 수업 모달 (시간/카테고리 선택부터)
   const onAddClass = (date) => {
     if (HOLIDAYS.has(toYMD(date))) return;
@@ -3957,14 +4005,16 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                     const isNext = cardKey === nextClassKey;
                     
                     return (
-                      <div key={cardKey} onClick={() => onCardClick(d, item)}
-                        className="rounded-xl mb-1.5 px-3 py-2.5 flex gap-3 cursor-pointer transition-all"
+                      <div key={cardKey}
+                        className="rounded-xl mb-1.5 transition-all"
                         style={{
                           backgroundColor: item.isAuto ? 'transparent' : theme.card,
                           border: item.isAuto ? `1px dashed ${theme.line}` 
                                   : isNext ? `1px solid ${theme.accent2}` 
                                   : `1px solid ${theme.line}`,
                         }}>
+                        <div onClick={() => onCardClick(d, item)}
+                          className="px-3 py-2.5 flex gap-3 cursor-pointer">
                         {/* Time block */}
                         <div className="flex flex-col justify-center pr-3 flex-shrink-0"
                           style={{ minWidth: 56, borderRight: `1px solid ${theme.line}` }}>
@@ -4061,6 +4111,18 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                             );
                           })()}
                         </div>
+                        </div>
+                        {/* 수업 완료 버튼 — 지난(시작 시각 경과) 소그룹/개인 수업에 미처리 회원 있을 때 */}
+                        {!item.isAuto && fromYMDHM(toYMD(d), item.time).getTime() <= Date.now() && hasPendingAttendance(d, item) && (
+                          <div className="px-3 pb-2.5" style={{ paddingLeft: 71 }}>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); completeSession(d, item); }}
+                              className="text-[12px] font-semibold px-3 py-1.5 rounded-lg"
+                              style={{ backgroundColor: theme.accent, color: '#FFF', border: 'none' }}>
+                              ✓ 수업 완료
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
