@@ -3840,12 +3840,18 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
       // passId 없으면 회수 남은 패스 우선 매칭
       const member = (members || []).find(m => m.id === next.memberId);
       if (!member?.passes?.length) return next;
-      const cands = member.passes.filter(pp =>
-        !pp.archived && pp.category === cat
-        && pp.startDate && pp.expiryDate
+      // 그날 유효한(만료 전·시작 후) 패스
+      const valid = member.passes.filter(pp =>
+        !pp.archived && pp.startDate && pp.expiryDate
         && pp.startDate <= dateStr && pp.expiryDate >= dateStr
       );
-      const matched = cands.find(pp => (pp.sessionDates || []).length < (pp.totalSessions || 0)) || cands[0];
+      const hasRoom = pp => (pp.sessionDates || []).length < (pp.totalSessions || 0);
+      // 우선순위: 카테고리 일치+회수남음 → 회수남음 → 카테고리 일치 → 아무거나
+      const matched =
+        valid.find(pp => pp.category === cat && hasRoom(pp)) ||
+        valid.find(pp => hasRoom(pp)) ||
+        valid.find(pp => pp.category === cat) ||
+        valid[0];
       if (matched) {
         next.passId = matched.id;
         next.totalSessions = matched.totalSessions;
@@ -4763,9 +4769,20 @@ function MembersView({ members, setMembers, sessions, setSessions, groupSlots, c
     await saveKey(K.members, list);
   };
 
+  // 안전한 회원 단건 추가/수정 - 항상 최신 members 기준 (stale closure 방지)
+  const upsertMember = async (updated) => {
+    let nextList = null;
+    setMembers(prev => {
+      const exists = prev.some(m => m.id === updated.id);
+      nextList = exists ? prev.map(m => m.id === updated.id ? updated : m) : [...prev, updated];
+      return nextList;
+    });
+    if (nextList) await saveKey(K.members, nextList);
+  };
+
   const createMember = async (data) => {
     const m = { id: uid(), ...data, passes: [], memoTimeline: [], progressLog: [], createdAt: toYMD(new Date()) };
-    await saveMembers([...members, m]);
+    await upsertMember(m);
     setAdding(false);
     toast(data.fixedSlots?.length ? '회원 등록 — 고정 슬롯이 일정에 표시됩니다' : '회원이 등록되었어요');
   };
@@ -4821,7 +4838,7 @@ function MembersView({ members, setMembers, sessions, setSessions, groupSlots, c
   };
 
   const updateMember = async (updated) => {
-    await saveMembers(members.map(m => m.id === updated.id ? updated : m));
+    await upsertMember(updated);
   };
 
   const deleteMember = async (id) => {
@@ -11577,15 +11594,16 @@ export default function App() {
             // passId 없음 → 회원의 활성 패스 중 회수 남은 거 자동 매칭
             const member = memberMap.get(p.memberId);
             if (!member?.passes?.length) return p;
-            const candidates = member.passes.filter(pp =>
-              !pp.archived && pp.category === 'group'
-              && pp.startDate && pp.expiryDate
+            const valid = member.passes.filter(pp =>
+              !pp.archived && pp.startDate && pp.expiryDate
               && pp.startDate <= s.date && pp.expiryDate >= s.date
             );
-            // 회수 남은 패스 우선
-            const matched = candidates.find(pp =>
-              (pp.sessionDates || []).length < (pp.totalSessions || 0)
-            ) || candidates[0];
+            const hasRoom = pp => (pp.sessionDates || []).length < (pp.totalSessions || 0);
+            const matched =
+              valid.find(pp => pp.category === 'group' && hasRoom(pp)) ||
+              valid.find(pp => hasRoom(pp)) ||
+              valid.find(pp => pp.category === 'group') ||
+              valid[0];
             if (!matched) {
               // 매칭 패스 없으면 attended만 박고 차감은 안 함
               partsChanged = true;
