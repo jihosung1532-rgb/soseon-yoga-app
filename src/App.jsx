@@ -4321,6 +4321,36 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
     // 호환용 - 기존 코드가 호출
     setParts(parts.map((p, i) => i === idx ? { ...p, cancelled: kind } : p));
   };
+
+  // 출석 처리 — passId 없으면 회수 남은 패스 자동 매칭 (autoMarkAttendance와 동일 규칙)
+  const markAttended = (idx) => {
+    setParts(parts.map((p, i) => {
+      if (i !== idx) return p;
+      const next = { ...p, status: 'attended' };
+      delete next.cancelled;
+      delete next.cancelNote;
+      if (next.passId || next.isTrial || !next.memberId) return next;
+      const member = (members || []).find(m => m.id === next.memberId);
+      if (!member?.passes?.length) return next;
+      const candidates = member.passes.filter(pp =>
+        !pp.archived && pp.category === (category === 'private' ? 'private' : 'group')
+        && pp.startDate && pp.expiryDate
+        && pp.startDate <= date && pp.expiryDate >= date
+      );
+      // 회수 남은 패스 우선, 없으면 첫 후보
+      const matched = candidates.find(pp =>
+        (pp.sessionDates || []).length < (pp.totalSessions || 0)
+      ) || candidates[0];
+      if (matched) {
+        next.passId = matched.id;
+        next.totalSessions = matched.totalSessions;
+        // 표시용 회차 = 차감 후 위치 (sessionDates 길이 + 1, 단 이미 든 날이면 그대로)
+        const dates = matched.sessionDates || [];
+        next.sessionNumber = dates.includes(date) ? dates.length : dates.length + 1;
+      }
+      return next;
+    }));
+  };
   const undoCancel = (idx) => {
     setParts(parts.map((p, i) => {
       if (i !== idx) return p;
@@ -4468,8 +4498,15 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
                       <div className="text-[10px] mt-1" style={{ color: theme.inkMute }}>메모: {p.cancelNote}</div>
                     )}
                     {/* 상태 변경 버튼 */}
-                    {!isCancelled && p.status !== 'no_show' && p.status !== 'reserved' ? (
+                    {!isCancelled && p.status !== 'no_show' ? (
                       <div className="flex gap-1 mt-1.5 flex-wrap">
+                        {p.status !== 'attended' && (
+                          <button onClick={() => markAttended(i)}
+                            className="text-[11px] px-2 py-0.5 rounded-md font-semibold"
+                            style={{ color: '#FFF', backgroundColor: theme.accent, border: `1px solid ${theme.accent}` }}>
+                            ✓ 출석
+                          </button>
+                        )}
                         <button onClick={() => setStatus(i, 'cancelled_advance')}
                           className="text-[11px] px-2 py-0.5 rounded-md"
                           style={{ color: theme.inkMute, border: `1px solid ${theme.line}` }}>
