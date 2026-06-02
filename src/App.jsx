@@ -4120,8 +4120,8 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                           })()}
                         </div>
                         </div>
-                        {/* 수업 완료 버튼 / 완료 표시 — 지난(시작 시각 경과) 수업 */}
-                        {!item.isAuto && fromYMDHM(toYMD(d), item.time).getTime() <= Date.now() && hasPendingAttendance(d, item) && (
+                        {/* 수업 완료 버튼 / 완료 표시 */}
+                        {!item.isAuto && hasPendingAttendance(d, item) && (
                           <div className="px-3 pb-2.5" style={{ paddingLeft: 71 }}>
                             <button
                               onClick={(e) => { e.stopPropagation(); completeSession(d, item); }}
@@ -4131,7 +4131,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                             </button>
                           </div>
                         )}
-                        {!item.isAuto && fromYMDHM(toYMD(d), item.time).getTime() <= Date.now() && !hasPendingAttendance(d, item) && isSessionDone(d, item) && (
+                        {!item.isAuto && !hasPendingAttendance(d, item) && isSessionDone(d, item) && (
                           <div className="px-3 pb-2.5" style={{ paddingLeft: 71 }}>
                             <span className="text-[11px] font-medium px-2 py-1 rounded-md inline-flex items-center gap-1"
                               style={{ backgroundColor: theme.cardAlt2, color: theme.inkMute }}>
