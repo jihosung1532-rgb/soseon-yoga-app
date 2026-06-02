@@ -3869,6 +3869,14 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     );
   };
 
+  // 슬롯이 처리 완료됐는지 (출석한 정규 회원 1명 이상 + 미처리 없음)
+  const isSessionDone = (date, item) => {
+    const sess = sessions[`${toYMD(date)}_${item.time}`];
+    if (!sess?.participants?.length) return false;
+    const attended = sess.participants.filter(p => !p.isTrial && p.status === 'attended' && !p.cancelled);
+    return attended.length > 0 && !hasPendingAttendance(date, item);
+  };
+
   // "+ 수업 추가" 버튼: 새 수업 모달 (시간/카테고리 선택부터)
   const onAddClass = (date) => {
     if (HOLIDAYS.has(toYMD(date))) return;
@@ -4112,7 +4120,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                           })()}
                         </div>
                         </div>
-                        {/* 수업 완료 버튼 — 지난(시작 시각 경과) 소그룹/개인 수업에 미처리 회원 있을 때 */}
+                        {/* 수업 완료 버튼 / 완료 표시 — 지난(시작 시각 경과) 수업 */}
                         {!item.isAuto && fromYMDHM(toYMD(d), item.time).getTime() <= Date.now() && hasPendingAttendance(d, item) && (
                           <div className="px-3 pb-2.5" style={{ paddingLeft: 71 }}>
                             <button
@@ -4121,6 +4129,14 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                               style={{ backgroundColor: theme.accent, color: '#FFF', border: 'none' }}>
                               ✓ 수업 완료
                             </button>
+                          </div>
+                        )}
+                        {!item.isAuto && fromYMDHM(toYMD(d), item.time).getTime() <= Date.now() && !hasPendingAttendance(d, item) && isSessionDone(d, item) && (
+                          <div className="px-3 pb-2.5" style={{ paddingLeft: 71 }}>
+                            <span className="text-[11px] font-medium px-2 py-1 rounded-md inline-flex items-center gap-1"
+                              style={{ backgroundColor: theme.cardAlt2, color: theme.inkMute }}>
+                              ✓ 수업 완료됨
+                            </span>
                           </div>
                         )}
                       </div>
