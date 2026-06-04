@@ -6461,6 +6461,31 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                               → {p.convertedNote}
                             </div>
                           )}
+                          {(() => {
+                            // 이 수강권에 적용된 혜택 뱃지들
+                            const badges = [];
+                            if (p.mayEventBonus > 0) badges.push({ label: `5월 이벤트 +${p.mayEventBonus}`, bg: '#F5EBC8', fg: '#6B5410' });
+                            if (p.reviewEventBonus > 0) badges.push({ label: `리뷰 이벤트 +${p.reviewEventBonus}`, bg: '#F5EBC8', fg: '#6B5410' });
+                            if (p.rhythmBonus > 0) badges.push({ label: `리듬 완주 보상 +${p.rhythmBonus}`, bg: '#DCEAD9', fg: '#2F5D3A' });
+                            // 리듬수련 도전 결과 (이 패스 기준)
+                            const rs = rhythmStatus(p, closedDays);
+                            if (rs && !p.rhythmBonus) {
+                              if (rs.achieved) badges.push({ label: '리듬 완주 ✓', bg: '#DCEAD9', fg: '#2F5D3A' });
+                              else if (rs.missedDays?.length > 0) badges.push({ label: `리듬 제외 (${rs.missedDays.length}회 결석)`, bg: theme.cardAlt2, fg: theme.inkMute });
+                              else if (rs.expired || rs.completed) badges.push({ label: '리듬 미달', bg: theme.cardAlt2, fg: theme.inkMute });
+                            }
+                            if (badges.length === 0) return null;
+                            return (
+                              <div className="flex flex-wrap gap-1 mt-1.5">
+                                {badges.map((b, bi) => (
+                                  <span key={bi} className="text-[9.5px] font-medium px-1.5 py-0.5 rounded"
+                                    style={{ backgroundColor: b.bg, color: b.fg }}>
+                                    {b.label}
+                                  </span>
+                                ))}
+                              </div>
+                            );
+                          })()}
                         </div>
                         <Chip tone="neutral" size="sm">{p.convertedTo ? '전환됨' : (p.usedSessions >= p.totalSessions ? '완료' : '만료')}</Chip>
                       </div>
