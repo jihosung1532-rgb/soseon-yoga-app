@@ -3349,7 +3349,7 @@ function Stat({ label, value, color }) {
 /* =========================================================
    Schedule View
    ========================================================= */
-function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {}, setClassLog, groupSlots, setGroupSlots, closedDays = [], setClosedDays, toast }) {
+function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {}, setClassLog, groupSlots, setGroupSlots, closedDays = [], setClosedDays, toast, goto }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [slotModal, setSlotModal] = useState(null);
   const [slotsManagerOpen, setSlotsManagerOpen] = useState(false);
@@ -4169,7 +4169,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
       {slotModal && (
         <SessionEditor
           slot={slotModal} members={members} setMembers={setMembers} saveMembers={saveMembers} groupSlots={groupSlots}
-          toast={toast}
+          toast={toast} goto={goto}
           onClose={() => setSlotModal(null)}
           onSave={async (data) => {
             const saveTime = data.time || slotModal.time;
@@ -4284,7 +4284,7 @@ function MemberSearchPicker({ members, selectedId, onChange, onAdd, existingPart
   );
 }
 
-function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toast, onClose, onSave }) {
+function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toast, onClose, onSave, goto }) {
   const existing = slot.existing;
   const isNewMode = !!slot.isNew;
   
@@ -4548,8 +4548,15 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
                         <span className="text-sm font-medium" style={{
                           color: p.status === 'no_show' || isCharged ? theme.danger : theme.ink,
                           textDecoration: isCancelled ? 'line-through' : 'none',
-                        }}>
+                          cursor: (!p.isTrial && p.memberId && goto) ? 'pointer' : 'default',
+                        }}
+                          onClick={(!p.isTrial && p.memberId && goto) ? (e) => {
+                            e.stopPropagation();
+                            onClose?.();
+                            goto('members', { openId: p.memberId });
+                          } : undefined}>
                           {p.memberName}
+                          {(!p.isTrial && p.memberId && goto) && <span style={{ fontSize: 10, color: theme.inkMute, marginLeft: 3 }}>›</span>}
                         </span>
                         {p.sessionNumber && p.totalSessions && !isCancelled && p.status !== 'reserved' && <Chip tone="accent" size="sm">{p.sessionNumber}/{p.totalSessions}</Chip>}
                         {p.isTrial && <Chip tone="peach" size="sm">체험</Chip>}
@@ -4756,8 +4763,17 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
 /* =========================================================
    Members View + Detail
    ========================================================= */
-function MembersView({ members, setMembers, sessions, setSessions, groupSlots, closedDays = [], toast, onSendSMS }) {
+function MembersView({ members, setMembers, sessions, setSessions, groupSlots, closedDays = [], toast, onSendSMS, pendingOpenId, onConsumeOpenId }) {
   const [openId, setOpenId] = useState(null);
+  const [openInitialTab, setOpenInitialTab] = useState(null);
+  // 다른 탭에서 특정 회원으로 이동 요청 시 자동으로 상세 열기
+  useEffect(() => {
+    if (pendingOpenId) {
+      setOpenId(pendingOpenId);
+      setOpenInitialTab('history');
+      onConsumeOpenId?.();
+    }
+  }, [pendingOpenId]);
   const [adding, setAdding] = useState(false);
   const [photoImporting, setPhotoImporting] = useState(false);
   const [filterType, setFilterType] = useState('all'); // all | group | private
@@ -5078,7 +5094,8 @@ function MembersView({ members, setMembers, sessions, setSessions, groupSlots, c
       {openMember && (
         <MemberDetail
           member={openMember}
-          onClose={() => setOpenId(null)}
+          onClose={() => { setOpenId(null); setOpenInitialTab(null); }}
+          initialTab={openInitialTab}
           onUpdate={updateMember}
           onDelete={() => deleteMember(openMember.id)}
           onSaveHistory={saveHistoryRecord} onDeleteHistory={deleteHistoryRecord}
@@ -5798,8 +5815,8 @@ function HistoryTabContent({ history, passes, onEditRecord }) {
   );
 }
 
-function MemberDetail({ member, onClose, onUpdate, onDelete, onSaveHistory, onDeleteHistory, sessions, groupSlots, closedDays = [], toast, onSendSMS }) {
-  const [tab, setTab] = useState('passes');
+function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveHistory, onDeleteHistory, sessions, groupSlots, closedDays = [], toast, onSendSMS }) {
+  const [tab, setTab] = useState(initialTab || 'passes');
   const [editing, setEditing] = useState(false);
   const [addingPass, setAddingPass] = useState(false);
   const [convertingPass, setConvertingPass] = useState(null);
@@ -6126,7 +6143,10 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, onSaveHistory, onDe
             })()}
 
             {(() => {
-              const activePasses = (member.passes || []).filter(p => !p.archived);
+              const today = toYMD(new Date());
+              const isDonePass = (p) => (p.usedSessions >= p.totalSessions) || (p.expiryDate < today);
+              // 진행 중인(완료/만료 아님) 패스만 펼쳐서 표시
+              const activePasses = (member.passes || []).filter(p => !p.archived && !isDonePass(p));
               // 묶음 그룹화: bundleOf 있는 것끼리 모으기
               const groups = []; // [{ bundleName, passes: [...] }, { bundleName: null, passes: [singlePass] }]
               const bundleMap = {};
@@ -6416,14 +6436,19 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, onSaveHistory, onDe
               });
             })()}
 
-            {/* Archived passes (converted) */}
-            {(member.passes || []).filter(p => p.archived).length > 0 && (
+            {/* 이전·완료 수강권 (archived + 완료/만료) */}
+            {(() => {
+              const today = toYMD(new Date());
+              const isDonePass = (p) => (p.usedSessions >= p.totalSessions) || (p.expiryDate < today);
+              const pastPasses = (member.passes || []).filter(p => p.archived || isDonePass(p));
+              if (pastPasses.length === 0) return null;
+              return (
               <details className="rounded-2xl p-3" style={{ backgroundColor: theme.cardAlt2, border: `1px dashed ${theme.line}` }}>
                 <summary className="text-[12px] cursor-pointer font-medium" style={{ color: theme.inkSoft }}>
-                  이전 수강권 {(member.passes || []).filter(p => p.archived).length}개
+                  이전 수강권 {pastPasses.length}개
                 </summary>
                 <div className="space-y-2 mt-2">
-                  {(member.passes || []).filter(p => p.archived).map(p => (
+                  {pastPasses.map(p => (
                     <div key={p.id} className="p-2 rounded-lg" style={{ backgroundColor: theme.card, border: `1px solid ${theme.lineLight}` }}>
                       <div className="flex justify-between items-start">
                         <div>
@@ -6437,16 +6462,17 @@ function MemberDetail({ member, onClose, onUpdate, onDelete, onSaveHistory, onDe
                             </div>
                           )}
                         </div>
-                        <Chip tone="neutral" size="sm">{p.convertedTo ? '전환됨' : '종료'}</Chip>
+                        <Chip tone="neutral" size="sm">{p.convertedTo ? '전환됨' : (p.usedSessions >= p.totalSessions ? '완료' : '만료')}</Chip>
                       </div>
                     </div>
                   ))}
                 </div>
               </details>
-            )}
+              );
+            })()}
 
-            {!member.passes?.filter(p => !p.archived).length && !member.passes?.filter(p => p.archived).length && (
-              <EmptyState icon={CreditCard} title="활성 수강권이 없어요" />
+            {!(member.passes || []).filter(p => !p.archived && p.usedSessions < p.totalSessions && p.expiryDate >= toYMD(new Date())).length && (
+              <EmptyState icon={CreditCard} title="진행 중인 수강권이 없어요" />
             )}
             <Button icon={Plus} onClick={() => setAddingPass(true)} className="w-full">수강권 추가</Button>
           </div>
@@ -11502,6 +11528,11 @@ function SettingsModal({ open, onClose, members, sessions, classLog, trials, set
    ========================================================= */
 export default function App() {
   const [tab, setTab] = useState('home');
+  const [pendingOpenId, setPendingOpenId] = useState(null);
+  const goto = (nextTab, opts) => {
+    setTab(nextTab);
+    if (opts?.openId) setPendingOpenId(opts.openId);
+  };
   const [members, setMembers] = useState([]);
   const [sessions, setSessions] = useState({});
   const [classLog, setClassLog] = useState({});
@@ -12366,7 +12397,7 @@ export default function App() {
           smsConfirmed={smsConfirmed}
           closedDays={closedDays}
           groupSlots={groupSlots}
-          toast={toast} onSendSMS={onSendSMS} goto={setTab}
+          toast={toast} onSendSMS={onSendSMS} goto={goto}
           onOpenSettings={() => setSettingsOpen(true)} />
       )}
       {tab === 'schedule' && (
@@ -12374,12 +12405,13 @@ export default function App() {
           sessions={sessions} setSessions={setSessions}
           classLog={classLog} setClassLog={setClassLog}
           groupSlots={groupSlots} setGroupSlots={setGroupSlots}
-          closedDays={closedDays} setClosedDays={setClosedDays} toast={toast} />
+          closedDays={closedDays} setClosedDays={setClosedDays} toast={toast} goto={goto} />
       )}
       {tab === 'members' && (
         <MembersView members={members} setMembers={setMembers}
           sessions={sessions} setSessions={setSessions} groupSlots={groupSlots}
-          closedDays={closedDays} toast={toast} onSendSMS={onSendSMS} />
+          closedDays={closedDays} toast={toast} onSendSMS={onSendSMS}
+          pendingOpenId={pendingOpenId} onConsumeOpenId={() => setPendingOpenId(null)} />
       )}
       {tab === 'trials' && (
         <TrialsView trials={trials} setTrials={setTrials}
