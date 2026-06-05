@@ -12669,7 +12669,7 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
               <path d="M7 7l10 10M17 7L7 17" stroke="#FFF" strokeWidth="2.4" strokeLinecap="round" />
             </svg>
           )}
-          {isExempt && <span style={{ fontSize: 9, color: theme.inkMute }}>면제</span>}
+          {isExempt && <span style={{ fontSize: 9, color: theme.inkMute }}>휴원</span>}
         </div>
         <span style={{ fontSize: 10, color: theme.inkMute }}>{mmdd(date)}</span>
       </div>
@@ -12698,7 +12698,7 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
           <Legend color={GREEN} label="출석" />
           <Legend color={RED} label="결석" />
           <Legend color={FUTURE} label="예정" />
-          <Legend color={theme.bg} label="면제" border />
+          <Legend color={theme.bg} label="휴원" border />
         </div>
         <div>
           <div className="flex mb-1.5" style={{ paddingLeft: 28 }}>
