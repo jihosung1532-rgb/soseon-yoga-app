@@ -1651,6 +1651,20 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   const requiredCount = baseSessions;
   const attendedCount = sortedDates.length;
   const remaining = Math.max(0, requiredCount - attendedCount);
+
+  // 달력용 슬롯 배열 (날짜·요일·상태)
+  const buildSlots = () => {
+    return tueThuDatesBetween(challengeStartYMD, challengeEndYMD).map(d => {
+      const dow = fromYMD(d).getDay() === 2 ? '화' : '목';
+      let st;
+      if (isExemptDay(d, p, closedDays)) st = 'exempt';
+      else if (attendedSet.has(d)) st = 'attended';
+      else if (cancelledSet.has(d) || (d <= yesterdayStr && !attendedSet.has(d))) st = 'missed';
+      else st = 'future';
+      return { date: d, dow, status: st };
+    });
+  };
+  const slots = buildSlots();
   
   // 도전 기간 종료 후 판정 — 결석 0회 + 회수 달성 필요
   if (todayMs > challengeEndMs) {
@@ -1663,7 +1677,7 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
       challengeEndYMD,
       requiredDays: requiredCount,
       attendedDays: attendedCount,
-      missedDays,
+      missedDays, slots,
       message: achieved
         ? `${requiredCount}회 출석 완주`
         : (missedDays.length > 0
@@ -1684,7 +1698,7 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
       challengeEndYMD,
       requiredDays: requiredCount,
       attendedDays: attendedCount,
-      missedDays,
+      missedDays, slots,
       message: `${missedDays.length}회 결석으로 대상 제외`,
     };
   }
@@ -1700,6 +1714,7 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
     requiredDays: requiredCount,
     attendedDays: attendedCount,
     remaining,
+    missedDays, slots,
     message: remaining > 0 
       ? `남은 ${remaining}회 빠짐없이`
       : `완주 직전`,
@@ -5822,6 +5837,7 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
   const [convertingPass, setConvertingPass] = useState(null);
   const [editingPass, setEditingPass] = useState(null);
   const [editingHistory, setEditingHistory] = useState(null); // {passId, date, time}
+  const [rhythmCalPass, setRhythmCalPass] = useState(null); // 리듬 달력 모달 대상 패스
 
   const pass = activePass(member);
   
@@ -6211,9 +6227,10 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                       if (!rsP) return null;
                       if (rsP.achieved) {
                         return (
-                          <div className="rounded-lg p-2 mt-2" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}>
+                          <div className="rounded-lg p-2 mt-2 cursor-pointer" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}
+                            onClick={(e) => { e.stopPropagation(); setRhythmCalPass(p); }}>
                             <div className="flex justify-between items-center mb-1">
-                              <span className="text-[11px] font-bold" style={{ color: '#6B5410' }}>🏆 리듬 수련 도전 성공</span>
+                              <span className="text-[11px] font-bold" style={{ color: '#6B5410' }}>🏆 리듬 수련 도전 성공 ›</span>
                               <span className="text-[10px]" style={{ color: '#8B6F30' }}>{rsP.weeks}주 빠짐없이</span>
                             </div>
                             <div className="text-[10px]" style={{ color: '#8B6F30' }}>🎁 재등록 시 <strong>+{rsP.bonus}회 보상</strong></div>
@@ -6223,9 +6240,10 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                       if (rsP.challenging) {
                         const pct = rsP.requiredDays > 0 ? (rsP.attendedDays / rsP.requiredDays) * 100 : 0;
                         return (
-                          <div className="rounded-lg p-2 mt-2" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}>
+                          <div className="rounded-lg p-2 mt-2 cursor-pointer" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}
+                            onClick={(e) => { e.stopPropagation(); setRhythmCalPass(p); }}>
                             <div className="flex justify-between items-center mb-1">
-                              <span className="text-[11px] font-bold" style={{ color: '#6B5410' }}>리듬 수련 도전중</span>
+                              <span className="text-[11px] font-bold" style={{ color: '#6B5410' }}>리듬 수련 도전중 ›</span>
                               <span className="text-[10px]" style={{ color: '#8B6F30' }}>{rsP.attendedDays} / {rsP.requiredDays}회</span>
                             </div>
                             <div className="h-[3px] rounded-full overflow-hidden mb-1" style={{ backgroundColor: 'rgba(201,169,97,0.25)' }}>
@@ -6239,11 +6257,12 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                       }
                       if (rsP.expired || (rsP.completed && !rsP.achieved)) {
                         return (
-                          <div className="rounded-lg p-1.5 mt-2" style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }}>
+                          <div className="rounded-lg p-1.5 mt-2 cursor-pointer" style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }}
+                            onClick={(e) => { e.stopPropagation(); setRhythmCalPass(p); }}>
                             <div className="text-[10.5px]" style={{ color: theme.inkMute }}>
                               리듬 수련 — {rsP.missedDays?.length > 0
                                 ? `${rsP.missedDays.length}회 결석으로 대상 제외`
-                                : `기간 내 ${rsP.requiredDays}회 미달 (${rsP.attendedDays}회 출석)`}
+                                : `기간 내 ${rsP.requiredDays}회 미달 (${rsP.attendedDays}회 출석)`} ›
                             </div>
                           </div>
                         );
@@ -6563,14 +6582,22 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
           <PassEditModal
             pass={editingPass}
             onClose={() => setEditingPass(null)}
-            onSave={(updated) => {
-              setMembers(prev => prev.map(m => m.id === member.id
-                ? { ...m, passes: (m.passes || []).map(p => p.id === editingPass.id ? { ...p, ...updated } : p) }
-                : m
-              ));
+            onSave={async (updated) => {
+              const nextMember = {
+                ...member,
+                passes: (member.passes || []).map(p => p.id === editingPass.id ? { ...p, ...updated } : p),
+              };
+              await onUpdate(nextMember);
               setEditingPass(null);
               toast('✓ 수강권 수정 완료');
             }}
+          />
+        )}
+        {rhythmCalPass && (
+          <RhythmCalendarModal
+            rhythm={rhythmFor(rhythmCalPass)}
+            passType={rhythmCalPass.type}
+            onClose={() => setRhythmCalPass(null)}
           />
         )}
         {editingHistory && (
@@ -7676,6 +7703,10 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
   const isMayEventEligible = !!member?.mayEventBonus && !member?.mayEventBonusUsed;
   const [applyMayBonus, setApplyMayBonus] = useState(isMayEventEligible);
   const mayBonus = (isMayEventEligible && applyMayBonus) ? 1 : 0;
+
+  // 📝 리뷰 이벤트 보너스 (강사가 수동 체크 - 리뷰 작성자)
+  const [applyReviewBonus, setApplyReviewBonus] = useState(false);
+  const reviewBonus = applyReviewBonus ? 1 : 0;
   
   const [category, setCategory] = useState(preset.category || 'group');
   const [canHold, setCanHold] = useState(!!preset.canHold);
@@ -7714,7 +7745,7 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
         },
       ]);
     } else {
-      const totalBonus = bonus + mayBonus; // 리듬 보상 + 5월 이벤트 보너스
+      const totalBonus = bonus + mayBonus + reviewBonus; // 리듬 보상 + 5월 이벤트 + 리뷰 이벤트
       const data = {
         type, category, totalSessions: total + totalBonus,
         paymentDate, startDate, expiryDate: extendedExpiry,
@@ -7728,6 +7759,9 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
       }
       if (mayBonus > 0) {
         data.mayEventBonus = mayBonus;
+      }
+      if (reviewBonus > 0) {
+        data.reviewEventBonus = reviewBonus;
       }
       onSave(data, eligibleReward && applyBonus ? eligibleReward.p.id : null, mayBonus > 0);
     }
@@ -7815,6 +7849,28 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
             </div>
           </div>
         )}
+
+        {/* 📝 리뷰 이벤트 (수동 체크) */}
+        <div className="rounded-xl p-3" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={applyReviewBonus}
+              onChange={(e) => setApplyReviewBonus(e.target.checked)}
+              style={{ width: 18, height: 18, accentColor: '#C9A961', cursor: 'pointer' }}
+            />
+            <div className="flex-1">
+              <div className="text-[12px] font-bold" style={{ color: '#6B5410' }}>
+                📝 리뷰 이벤트 +1회 적용
+              </div>
+              <div className="text-[10px]" style={{ color: '#8B6F30' }}>
+                {applyReviewBonus
+                  ? `${total + bonus + mayBonus}회 → ${total + bonus + mayBonus + 1}회로 등록`
+                  : '리뷰 작성자에게 +1회 (체크 시 적용)'}
+              </div>
+            </div>
+          </label>
+        </div>
 
         <div>
           <div className="text-xs font-medium mb-1.5" style={{ color: theme.inkSoft }}>소선요가 수강권</div>
@@ -12569,6 +12625,96 @@ function PassEditModal({ pass, onClose, onSave }) {
 }
 
 // ───────── 수강이력 수정 모달 ─────────
+// ───────── 리듬 수련 달력 모달 ─────────
+function RhythmCalendarModal({ rhythm, passType, onClose }) {
+  const slots = rhythm?.slots || [];
+  const weekKey = (ymd) => {
+    const d = fromYMD(ymd);
+    const diffToMon = (d.getDay() + 6) % 7;
+    return toYMD(addDays(d, -diffToMon));
+  };
+  const weekMap = {};
+  slots.forEach(s => {
+    const k = weekKey(s.date);
+    if (!weekMap[k]) weekMap[k] = { 화: null, 목: null };
+    weekMap[k][s.dow] = s;
+  });
+  const weekKeys = Object.keys(weekMap).sort();
+  const mmdd = (ymd) => { const [, m, d] = ymd.split('-'); return `${Number(m)}/${Number(d)}`; };
+  const GREEN = '#4A7A5C', RED = theme.accent2, FUTURE = '#E2E0D4';
+  const COL = { attended: GREEN, missed: RED, future: FUTURE, exempt: theme.bg };
+
+  const Cell = ({ slot }) => {
+    if (!slot) return <div style={{ flex: 1 }} />;
+    const { status, date } = slot;
+    const isExempt = status === 'exempt';
+    return (
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+        <div style={{
+          width: 52, height: 52, borderRadius: 14, background: COL[status],
+          border: isExempt ? `1.5px solid ${theme.line}` : 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          {status === 'attended' && (
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="#FFF" strokeWidth="2" />
+              <path d="M8 12.5l2.5 2.5L16 9" stroke="#FFF" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
+          {status === 'missed' && (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path d="M7 7l10 10M17 7L7 17" stroke="#FFF" strokeWidth="2.4" strokeLinecap="round" />
+            </svg>
+          )}
+          {isExempt && <span style={{ fontSize: 9, color: theme.inkMute }}>면제</span>}
+        </div>
+        <span style={{ fontSize: 10, color: theme.inkMute }}>{mmdd(date)}</span>
+      </div>
+    );
+  };
+  const Legend = ({ color, label, border }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+      <div style={{ width: 12, height: 12, borderRadius: 999, background: color, border: border ? `1.5px solid ${theme.line}` : 'none' }} />
+      <span style={{ fontSize: 10, color: theme.inkMute }}>{label}</span>
+    </div>
+  );
+
+  return (
+    <Modal open={true} onClose={onClose} title="리듬 수련 출석 현황">
+      <div className="space-y-3">
+        {passType && <div className="text-[12px]" style={{ color: theme.inkMute }}>{passType}</div>}
+        <div className="rounded-xl p-3" style={{ backgroundColor: rhythm.achieved ? '#DCEAD9' : (rhythm.expired ? theme.cardAlt2 : theme.goldBg || '#F5EBC8') }}>
+          <div className="text-[13px] font-bold" style={{ color: theme.ink }}>
+            {rhythm.achieved ? '🏆 리듬 수련 완주' : rhythm.expired ? '리듬 수련 대상 제외' : '🌿 리듬 수련 도전 중'}
+          </div>
+          <div className="text-[11px] mt-1" style={{ color: theme.inkSoft }}>
+            {rhythm.message} {rhythm.bonus ? `· 보상 +${rhythm.bonus}회` : ''}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <Legend color={GREEN} label="출석" />
+          <Legend color={RED} label="결석" />
+          <Legend color={FUTURE} label="예정" />
+          <Legend color={theme.bg} label="면제" border />
+        </div>
+        <div>
+          <div className="flex mb-1.5" style={{ paddingLeft: 28 }}>
+            <div style={{ flex: 1, textAlign: 'center', fontSize: 12, fontWeight: 700, color: theme.ink }}>화</div>
+            <div style={{ flex: 1, textAlign: 'center', fontSize: 12, fontWeight: 700, color: theme.ink }}>목</div>
+          </div>
+          {weekKeys.map((wk, i) => (
+            <div key={wk} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 10 }}>
+              <div style={{ width: 28, fontSize: 10, color: theme.inkMute, paddingTop: 18 }}>{i + 1}주</div>
+              <Cell slot={weekMap[wk]['화']} />
+              <Cell slot={weekMap[wk]['목']} />
+            </div>
+          ))}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function HistoryEditModal({ record, onClose, onSave, onDelete }) {
   const [date, setDate] = useState(record.date || '');
   const [time, setTime] = useState(record.time || '11:00');
