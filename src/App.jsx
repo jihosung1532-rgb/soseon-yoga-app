@@ -6384,9 +6384,10 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                     if (!rsP) return null;
                     if (rsP.achieved) {
                       return (
-                        <div className="rounded-lg p-2 mb-2" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}>
+                        <div className="rounded-lg p-2 mb-2 cursor-pointer" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}
+                          onClick={(e) => { e.stopPropagation(); setRhythmCalPass(p); }}>
                           <div className="flex justify-between items-center mb-1">
-                            <span className="text-[11px] font-bold" style={{ color: '#6B5410' }}>🏆 리듬 수련 도전 성공</span>
+                            <span className="text-[11px] font-bold" style={{ color: '#6B5410' }}>🏆 리듬 수련 도전 성공 ›</span>
                             <span className="text-[10px]" style={{ color: '#8B6F30' }}>{rsP.weeks}주 빠짐없이</span>
                           </div>
                           <div className="h-[3px] rounded-full overflow-hidden mb-1" style={{ backgroundColor: 'rgba(201,169,97,0.25)' }}>
@@ -6401,9 +6402,10 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                     if (rsP.challenging) {
                       const pct = rsP.requiredDays > 0 ? (rsP.attendedDays / rsP.requiredDays) * 100 : 0;
                       return (
-                        <div className="rounded-lg p-2 mb-2" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}>
+                        <div className="rounded-lg p-2 mb-2 cursor-pointer" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}
+                          onClick={(e) => { e.stopPropagation(); setRhythmCalPass(p); }}>
                           <div className="flex justify-between items-center mb-1">
-                            <span className="text-[11px] font-bold" style={{ color: '#6B5410' }}>리듬 수련 도전중</span>
+                            <span className="text-[11px] font-bold" style={{ color: '#6B5410' }}>리듬 수련 도전중 ›</span>
                             <span className="text-[10px]" style={{ color: '#8B6F30' }}>{rsP.attendedDays} / {rsP.requiredDays}회</span>
                           </div>
                           <div className="h-[3px] rounded-full overflow-hidden mb-1" style={{ backgroundColor: 'rgba(201,169,97,0.25)' }}>
@@ -6419,11 +6421,12 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                     }
                     if (rsP.expired || (rsP.completed && !rsP.achieved)) {
                       return (
-                        <div className="rounded-lg p-2 mb-2" style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }}>
+                        <div className="rounded-lg p-2 mb-2 cursor-pointer" style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}` }}
+                          onClick={(e) => { e.stopPropagation(); setRhythmCalPass(p); }}>
                           <div className="text-[10.5px]" style={{ color: theme.inkMute }}>
                             리듬 수련 — {rsP.missedDays?.length > 0
                               ? `${rsP.missedDays.length}회 결석으로 대상 제외`
-                              : `기간 내 ${rsP.requiredDays}회 미달 (${rsP.attendedDays}회 출석)`}
+                              : `기간 내 ${rsP.requiredDays}회 미달 (${rsP.attendedDays}회 출석)`} ›
                           </div>
                         </div>
                       );
