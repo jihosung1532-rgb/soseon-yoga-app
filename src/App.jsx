@@ -6154,6 +6154,26 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                       </div>
                     </div>
                   </div>
+                  {(() => {
+                    // 가장 최근 패스 기준 리듬 상태
+                    const allPasses = (member.passes || []).filter(p => !p.archived && p.category === 'group');
+                    if (!allPasses.length) return null;
+                    const targetPass = allPasses.find(p => !(p.usedSessions >= p.totalSessions) && !(p.expiryDate < toYMD(new Date()))) || allPasses[allPasses.length - 1];
+                    const rs = rhythmFor(targetPass);
+                    if (!rs) return null;
+                    let label, bg, fg;
+                    if (rs.achieved) { label = `🏆 리듬 완주 (+${rs.bonus}회 보상 대상)`; bg = '#DCEAD9'; fg = '#2F5D3A'; }
+                    else if (rs.challenging) { label = `🌿 리듬 도전중 · 남은 ${rs.remaining}회`; bg = '#F5EBC8'; fg = '#6B5410'; }
+                    else if (rs.expired || (rs.completed && !rs.achieved)) {
+                      const reason = rs.missedDays?.length > 0 ? `결석 ${rs.missedDays.length}회` : '회수 미달';
+                      label = `리듬 대상 제외 (${reason})`; bg = theme.cardAlt2; fg = theme.inkMute;
+                    } else { return null; }
+                    return (
+                      <div className="mt-1.5 px-2 py-1 rounded-lg text-[10.5px] font-medium" style={{ backgroundColor: bg, color: fg }}>
+                        {label}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })()}
@@ -6470,8 +6490,13 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                   이전 수강권 {pastPasses.length}개
                 </summary>
                 <div className="space-y-2 mt-2">
-                  {pastPasses.map(p => (
-                    <div key={p.id} className="p-2 rounded-lg" style={{ backgroundColor: theme.card, border: `1px solid ${theme.lineLight}` }}>
+                  {pastPasses.map(p => {
+                    const hasRhythm = !!rhythmFor(p);
+                    return (
+                    <div key={p.id}
+                      className={`p-2 rounded-lg${hasRhythm ? ' cursor-pointer' : ''}`}
+                      style={{ backgroundColor: theme.card, border: `1px solid ${theme.lineLight}` }}
+                      onClick={hasRhythm ? () => setRhythmCalPass(p) : undefined}>
                       <div className="flex justify-between items-start">
                         <div>
                           <div className="text-[13px] font-medium" style={{ color: theme.ink }}>{p.type}</div>
@@ -6512,7 +6537,8 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                         <Chip tone="neutral" size="sm">{p.convertedTo ? '전환됨' : (p.usedSessions >= p.totalSessions ? '완료' : '만료')}</Chip>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </details>
               );
@@ -10858,6 +10884,46 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
           <ChevronRight size={16} />
         </button>
       </div>
+
+      {/* 🎁 이번달 보너스 수혜자 */}
+      {(() => {
+        const bonusMembers = [];
+        members.forEach(m => {
+          (m.passes || []).forEach(p => {
+            if (!p.paymentDate?.startsWith(targetYM)) return;
+            const items = [];
+            if (p.rhythmBonus > 0) items.push(`리듬 완주 +${p.rhythmBonus}회`);
+            if (p.mayEventBonus > 0) items.push(`5월 이벤트 +${p.mayEventBonus}회`);
+            if (p.reviewEventBonus > 0) items.push(`리뷰 이벤트 +${p.reviewEventBonus}회`);
+            if (items.length > 0) bonusMembers.push({ name: m.name, type: p.type, items });
+          });
+        });
+        if (!bonusMembers.length) return null;
+        return (
+          <div className="rounded-2xl p-3" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}>
+            <div className="text-[12px] font-bold mb-2" style={{ color: '#6B5410' }}>
+              🎁 이번달 보너스 수혜자 ({bonusMembers.length}명)
+            </div>
+            <div className="space-y-1.5">
+              {bonusMembers.map((b, i) => (
+                <div key={i} className="flex items-center justify-between">
+                  <div className="text-[12px] font-medium" style={{ color: '#3A2A06' }}>
+                    {b.name}
+                    <span className="ml-1 text-[10px] font-normal" style={{ color: '#8B6F30' }}>{b.type}</span>
+                  </div>
+                  <div className="flex gap-1 flex-wrap justify-end">
+                    {b.items.map((item, j) => (
+                      <span key={j} className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: '#FFF8E8', color: '#7A5C00' }}>
+                        {item}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* 1. 💰 수익 */}
       <ExpandCard
