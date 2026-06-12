@@ -2619,6 +2619,8 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
   
   // 📩 예약 요청 (bookings)
   const [pendingBookings, setPendingBookings] = useState([]);
+  const [rejectingId, setRejectingId] = useState(null);
+  const [rejectReason, setRejectReason] = useState('');
   const [showBookingModal, setShowBookingModal] = useState(false);
   
   // 📊 정원현황 시트 (시간대 탭하면 회원 목록 보기)
@@ -2771,15 +2773,12 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
   };
   
   // 예약/취소 요청 거절
-  const rejectBooking = async (booking) => {
+  const rejectBooking = async (booking, reason) => {
     const isCancelReq = booking.status === 'pending_cancel';
-    const confirmMsg = isCancelReq
-      ? `${booking.member_name}님의 취소 요청을 거절할까요?\n(예약은 그대로 유지됩니다)`
-      : `${booking.member_name}님의 예약 요청을 거절할까요?`;
-    if (!confirm(confirmMsg)) return;
     await sb.updateBooking(booking.id, {
       status: isCancelReq ? 'cancel_rejected' : 'rejected',
       responded_at: new Date().toISOString(),
+      ...(reason ? { note: reason } : {}),
     });
     const items = await sb.getPendingBookings();
     setPendingBookings(items || []);
@@ -3086,16 +3085,40 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
                       )}
                     </div>
                   </div>
-                  <div className="flex gap-2 mt-2">
-                    <Button size="sm" variant="primary" className="flex-1"
-                      onClick={() => approveBooking(b)}>
-                      ✓ 승인
-                    </Button>
-                    <Button size="sm" variant="ghost" className="flex-1"
-                      onClick={() => rejectBooking(b)}>
-                      ✗ 거절
-                    </Button>
-                  </div>
+                  {rejectingId === b.id ? (
+                    /* 예약불가 사유 확인 */
+                    <div className="mt-2 space-y-2">
+                      <div className="text-[11px] px-3 py-2.5 rounded-lg" style={{ backgroundColor: theme.cardAlt, color: theme.inkSoft, border: `1px solid ${theme.line}` }}>
+                        해당 수업은 인원이 마감되었습니다. 다른 시간대를 이용해 주시면 감사하겠습니다 🙏
+                      </div>
+                      <div className="text-[10px]" style={{ color: theme.inkMute }}>위 메시지가 회원에게 전달돼요</div>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="ghost" className="flex-1"
+                          onClick={() => { setRejectingId(null); setRejectReason(''); }}>
+                          취소
+                        </Button>
+                        <Button size="sm" variant="danger" className="flex-1"
+                          onClick={async () => {
+                            await rejectBooking(b, '해당 수업은 인원이 마감되었습니다. 다른 시간대를 이용해 주시면 감사하겠습니다 🙏');
+                            setRejectingId(null);
+                            setRejectReason('');
+                          }}>
+                          예약불가 확정
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2 mt-2">
+                      <Button size="sm" variant="primary" className="flex-1"
+                        onClick={() => approveBooking(b)}>
+                        ✓ 예약 승인
+                      </Button>
+                      <Button size="sm" variant="ghost" className="flex-1"
+                        onClick={() => { setRejectingId(b.id); setRejectReason(''); }}>
+                        예약불가
+                      </Button>
+                    </div>
+                  )}
                 </div>
               );
             })}
