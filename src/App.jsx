@@ -3089,21 +3089,25 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
                     /* 예약불가 사유 확인 */
                     <div className="mt-2 space-y-2">
                       <div className="text-[11px] px-3 py-2.5 rounded-lg" style={{ backgroundColor: theme.cardAlt, color: theme.inkSoft, border: `1px solid ${theme.line}` }}>
-                        해당 수업은 인원이 마감되었습니다. 다른 시간대를 이용해 주시면 감사하겠습니다 🙏
+                        {isCancel
+                          ? '취소 요청을 거절하고 예약을 유지합니다. 회원에게 안내해 주세요.'
+                          : '해당 수업은 인원이 마감되었습니다. 다른 시간대를 이용해 주시면 감사하겠습니다 🙏'}
                       </div>
-                      <div className="text-[10px]" style={{ color: theme.inkMute }}>위 메시지가 회원에게 전달돼요</div>
+                      <div className="text-[10px]" style={{ color: theme.inkMute }}>
+                        {isCancel ? '취소 요청이 거절되고 예약이 그대로 유지돼요' : '위 메시지가 회원 알림으로 전달돼요'}
+                      </div>
                       <div className="flex gap-2">
                         <Button size="sm" variant="ghost" className="flex-1"
                           onClick={() => { setRejectingId(null); setRejectReason(''); }}>
-                          취소
+                          돌아가기
                         </Button>
                         <Button size="sm" variant="danger" className="flex-1"
                           onClick={async () => {
-                            await rejectBooking(b, '해당 수업은 인원이 마감되었습니다. 다른 시간대를 이용해 주시면 감사하겠습니다 🙏');
+                            await rejectBooking(b, isCancel ? '' : '해당 수업은 인원이 마감되었습니다. 다른 시간대를 이용해 주시면 감사하겠습니다 🙏');
                             setRejectingId(null);
                             setRejectReason('');
                           }}>
-                          예약불가 확정
+                          {isCancel ? '예약 유지 확정' : '예약불가 확정'}
                         </Button>
                       </div>
                     </div>
@@ -3111,11 +3115,11 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
                     <div className="flex gap-2 mt-2">
                       <Button size="sm" variant="primary" className="flex-1"
                         onClick={() => approveBooking(b)}>
-                        ✓ 예약 승인
+                        {isCancel ? '✓ 취소 승인' : '✓ 예약 승인'}
                       </Button>
                       <Button size="sm" variant="ghost" className="flex-1"
                         onClick={() => { setRejectingId(b.id); setRejectReason(''); }}>
-                        예약불가
+                        {isCancel ? '예약 유지' : '예약불가'}
                       </Button>
                     </div>
                   )}
@@ -3493,7 +3497,13 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     const oldDateTime = { date: oldDateStr, time: isMove ? oldKey.slice(11) : time };
     const newDateTime = { date: dateStr, time };
     const chargeOfOld = (p) => isPartCharged(p, oldDateTime) && p.memberId && p.passId ? `${p.memberId}|${p.passId}` : null;
-    const chargeOfNew = (p) => isPartCharged(p, newDateTime) && p.memberId && p.passId ? `${p.memberId}|${p.passId}` : null;
+    const chargeOfNew = (p) => {
+      if (!isPartCharged(p, newDateTime) || !p.memberId || !p.passId) return null;
+      // 이미 sessionDates에 dateStr이 있으면 차감 안 함 (autoMark와 이중차감 방지)
+      const memberPass = members.find(m => m.id === p.memberId)?.passes?.find(pp => pp.id === p.passId);
+      if (memberPass && (memberPass.sessionDates || []).includes(dateStr)) return null;
+      return `${p.memberId}|${p.passId}`;
+    };
     const oldCharges = oldParts.map(chargeOfOld).filter(Boolean);
     const newCharges = newParts.map(chargeOfNew).filter(Boolean);
 
@@ -3524,8 +3534,14 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
             const idx = sessionDates.lastIndexOf(oldDateStr);
             if (idx >= 0) sessionDates.splice(idx, 1);
           }
-          // 새 날짜를 addNew번 추가
-          for (let i = 0; i < addNew; i++) sessionDates.push(dateStr);
+          // 새 날짜를 addNew번 추가 (이미 존재하는 날짜는 건너뜀 - 이중차감 방지)
+          for (let i = 0; i < addNew; i++) {
+            const alreadyIn = sessionDates.filter(d => d === dateStr).length;
+            const targetCount = (removeOld > 0 ? 0 : alreadyIn) + (i + 1);
+            if (sessionDates.filter(d => d === dateStr).length < targetCount) {
+              sessionDates.push(dateStr);
+            }
+          }
           return { ...p, usedSessions: newUsed, sessionDates };
         }),
       }));
