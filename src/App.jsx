@@ -3905,8 +3905,11 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     const cat = item.category === 'private' ? 'private' : 'group';
 
     const newParts = sess.participants.map(p => {
-      // 이미 출석/취소/노쇼 처리된 사람은 그대로
-      if (p.cancelled || p.status === 'attended' || p.status === 'no_show') return p;
+      // 취소/노쇼는 건드리지 않음
+      if (p.cancelled || p.status === 'no_show') return p;
+      // 이미 출석이고 passId도 있으면 그대로 (정상 처리된 것)
+      if (p.status === 'attended' && (p.passId || p.isTrial || !p.memberId)) return p;
+      // attended인데 passId 없는 경우도 아래에서 재처리 (차감 누락 케이스)
       const next = { ...p, status: 'attended' };
       // 체험/게스트는 차감 없음
       if (next.isTrial || !next.memberId) return next;
@@ -3941,12 +3944,13 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     toast(`✓ 수업 완료 — ${n}명 출석 처리`);
   };
 
-  // 슬롯에 아직 출석 안 된(reserved) 정규 회원이 있는지
+  // 슬롯에 아직 출석 안 됐거나, 출석됐어도 passId 없는 정규 회원이 있는지
   const hasPendingAttendance = (date, item) => {
     const sess = sessions[`${toYMD(date)}_${item.time}`];
     if (!sess?.participants?.length) return false;
     return sess.participants.some(p =>
-      !p.isTrial && !p.cancelled && p.status !== 'attended' && p.status !== 'no_show'
+      !p.isTrial && !p.cancelled && p.status !== 'no_show' &&
+      (p.status !== 'attended' || (!p.passId && p.memberId))
     );
   };
 
@@ -4666,7 +4670,7 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
                     {/* 상태 변경 버튼 */}
                     {!isCancelled && p.status !== 'no_show' ? (
                       <div className="flex gap-1 mt-1.5 flex-wrap">
-                        {p.status !== 'attended' && (
+                        {(p.status !== 'attended' || (!p.passId && !p.isTrial && p.memberId)) && (
                           <button onClick={() => markAttended(i)}
                             className="text-[11px] px-2 py-0.5 rounded-md font-semibold"
                             style={{ color: '#FFF', backgroundColor: theme.accent, border: `1px solid ${theme.accent}` }}>
