@@ -1649,23 +1649,23 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   
   // requiredDays = 정규 회수 (8 / 16 / 24) — 체험 보너스(+1)는 보너스로 두고 도전 기준은 base
   const requiredCount = baseSessions;
-  const attendedCount = sortedDates.length;
+  // 취소(당일취소 포함)된 날은 실제 출석에서 제외
+  const attendedCount = sortedDates.filter(d => !cancelledSet.has(d)).length;
   const remaining = Math.max(0, requiredCount - attendedCount);
 
-  // 달력용 슬롯 배열 (날짜·요일·상태)
   const buildSlots = () => {
     const challengeSlots = tueThuDatesBetween(challengeStartYMD, challengeEndYMD).map(d => {
       const dow = fromYMD(d).getDay() === 2 ? '화' : '목';
       let st;
       if (isExemptDay(d, p, closedDays)) st = 'exempt';
+      else if (cancelledSet.has(d)) st = 'missed';   // 취소 먼저 (당일취소 차감도 결석)
       else if (attendedSet.has(d)) st = 'attended';
-      else if (cancelledSet.has(d) || (d <= yesterdayStr && !attendedSet.has(d))) st = 'missed';
+      else if (d <= yesterdayStr) st = 'missed';
       else st = 'future';
       return { date: d, dow, status: st };
     });
-    // 도전 기간 이후 출석한 날짜도 표시
     const extraSlots = sortedDates
-      .filter(d => d > challengeEndYMD)
+      .filter(d => d > challengeEndYMD && !cancelledSet.has(d))
       .map(d => ({ date: d, dow: fromYMD(d).getDay() === 2 ? '화' : '목', status: 'extra' }));
     return [...challengeSlots, ...extraSlots];
   };
@@ -4637,7 +4637,22 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
                           {p.memberName}
                           {(!p.isTrial && p.memberId && goto) && <span style={{ fontSize: 10, color: theme.inkMute, marginLeft: 3 }}>›</span>}
                         </span>
-                        {p.sessionNumber && p.totalSessions && !isCancelled && p.status !== 'reserved' && <Chip tone="accent" size="sm">{p.sessionNumber}/{p.totalSessions}</Chip>}
+                        {(() => {
+                          if (p.isTrial || !p.passId || !p.memberId || isCancelled || p.status === 'reserved') return null;
+                          const mem = (members || []).find(m => m.id === p.memberId);
+                          const pass = mem?.passes?.find(pp => pp.id === p.passId);
+                          if (!pass) {
+                            return p.sessionNumber && p.totalSessions ? <Chip tone="accent" size="sm">{p.sessionNumber}/{p.totalSessions}</Chip> : null;
+                          }
+                          const dates = [...(pass.sessionDates || [])].sort();
+                          const dateStr = toYMD(date instanceof Date ? date : new Date(date));
+                          const idx = dates.indexOf(dateStr);
+                          const sn = idx >= 0 ? idx + 1 : dates.length + 1;
+                          const total = pass.totalSessions || p.totalSessions;
+                          // 저장된 값과 재계산 값이 다르면 경고 표시
+                          const isWrong = p.sessionNumber && p.sessionNumber !== sn;
+                          return <Chip tone={isWrong ? "warn" : "accent"} size="sm" title={isWrong ? `저장값 ${p.sessionNumber} → 실제 ${sn}` : ''}>{sn}/{total}</Chip>;
+                        })()}
                         {p.isTrial && <Chip tone="peach" size="sm">체험</Chip>}
                         {p.classType === '개인' && <Chip tone="accent" size="sm">개인</Chip>}
                         {/* 상태 칩 */}
@@ -5178,7 +5193,7 @@ function MembersView({ members, setMembers, sessions, setSessions, groupSlots, c
           onUpdate={updateMember}
           onDelete={() => deleteMember(openMember.id)}
           onSaveHistory={saveHistoryRecord} onDeleteHistory={deleteHistoryRecord}
-          sessions={sessions} groupSlots={groupSlots} closedDays={closedDays} toast={toast} onSendSMS={onSendSMS}
+          sessions={sessions} setSessions={setSessions} groupSlots={groupSlots} closedDays={closedDays} toast={toast} onSendSMS={onSendSMS}
         />
       )}
     </div>
@@ -5894,7 +5909,7 @@ function HistoryTabContent({ history, passes, onEditRecord }) {
   );
 }
 
-function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveHistory, onDeleteHistory, sessions, groupSlots, closedDays = [], toast, onSendSMS }) {
+function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveHistory, onDeleteHistory, sessions, setSessions, groupSlots, closedDays = [], toast, onSendSMS }) {
   const [tab, setTab] = useState(initialTab || 'passes');
   const [editing, setEditing] = useState(false);
   const [addingPass, setAddingPass] = useState(false);
@@ -6591,6 +6606,78 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
             {!(member.passes || []).filter(p => !p.archived && p.usedSessions < p.totalSessions && p.expiryDate >= toYMD(new Date())).length && (
               <EmptyState icon={CreditCard} title="진행 중인 수강권이 없어요" />
             )}
+            {/* 회차 동기화 */}
+            <button
+              onClick={async () => {
+                if (!sessions) return;
+                // 이 회원의 모든 attended 세션을 passId별로 수집
+                const updates = {};
+                Object.entries(sessions).forEach(([key, s]) => {
+                  const [dateStr] = key.split('_');
+                  const part = (s?.participants || []).find(p =>
+                    p.memberId === member.id && p.passId && p.status === 'attended' && !p.cancelled
+                  );
+                  if (!part) return;
+                  if (!updates[key]) updates[key] = { s, dateStr, passId: part.passId };
+                });
+                if (Object.keys(updates).length === 0) { toast('동기화할 세션 없음'); return; }
+                let newSessions = { ...sessions };
+                let changed = 0;
+                (member.passes || []).forEach(pass => {
+                  const dates = [...(pass.sessionDates || [])].sort();
+                  dates.forEach((dateStr, idx) => {
+                    const sn = idx + 1;
+                    // 해당 날짜 + 이 패스 참여한 세션 찾기
+                    const matchKey = Object.keys(updates).find(k =>
+                      updates[k].dateStr === dateStr && updates[k].passId === pass.id
+                    );
+                    if (!matchKey) return;
+                    const s = newSessions[matchKey];
+                    if (!s) return;
+                    const newParts = s.participants.map(p => {
+                      if (p.memberId !== member.id || p.passId !== pass.id) return p;
+                      if (p.sessionNumber === sn && p.totalSessions === pass.totalSessions) return p;
+                      changed++;
+                      return { ...p, sessionNumber: sn, totalSessions: pass.totalSessions };
+                    });
+                    newSessions[matchKey] = { ...s, participants: newParts };
+                  });
+                });
+                if (changed === 0 && Object.keys(updates).length === 0) { toast('동기화할 세션 없음'); return; }
+                if (changed === 0) {
+                  // 회차는 맞지만 usedSessions 보정만
+                  const correctedPasses = member.passes.map(pass => ({
+                    ...pass,
+                    usedSessions: (pass.sessionDates || []).length,
+                  }));
+                  const hadWrongUsed = correctedPasses.some(
+                    (cp, i) => cp.usedSessions !== (member.passes[i].usedSessions || 0)
+                  );
+                  if (hadWrongUsed) {
+                    await onUpdate({ ...member, passes: correctedPasses });
+                    toast('✓ 차감 횟수 보정 완료');
+                  } else {
+                    toast('이미 회차·횟수가 모두 맞아요');
+                  }
+                  return;
+                }
+                setSessions(newSessions);
+                await saveKey(K.sessions, newSessions);
+                // usedSessions도 실제 sessionDates 개수로 맞추기 (이중차감 보정)
+                const correctedPasses = member.passes.map(pass => ({
+                  ...pass,
+                  usedSessions: (pass.sessionDates || []).length,
+                }));
+                const hadWrongUsed = correctedPasses.some(
+                  (cp, i) => cp.usedSessions !== (member.passes[i].usedSessions || 0)
+                );
+                await onUpdate({ ...member, passes: correctedPasses });
+                toast(`✓ 회차 ${changed}건 동기화 완료${hadWrongUsed ? ' · 차감 횟수도 보정됨' : ''}`);
+              }}
+              className="w-full text-[11px] py-1.5 rounded-lg"
+              style={{ color: theme.inkMute, border: `1px dashed ${theme.line}`, backgroundColor: 'transparent' }}>
+              🔄 수강권 회차 동기화 (세션 순서 재계산)
+            </button>
             <Button icon={Plus} onClick={() => setAddingPass(true)} className="w-full">수강권 추가</Button>
           </div>
         )}
