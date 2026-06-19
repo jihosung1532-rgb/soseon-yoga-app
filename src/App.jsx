@@ -2969,16 +2969,35 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
                           {s.time}
                         </span>
                         <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-                          {sortedActive.map((p, i) => (
-                            <span key={p.memberId || `t-${i}-${p.memberName}`} className="text-[12px]" style={{ color: p.isTrial ? theme.accent2 : theme.ink }}>
-                              {p.memberName}
-                              {p.sessionNumber && p.totalSessions && (
-                                <span style={{ color: theme.inkMute }}> ({p.sessionNumber}/{p.totalSessions})</span>
-                              )}
-                              {p.isTrial && <span style={{ color: theme.inkMute, fontSize: 10 }}> 체험</span>}
-                              {p.classType === '개인' && <span style={{ color: theme.accent, fontSize: 10 }}> 개인</span>}
-                            </span>
-                          ))}
+                          {sortedActive.map((p, i) => {
+                            // 이름 fallback: memberName 없으면 members에서 찾기
+                            const displayName = p.memberName || (members || []).find(m => m.id === p.memberId)?.name || '(이름 없음)';
+                            // 회차 재계산: sessionDates 기준
+                            let snDisplay = null;
+                            if (p.sessionNumber && p.totalSessions && !p.isTrial) {
+                              const mem2 = p.passId ? (members || []).find(m => m.id === p.memberId) : null;
+                              const pass2 = mem2?.passes?.find(pp => pp.id === p.passId);
+                              if (pass2) {
+                                const dates2 = [...(pass2.sessionDates || [])].sort();
+                                const dateStr2 = s.date;
+                                const idx2 = dates2.indexOf(dateStr2);
+                                const sn2 = idx2 >= 0 ? idx2 + 1 : Math.min(p.sessionNumber, pass2.totalSessions);
+                                snDisplay = `${sn2}/${pass2.totalSessions}`;
+                              } else {
+                                snDisplay = `${Math.min(p.sessionNumber, p.totalSessions)}/${p.totalSessions}`;
+                              }
+                            }
+                            return (
+                              <span key={p.memberId || `t-${i}-${displayName}`} className="text-[12px]" style={{ color: p.isTrial ? theme.accent2 : theme.ink }}>
+                                {displayName}
+                                {snDisplay && (
+                                  <span style={{ color: theme.inkMute }}> ({snDisplay})</span>
+                                )}
+                                {p.isTrial && <span style={{ color: theme.inkMute, fontSize: 10 }}> 체험</span>}
+                                {p.classType === '개인' && <span style={{ color: theme.accent, fontSize: 10 }}> 개인</span>}
+                              </span>
+                            );
+                          })}
                           {cancelled.map((p, i) => (
                             <span key={`c-${p.memberId || p.memberName || i}`} className="text-[11px] line-through" style={{ color: theme.inkMute }}>
                               {p.memberName}
@@ -4650,8 +4669,7 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
                           const sn = idx >= 0 ? idx + 1 : dates.length + 1;
                           const total = pass.totalSessions || p.totalSessions;
                           // 저장된 값과 재계산 값이 다르면 경고 표시
-                          const isWrong = p.sessionNumber && p.sessionNumber !== sn;
-                          return <Chip tone={isWrong ? "warn" : "accent"} size="sm" title={isWrong ? `저장값 ${p.sessionNumber} → 실제 ${sn}` : ''}>{sn}/{total}</Chip>;
+                          return <Chip tone="accent" size="sm">{sn}/{total}</Chip>;
                         })()}
                         {p.isTrial && <Chip tone="peach" size="sm">체험</Chip>}
                         {p.classType === '개인' && <Chip tone="accent" size="sm">개인</Chip>}
