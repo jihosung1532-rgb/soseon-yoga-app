@@ -4653,7 +4653,7 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
                             onClose?.();
                             goto('members', { openId: p.memberId });
                           } : undefined}>
-                          {p.memberName}
+                          {p.memberName || (members || []).find(m => m.id === p.memberId)?.name || '(이름 없음)'}
                           {(!p.isTrial && p.memberId && goto) && <span style={{ fontSize: 10, color: theme.inkMute, marginLeft: 3 }}>›</span>}
                         </span>
                         {(() => {
