@@ -2974,17 +2974,17 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
                             const displayName = p.memberName || (members || []).find(m => m.id === p.memberId)?.name || '(이름 없음)';
                             // 회차 재계산: sessionDates 기준
                             let snDisplay = null;
-                            if (p.sessionNumber && p.totalSessions && !p.isTrial) {
+                            if (!p.isTrial && !p.cancelled) {
                               const mem2 = p.passId ? (members || []).find(m => m.id === p.memberId) : null;
                               const pass2 = mem2?.passes?.find(pp => pp.id === p.passId);
                               if (pass2) {
                                 const dates2 = [...(pass2.sessionDates || [])].sort();
                                 const dateStr2 = s.date;
                                 const idx2 = dates2.indexOf(dateStr2);
-                                const sn2 = idx2 >= 0 ? idx2 + 1 : Math.min(p.sessionNumber, pass2.totalSessions);
+                                const sn2 = idx2 >= 0 ? idx2 + 1 : dates2.length + 1;
                                 snDisplay = `${sn2}/${pass2.totalSessions}`;
-                              } else {
-                                snDisplay = `${Math.min(p.sessionNumber, p.totalSessions)}/${p.totalSessions}`;
+                              } else if (p.sessionNumber && p.totalSessions) {
+                                snDisplay = `${p.sessionNumber}/${p.totalSessions}`;
                               }
                             }
                             return (
@@ -4166,16 +4166,33 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                                     {regulars.map((p, j) => {
                                       const isCancelled = !!p.cancelled;
                                       const isCharged = p.cancelled === 'charged';
+                                      // 이름 fallback
+                                      const rName = p.memberName || (members || []).find(m => m.id === p.memberId)?.name || '(이름 없음)';
+                                      // 회차 재계산
+                                      let snText = null;
+                                      if (!isCancelled && !p.isTrial && isPartCharged(p, { date: toYMD(d), time: item.time })) {
+                                        const rMem = p.passId ? (members || []).find(m => m.id === p.memberId) : null;
+                                        const rPass = rMem?.passes?.find(pp => pp.id === p.passId);
+                                        if (rPass) {
+                                          const rDates = [...(rPass.sessionDates || [])].sort();
+                                          const rIdx = rDates.indexOf(toYMD(d));
+                                          // 이미 sessionDates에 있으면 그 순번, 없으면 다음 순번 (오늘 수업)
+                                          const rSn = rIdx >= 0 ? rIdx + 1 : rDates.length + 1;
+                                          snText = `${rSn}/${rPass.totalSessions}`;
+                                        } else if (p.sessionNumber && p.totalSessions) {
+                                          snText = `${Math.min(p.sessionNumber, p.totalSessions)}/${p.totalSessions}`;
+                                        }
+                                      }
                                       return (
                                         <React.Fragment key={j}>
                                           <span style={{
                                             color: isCharged ? theme.danger : 'inherit',
                                             textDecoration: isCancelled ? 'line-through' : 'none',
                                           }}>
-                                            <span style={{ fontWeight: 600 }}>{p.memberName}</span>
-                                            {p.sessionNumber && p.totalSessions && !isCancelled && isPartCharged(p, { date: toYMD(d), time: item.time }) && (
+                                            <span style={{ fontWeight: 600 }}>{rName}</span>
+                                            {snText && (
                                               <span style={{ color: theme.inkMute, fontSize: 11, fontWeight: 400 }}>
-                                                {' '}({p.sessionNumber}/{p.totalSessions})
+                                                {' '}({snText})
                                               </span>
                                             )}
                                           </span>
@@ -6611,7 +6628,15 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                             );
                           })()}
                         </div>
-                        <Chip tone="neutral" size="sm">{p.convertedTo ? '전환됨' : (p.usedSessions >= p.totalSessions ? '완료' : '만료')}</Chip>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setEditingPass(p); }}
+                            className="text-[10px] px-1.5 py-0.5 rounded"
+                            style={{ color: theme.inkMute, border: `1px solid ${theme.lineLight}` }}>
+                            ✏
+                          </button>
+                          <Chip tone="neutral" size="sm">{p.convertedTo ? '전환됨' : (p.usedSessions >= p.totalSessions ? '완료' : '만료')}</Chip>
+                        </div>
                       </div>
                     </div>
                     );
