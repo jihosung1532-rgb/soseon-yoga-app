@@ -580,13 +580,14 @@ const TRIAL_FEE = 30000; // 체험비 (3만원)
    SMS Templates
    ========================================================= */
 const SMS_TEMPLATES = {
-  expiring: (member, pass) => ({
+  expiring: (member, pass, rhythmAchieved = false) => ({
     title: '수강권 소진 안내',
     body: `안녕하세요 ${friendlyName(member.name)} ☺️
 소선요가입니다
 
 수강권이 ${pass.totalSessions - pass.usedSessions}회 남았어요.
 ${fmtKRShort(pass.expiryDate)}까지 이용 가능합니다.
+${rhythmAchieved ? "\n🏆 리듬 수련을 완주하셔서\n재등록 시 1회가 추가됩니다!" : ""}
 
 편하게 이어서 수련하실 수 있도록
 미리 안내드려요.
@@ -2431,7 +2432,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
           member: m, pass,
           title: `${m.name} · 수강권 ${remaining}회 남음`,
           desc: '수강권 소진 안내 문자',
-          template: SMS_TEMPLATES.expiring(m, pass),
+          template: SMS_TEMPLATES.expiring(m, pass, !!rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, m.id, pass.id))?.achieved),
         });
       }
       // Expired
@@ -6126,7 +6127,7 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
     if (!member.phone) { toast('연락처가 없어요'); return; }
     const p = activePass(member);
     let template;
-    if (kind === 'expiring' && p) template = SMS_TEMPLATES.expiring(member, p);
+    if (kind === 'expiring' && p) template = SMS_TEMPLATES.expiring(member, p, !!rhythmFor(p)?.achieved);
     else if (kind === 'expired' && p) template = SMS_TEMPLATES.expired(member, p);
     else if (kind === 'registered' && p) template = SMS_TEMPLATES.registered(member, p);
     if (template) onSendSMS({ phone: member.phone, name: member.name, template });
