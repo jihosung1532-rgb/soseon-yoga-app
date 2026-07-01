@@ -4142,6 +4142,19 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                             style={{ color: isPrivate ? theme.accent2 : theme.accent }}>
                             {isPrivate ? '개인' : '소그룹'}
                           </div>
+                          {/* 여석 표시 (소그룹만) */}
+                          {!isPrivate && !item.isAuto && (() => {
+                            const SLOT_CAP = 5;
+                            const activeCount = item.participants.filter(p => !p.cancelled && p.status !== 'no_show').length;
+                            const remaining = Math.max(0, SLOT_CAP - activeCount);
+                            const color = remaining === 0 ? theme.danger : remaining <= 1 ? theme.warn : theme.inkMute;
+                            return (
+                              <div className="text-[9px] mt-0.5 font-medium"
+                                style={{ color }}>
+                                {remaining === 0 ? '마감' : `여석 ${remaining}`}
+                              </div>
+                            );
+                          })()}
                         </div>
 
                         {/* Content */}
