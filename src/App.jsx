@@ -4191,7 +4191,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                                           const rDates = [...(rPass.sessionDates || [])].sort();
                                           const rIdx = rDates.indexOf(toYMD(d));
                                           // 이미 sessionDates에 있으면 그 순번, 없으면 다음 순번 (오늘 수업)
-                                          const rSn = rIdx >= 0 ? rIdx + 1 : rDates.length + 1;
+                                          const rSn = rIdx >= 0 ? rIdx + 1 : Math.min(rDates.length + 1, rPass.totalSessions);
                                           snText = `${rSn}/${rPass.totalSessions}`;
                                         } else if (p.sessionNumber && p.totalSessions) {
                                           snText = `${Math.min(p.sessionNumber, p.totalSessions)}/${p.totalSessions}`;
@@ -8335,7 +8335,7 @@ function PassConvertDialog({ oldPass, onClose, onConvert }) {
 /* =========================================================
    Class Log — monthly calendar with expanded cells (B option)
    ========================================================= */
-function ClassLogView({ classLog, setClassLog, sessions, setSessions, members = [], toast }) {
+function ClassLogView({ classLog, setClassLog, sessions, setSessions, members = [], groupSlots = [], toast }) {
   const [month, setMonth] = useState(() => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d; });
 
   const days = useMemo(() => {
@@ -8666,6 +8666,7 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, members = 
         <DayLogEditor
           date={editingDate} entries={classLog[editingDate] || []}
           sessions={sessions}
+          groupSlots={groupSlots}
           onClose={() => setEditingDate(null)}
           onSave={async (entries) => { await saveEntries(editingDate, entries); setEditingDate(null); toast('저장되었어요'); }}
         />
@@ -8677,6 +8678,7 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, members = 
           members={members}
           sessions={sessions}
           classLog={classLog}
+          groupSlots={groupSlots}
           onClose={() => setRecDate(null)}
           onPick={async (time, content) => {
             // 추천 시퀀스 그대로 저장 — 셀에 바로 반영됨
@@ -8697,14 +8699,16 @@ function ClassLogView({ classLog, setClassLog, sessions, setSessions, members = 
   );
 }
 
-function ClassRecommendModal({ date, members, sessions, classLog, onClose, onPick, onEditDirect }) {
+function ClassRecommendModal({ date, members, sessions, classLog, groupSlots = [], onClose, onPick, onEditDirect }) {
   // date: 'YYYY-MM-DD'
   const dateObj = fromYMD(date);
   const dow = dateObj.getDay(); // 0=일 .. 6=토
   const isSmGroup = dow === 2 || dow === 4; // 화목
 
-  // 그룹 시간대 후보 (소그룹이면 11/19:20/20:50, 아니면 빈 list)
-  const groupTimes = isSmGroup ? ['11:00', '19:20', '20:50'] : [];
+  // 그룹 시간대 후보 — groupSlots 우선, 없으면 기본값
+  const groupTimes = isSmGroup
+    ? (groupSlots.length > 0 ? groupSlots : ['11:00', '19:20', '20:50'])
+    : [];
 
   const [time, setTime] = useState(groupTimes[0] || '');
 
@@ -8965,7 +8969,7 @@ function ClassRecommendModal({ date, members, sessions, classLog, onClose, onPic
   );
 }
 
-function DayLogEditor({ date, entries, sessions, onClose, onSave }) {
+function DayLogEditor({ date, entries, sessions, onClose, onSave, groupSlots = [] }) {
   // 그날 일정에 있는 시간 + 이미 기록된 시간 모아서 옵션 만들기
   const dayTimes = useMemo(() => {
     const set = new Set();
@@ -9278,8 +9282,11 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
       fromTrial: trial.id,
       mayEventBonus: isMayBonus, // 수강권 등록 시 자동 +1회
     };
-    setMembers([...members, m]);
-    await saveKey(K.members, [...members, m]);
+    setMembers(prev => {
+      const next = [...prev, m];
+      saveKey(K.members, next);
+      return next;
+    });
     await saveTrials(trials.map(t => t.id === trial.id ? { ...t, status: '회원전환', convertedAt: toYMD(new Date()), convertedToMemberId: m.id } : t));
     setEditing(null);
     toast(isMayBonus ? '회원 전환됨 · 🌿 5월 이벤트 대상' : '정식 회원으로 전환됨');
@@ -12763,7 +12770,7 @@ export default function App() {
           toast={toast} onSendSMS={onSendSMS} />
       )}
       {tab === 'classlog' && (
-        <ClassLogView classLog={classLog} setClassLog={setClassLog} sessions={sessions} setSessions={setSessions} members={members} toast={toast} />
+        <ClassLogView classLog={classLog} setClassLog={setClassLog} sessions={sessions} setSessions={setSessions} members={members} groupSlots={groupSlots} toast={toast} />
       )}
       {tab === 'stats' && (
         <StatsView members={members} trials={trials} sessions={sessions} closedDays={closedDays} />
@@ -13050,7 +13057,7 @@ function HistoryEditModal({ record, onClose, onSave, onDelete }) {
             <select value={time} onChange={e => setTime(e.target.value)}
               className="w-full px-3 py-2 rounded-lg text-sm"
               style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }}>
-              {TIME_PRESETS.map(t => <option key={t} value={t}>{t}</option>)}
+              {(groupSlots.length > 0 ? groupSlots : TIME_PRESETS).map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
         </div>
