@@ -11780,37 +11780,71 @@ function SettingsModal({ open, onClose, members, sessions, classLog, trials, set
           {/* 수강권 자동 복구 */}
           <button
             onClick={async () => {
-              if (!confirm('수강권 데이터를 자동으로 복구합니다.\n\n• 패스 초과 사용분 → 다음 패스로 이동\n• 미래 날짜 출석 → 예약 확정으로 복구\n\n계속할까요?')) return;
+              if (!confirm('수강권 데이터를 자동으로 복구합니다.\n\n• 패스 초과 사용분 → 다음 패스로 이동 (passId 포함)\n• 미래 날짜 출석 → 예약 확정으로 복구\n\n계속할까요?')) return;
               const todayStr = toYMD(new Date());
-              let changed = 0;
+              let newSessions = { ...sessions };
+              let totalChanges = 0;
 
-              // 1. 각 회원 패스 개별 수정 (stale closure 방지: setMembers callback 사용)
               for (const m of members) {
                 const passes = [...(m.passes || [])].sort((a, b) =>
                   (a.startDate||'').localeCompare(b.startDate||''));
-                let overflow = [];
+                
+                let overflow = []; // { date, fromPassId }
                 let memberChanged = false;
+                
                 const fixedPasses = passes.map(p => {
-                  let sd = [...new Set([...(p.sessionDates || []), ...overflow])].sort();
+                  // 이전 패스 overflow 날짜 + 기존 sessionDates 합치기
+                  const incomingDates = overflow.map(o => o.date);
+                  const incomingFromPassId = overflow.length > 0 ? overflow[0].fromPassId : null;
+                  let sd = [...new Set([...(p.sessionDates || []), ...incomingDates])].sort();
                   overflow = [];
                   const total = p.totalSessions || 0;
+
+                  // 넘어온 날짜의 세션 참여자 passId를 현재 패스로 변경
+                  if (incomingDates.length > 0 && incomingFromPassId) {
+                    Object.keys(newSessions).forEach(key => {
+                      const dateStr = key.split('_')[0];
+                      if (!incomingDates.includes(dateStr)) return;
+                      const sess = newSessions[key];
+                      const newParts = (sess.participants || []).map(pp => {
+                        if (pp.memberId === m.id && pp.passId === incomingFromPassId) {
+                          return { ...pp, passId: p.id };
+                        }
+                        return pp;
+                      });
+                      if (JSON.stringify(newParts) !== JSON.stringify(sess.participants)) {
+                        newSessions[key] = { ...sess, participants: newParts };
+                        totalChanges++;
+                      }
+                    });
+                    memberChanged = true;
+                  }
+
+                  // 미래 날짜 sessionDates에서 제거
                   const futureDates = sd.filter(d => d > todayStr);
-                  sd = sd.filter(d => d <= todayStr);
-                  if (futureDates.length > 0) { changed += futureDates.length; memberChanged = true; }
+                  if (futureDates.length > 0) {
+                    sd = sd.filter(d => d <= todayStr);
+                    memberChanged = true;
+                    totalChanges += futureDates.length;
+                  }
+
+                  // totalSessions 초과분 → 다음 패스로 overflow
                   if (total > 0 && sd.length > total) {
-                    overflow = sd.slice(total);
+                    const excess = sd.slice(total);
+                    overflow = excess.map(d => ({ date: d, fromPassId: p.id }));
                     sd = sd.slice(0, total);
                     memberChanged = true;
-                    changed++;
+                    totalChanges++;
                   }
+
                   return { ...p, sessionDates: sd, usedSessions: sd.length };
                 });
+
                 if (memberChanged) {
-                  const updatedMember = { ...m, passes: fixedPasses };
-                  // upsertMember 패턴: callback 안에서 저장
+                  const updated = { ...m, passes: fixedPasses };
                   await new Promise(resolve => {
                     setMembers(prev => {
-                      const next = prev.map(x => x.id === m.id ? updatedMember : x);
+                      const next = prev.map(x => x.id === m.id ? updated : x);
                       saveKey(K.members, next).then(resolve);
                       return next;
                     });
@@ -11818,9 +11852,7 @@ function SettingsModal({ open, onClose, members, sessions, classLog, trials, set
                 }
               }
 
-              // 2. 미래 attended 세션 → reserved 복구
-              let newSessions = { ...sessions };
-              let sessChanged = false;
+              // 미래 attended 세션 → reserved
               Object.keys(newSessions).forEach(key => {
                 const date = key.split('_')[0];
                 if (date <= todayStr) return;
@@ -11830,21 +11862,19 @@ function SettingsModal({ open, onClose, members, sessions, classLog, trials, set
                 );
                 if (newParts.some((p, i) => p.status !== sess.participants[i]?.status)) {
                   newSessions[key] = { ...sess, participants: newParts };
-                  sessChanged = true;
-                  changed++;
+                  totalChanges++;
                 }
               });
-              if (sessChanged) {
-                setSessions(newSessions);
-                await saveKey(K.sessions, newSessions);
-              }
 
-              if (changed === 0) { toast('수정할 데이터가 없어요'); return; }
-              toast(`✓ 복구 완료 (${changed}건). 새로고침해주세요.`);
+              setSessions(newSessions);
+              await saveKey(K.sessions, newSessions);
+
+              if (totalChanges === 0) { toast('수정할 데이터가 없어요'); return; }
+              toast(`✓ 복구 완료 (${totalChanges}건 수정). 새로고침해주세요.`);
             }}
             className="w-full py-2 rounded-lg text-sm font-medium mb-2"
             style={{ backgroundColor: '#4A7A5C', color: '#FFF' }}>
-            🔄 수강권 자동 복구 (초과분 이동 + 미래 출석 복구)
+            🔄 수강권 자동 복구 (초과분 이동 + passId 수정)
           </button>
           <div className="grid grid-cols-2 gap-2">
             <button
