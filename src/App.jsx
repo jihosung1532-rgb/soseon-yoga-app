@@ -3919,6 +3919,11 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
   // "수업 완료" — 그 슬롯의 미처리(reserved) 회원 전원을 출석+차감 처리
   const completeSession = async (date, item) => {
     const dateStr = toYMD(date);
+    // 미래 수업 완료 방지
+    const today = toYMD(new Date());
+    if (dateStr > today) {
+      if (!confirm(`${dateStr}은 아직 지나지 않은 날짜예요.\n미래 수업을 완료 처리하면 출석·차감이 잘못될 수 있어요.\n그래도 처리할까요?`)) return;
+    }
     const key = `${dateStr}_${item.time}`;
     const sess = sessions[key];
     if (!sess?.participants?.length) { toast('처리할 참여자가 없어요'); return; }
@@ -11772,6 +11777,51 @@ function SettingsModal({ open, onClose, members, sessions, classLog, trials, set
           <div className="text-[11px] mb-3" style={{ color: '#8B5A1F' }}>
             화면 데이터가 이상하면 먼저 [진단]으로 localStorage 백업 확인. 데이터가 있으면 [localStorage → 화면 복구]로 복구하세요.
           </div>
+          {/* 수강권 자동 복구 */}
+          <button
+            onClick={async () => {
+              if (!confirm('수강권 데이터를 자동으로 복구합니다.\n\n• 패스 초과 사용분 → 다음 패스로 이동\n• 미래 날짜 출석 → 예약 확정으로 복구\n\n계속할까요?')) return;
+              const todayStr = toYMD(new Date());
+              let newMembers = members.map(m => {
+                const passes = [...(m.passes || [])].sort((a, b) => (a.startDate||'').localeCompare(b.startDate||''));
+                let overflow = [];
+                const fixedPasses = passes.map((p, idx) => {
+                  let sd = [...new Set([...(p.sessionDates || []), ...overflow])].sort();
+                  overflow = [];
+                  const total = p.totalSessions || 0;
+                  // 미래 날짜 제거
+                  sd = sd.filter(d => d <= todayStr);
+                  // 초과 → overflow
+                  if (total > 0 && sd.length > total) {
+                    overflow = sd.slice(total);
+                    sd = sd.slice(0, total);
+                  }
+                  return { ...p, sessionDates: sd, usedSessions: sd.length };
+                });
+                return { ...m, passes: fixedPasses };
+              });
+              // 미래 attended 세션 → reserved 복구
+              let newSessions = { ...sessions };
+              Object.keys(newSessions).forEach(key => {
+                const date = key.split('_')[0];
+                if (date <= todayStr) return;
+                const sess = newSessions[key];
+                const newParts = (sess.participants || []).map(p =>
+                  p.status === 'attended' ? { ...p, status: 'reserved' } : p
+                );
+                const changed = newParts.some((p, i) => p.status !== (sess.participants[i]?.status));
+                if (changed) newSessions[key] = { ...sess, participants: newParts };
+              });
+              setMembers(newMembers);
+              setSessions(newSessions);
+              await saveKey(K.members, newMembers);
+              await saveKey(K.sessions, newSessions);
+              toast('✓ 수강권 데이터 복구 완료');
+            }}
+            className="w-full py-2 rounded-lg text-sm font-medium mb-2"
+            style={{ backgroundColor: '#4A7A5C', color: '#FFF' }}>
+            🔄 수강권 자동 복구 (초과분 이동 + 미래 출석 복구)
+          </button>
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => {
