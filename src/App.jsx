@@ -11782,26 +11782,45 @@ function SettingsModal({ open, onClose, members, sessions, classLog, trials, set
             onClick={async () => {
               if (!confirm('수강권 데이터를 자동으로 복구합니다.\n\n• 패스 초과 사용분 → 다음 패스로 이동\n• 미래 날짜 출석 → 예약 확정으로 복구\n\n계속할까요?')) return;
               const todayStr = toYMD(new Date());
-              let newMembers = members.map(m => {
-                const passes = [...(m.passes || [])].sort((a, b) => (a.startDate||'').localeCompare(b.startDate||''));
+              let changed = 0;
+
+              // 1. 각 회원 패스 개별 수정 (stale closure 방지: setMembers callback 사용)
+              for (const m of members) {
+                const passes = [...(m.passes || [])].sort((a, b) =>
+                  (a.startDate||'').localeCompare(b.startDate||''));
                 let overflow = [];
-                const fixedPasses = passes.map((p, idx) => {
+                let memberChanged = false;
+                const fixedPasses = passes.map(p => {
                   let sd = [...new Set([...(p.sessionDates || []), ...overflow])].sort();
                   overflow = [];
                   const total = p.totalSessions || 0;
-                  // 미래 날짜 제거
+                  const futureDates = sd.filter(d => d > todayStr);
                   sd = sd.filter(d => d <= todayStr);
-                  // 초과 → overflow
+                  if (futureDates.length > 0) { changed += futureDates.length; memberChanged = true; }
                   if (total > 0 && sd.length > total) {
                     overflow = sd.slice(total);
                     sd = sd.slice(0, total);
+                    memberChanged = true;
+                    changed++;
                   }
                   return { ...p, sessionDates: sd, usedSessions: sd.length };
                 });
-                return { ...m, passes: fixedPasses };
-              });
-              // 미래 attended 세션 → reserved 복구
+                if (memberChanged) {
+                  const updatedMember = { ...m, passes: fixedPasses };
+                  // upsertMember 패턴: callback 안에서 저장
+                  await new Promise(resolve => {
+                    setMembers(prev => {
+                      const next = prev.map(x => x.id === m.id ? updatedMember : x);
+                      saveKey(K.members, next).then(resolve);
+                      return next;
+                    });
+                  });
+                }
+              }
+
+              // 2. 미래 attended 세션 → reserved 복구
               let newSessions = { ...sessions };
+              let sessChanged = false;
               Object.keys(newSessions).forEach(key => {
                 const date = key.split('_')[0];
                 if (date <= todayStr) return;
@@ -11809,14 +11828,19 @@ function SettingsModal({ open, onClose, members, sessions, classLog, trials, set
                 const newParts = (sess.participants || []).map(p =>
                   p.status === 'attended' ? { ...p, status: 'reserved' } : p
                 );
-                const changed = newParts.some((p, i) => p.status !== (sess.participants[i]?.status));
-                if (changed) newSessions[key] = { ...sess, participants: newParts };
+                if (newParts.some((p, i) => p.status !== sess.participants[i]?.status)) {
+                  newSessions[key] = { ...sess, participants: newParts };
+                  sessChanged = true;
+                  changed++;
+                }
               });
-              setMembers(newMembers);
-              setSessions(newSessions);
-              await saveKey(K.members, newMembers);
-              await saveKey(K.sessions, newSessions);
-              toast('✓ 수강권 데이터 복구 완료');
+              if (sessChanged) {
+                setSessions(newSessions);
+                await saveKey(K.sessions, newSessions);
+              }
+
+              if (changed === 0) { toast('수정할 데이터가 없어요'); return; }
+              toast(`✓ 복구 완료 (${changed}건). 새로고침해주세요.`);
             }}
             className="w-full py-2 rounded-lg text-sm font-medium mb-2"
             style={{ backgroundColor: '#4A7A5C', color: '#FFF' }}>
