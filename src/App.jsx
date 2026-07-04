@@ -6740,6 +6740,61 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
               style={{ color: theme.inkMute, border: `1px dashed ${theme.line}`, backgroundColor: 'transparent' }}>
               🔄 수강권 회차 동기화 (세션 순서 재계산)
             </button>
+            {/* 패스 초과분 이동 버튼 */}
+            {(() => {
+              const todayStr = toYMD(new Date());
+              const sortedPasses = [...(member.passes || [])].sort((a,b)=>(a.startDate||'').localeCompare(b.startDate||''));
+              const hasOverflow = sortedPasses.some((p,i) => {
+                const sd = (p.sessionDates||[]).filter(d=>d<=todayStr);
+                return sd.length > (p.totalSessions||0) && i < sortedPasses.length-1;
+              });
+              if (!hasOverflow) return null;
+              return (
+                <button
+                  onClick={async () => {
+                    if (!confirm('초과 사용된 수업을 다음 수강권으로 이동합니다.\n수강이력의 소속 패스가 변경돼요.')) return;
+                    const todayStr2 = toYMD(new Date());
+                    let newSessions2 = { ...sessions };
+                    let overflow2 = [];
+                    const fixedPasses2 = sortedPasses.map(p => {
+                      const inDates = overflow2.map(o=>o.date);
+                      const inFromId = overflow2.length>0 ? overflow2[0].fromPassId : null;
+                      let sd = [...new Set([...(p.sessionDates||[]), ...inDates])].sort();
+                      overflow2 = [];
+                      const total = p.totalSessions||0;
+                      // 넘어온 날짜의 세션 참여자 passId를 이 패스로 변경
+                      if (inDates.length>0 && inFromId) {
+                        Object.keys(newSessions2).forEach(key=>{
+                          const d2=key.split('_')[0];
+                          if (!inDates.includes(d2)) return;
+                          const sess=newSessions2[key];
+                          const newParts=(sess.participants||[]).map(pp=>
+                            pp.memberId===member.id && pp.passId===inFromId
+                              ? {...pp, passId: p.id}
+                              : pp
+                          );
+                          newSessions2[key]={...sess, participants: newParts};
+                        });
+                      }
+                      sd = sd.filter(d=>d<=todayStr2);
+                      if (total>0 && sd.length>total) {
+                        overflow2=sd.slice(total).map(d=>({date:d,fromPassId:p.id}));
+                        sd=sd.slice(0,total);
+                      }
+                      return {...p, sessionDates:sd, usedSessions:sd.length};
+                    });
+                    const updatedMember = {...member, passes: fixedPasses2};
+                    setSessions(newSessions2);
+                    await saveKey(K.sessions, newSessions2);
+                    await onUpdate(updatedMember);
+                    toast('✓ 패스 초과분 이동 완료. 수강이력을 확인해주세요.');
+                  }}
+                  className="w-full text-[11px] py-1.5 rounded-lg mt-1"
+                  style={{ color: '#4A7A5C', border: `1px dashed #4A7A5C`, backgroundColor: '#F0F7F3' }}>
+                  📦 패스 초과 수업 다음 수강권으로 이동
+                </button>
+              );
+            })()}
             <Button icon={Plus} onClick={() => setAddingPass(true)} className="w-full">수강권 추가</Button>
           </div>
         )}
