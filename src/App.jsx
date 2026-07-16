@@ -358,6 +358,7 @@ const K = {
   seeded:      { lkey: 'sosun:seeded:v8',      table: 'settings', id: 'seeded' },
   groupSlots:  { lkey: 'sosun:groupSlots:v8',  table: 'settings', id: 'groupSlots' },
   closedDays:  { lkey: 'sosun:closedDays:v8',  table: 'settings', id: 'closedDays' },
+  feeRates:    { lkey: 'sosun:feeRates:v8',    table: 'settings', id: 'feeRates' },
 };
 
 async function loadKey(k, fallback) {
@@ -5969,6 +5970,7 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
   const [addingPass, setAddingPass] = useState(false);
   const [convertingPass, setConvertingPass] = useState(null);
   const [editingPass, setEditingPass] = useState(null);
+  const [refundingPass, setRefundingPass] = useState(null);
   const [editingHistory, setEditingHistory] = useState(null); // {passId, date, time}
   const [rhythmCalPass, setRhythmCalPass] = useState(null); // 리듬 달력 모달 대상 패스
 
@@ -6584,6 +6586,10 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                       <RefreshCw size={11} /> 전환
                     </Button>
                     <Button size="sm" variant="ghost" icon={Trash2} onClick={() => deletePass(p.id)}></Button>
+                    <Button size="sm" variant="ghost" onClick={() => setRefundingPass(p)}
+                      style={{ color: theme.danger }}>
+                      💸 환불
+                    </Button>
                   </div>
                 </div>
               );
@@ -6867,6 +6873,34 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
               await onUpdate(nextMember);
               setEditingPass(null);
               toast('✓ 수강권 수정 완료');
+            }}
+          />
+        )}
+        {refundingPass && (
+          <RefundModal
+            pass={refundingPass}
+            member={member}
+            onClose={() => setRefundingPass(null)}
+            onConfirm={async (refundAmount, note) => {
+              const today = toYMD(new Date());
+              const refundRecord = {
+                id: `rf-${Date.now()}`,
+                passId: refundingPass.id,
+                date: today,
+                amount: refundAmount,
+                note,
+              };
+              // 수강권 archived 처리 + 환불 기록 저장
+              const nextMember = {
+                ...member,
+                passes: (member.passes || []).map(p =>
+                  p.id === refundingPass.id ? { ...p, archived: true } : p
+                ),
+                refunds: [...(member.refunds || []), refundRecord],
+              };
+              await onUpdate(nextMember);
+              setRefundingPass(null);
+              toast(`✓ 환불 처리 완료 (${refundAmount.toLocaleString()}원)`);
             }}
           />
         )}
@@ -10701,7 +10735,7 @@ function getMonthlyAlerts(targetMonth) {
   return alerts;
 }
 
-function StatsView({ members, trials, sessions, closedDays = [] }) {
+function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
   const now = new Date();
   const [monthOffset, setMonthOffset] = useState(0);
 
@@ -10714,15 +10748,31 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
     let totalFee = 0;    // 카드 수수료 합계
     const byCat = { group: 0, private: 0, trial: 0, other: 0 };
     const byMethod = { 카드: 0, 지역화폐: 0, 계좌이체: 0, 현금: 0, 기타: 0 };
+    const payments = []; // 이번달 결제 목록
     
-    // 결제수단별 수수료율 (실측치)
-    const FEE_RATE = {
-      신한카드: 0.0215,   // 2.15% (유연선 360,000 → 352,260 실측)
-      카드: 0.0215,       // 일반 카드도 같은 비율로 추정
-      지역화폐: 0.005,    // 0.50% (지역화폐 1,940,000 → 1,930,325 실측)
+    // 결제수단별 수수료율 (설정에서 변경 가능)
+    // 카드사별 실측치: 현대 2.27%, 우리/국민 2.30%, 신한 2.15%, 경기지역화폐 1.51%
+    const DEFAULT_FR = { 카드: 0.005, 신한카드: 0.005, 체크카드: 0.0025, 지역화폐: 0.005, 계좌이체: 0, 현금: 0 };
+    const MEASURED_FR = {
+      현대카드: 0.0227,
+      우리카드: 0.0230,
+      국민카드: 0.0230,
+      신한카드: 0.0215,
+      삼성카드: 0.0215, // 미실측, 신한카드 유사 추정
+      하나카드: 0.0215,
+      롯데카드: 0.0215,
+      bc카드:   0.0215,
+      농협카드: 0.0215,
+      카드:     0.0215, // 기타 카드
+      체크카드: 0.0150, // 체크 추정
+      지역화폐: 0.0151, // 경기지역화폐 실측
+      경기지역화폐: 0.0151,
       계좌이체: 0,
       현금: 0,
     };
+    const savedFR = feeRates || {};
+    // savedFR에 커스텀 설정이 있으면 우선, 없으면 실측치, 그것도 없으면 기본값
+    const FEE_RATE = { ...MEASURED_FR, ...savedFR };
     
     members.forEach(m => {
       (m.passes || []).forEach(p => {
@@ -10731,14 +10781,20 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
           const cat = p.category || 'other';
           byCat[cat] = (byCat[cat] || 0) + p.price;
           
-          // 결제수단별 수수료 계산
-          const method = p.paymentMethod || '';
+          // 카드사명 기반 수수료율 결정
+          const methodLow = method.toLowerCase();
           let feeRate = 0;
-          if (method.includes('지역화폐')) {
-            feeRate = FEE_RATE.지역화폐;
+          const cardNames = ['현대카드','우리카드','국민카드','신한카드','삼성카드','하나카드','롯데카드','bc카드','농협카드'];
+          const matchedCard = cardNames.find(c => method.includes(c.replace('카드','')) || methodLow.includes(c));
+          
+          if (method.includes('지역화폐') || method.includes('지역화')) {
+            feeRate = FEE_RATE.지역화폐 || FEE_RATE.경기지역화폐 || 0.0151;
             byMethod.지역화폐 += p.price;
+          } else if (matchedCard) {
+            feeRate = FEE_RATE[matchedCard] || FEE_RATE.카드 || 0.0215;
+            byMethod.카드 += p.price;
           } else if (method.includes('카드')) {
-            feeRate = FEE_RATE.카드;
+            feeRate = FEE_RATE.카드 || 0.0215;
             byMethod.카드 += p.price;
           } else if (method.includes('계좌') || method.includes('이체')) {
             byMethod.계좌이체 += p.price;
@@ -10750,6 +10806,18 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
           const fee = Math.round(p.price * feeRate);
           totalFee += fee;
           netRevenue += (p.price - fee);
+
+          // 이번달 결제 목록 수집
+          payments.push({
+            name: m.name,
+            type: p.type || '',
+            date: p.paymentDate,
+            price: p.price,
+            method: method || '미입력',
+            rhythmBonus: p.rhythmBonus || 0,
+            reviewBonus: p.reviewEventBonus || 0,
+            mayBonus: p.mayEventBonus || 0,
+          });
         }
       });
       (m.refunds || []).forEach(r => {
@@ -10774,9 +10842,10 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
     return { 
       revenue, count, refundTotal, 
       net: revenue - refundTotal, 
-      netRevenue: netRevenue - refundTotal, // 실수령액 (수수료 차감 + 환불 차감)
+      netRevenue: netRevenue - refundTotal,
       totalFee,
       byCat, byMethod,
+      payments: payments.sort((a,b) => a.date.localeCompare(b.date)),
       trialTotal: monthTrials.length, converted, conversionRate, trialRevenue 
     };
   }, [members, trials, targetYM]);
@@ -11233,40 +11302,95 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
             
             {/* 결제수단별 매출 분포 */}
             <div className="mb-3 p-2 rounded-lg" style={{ backgroundColor: theme.cardAlt2 }}>
-              <div className="text-[10px] mb-1.5" style={{ color: theme.inkMute }}>결제수단별 매출</div>
+              <div className="text-[10px] mb-2" style={{ color: theme.inkMute }}>결제수단별 매출</div>
+              {/* 바 그래프 */}
+              {stats.revenue > 0 && (
+                <div className="flex rounded-full overflow-hidden mb-2" style={{ height: 8, backgroundColor: theme.lineLight }}>
+                  {[
+                    { key: '카드', color: '#3A5CC9' },
+                    { key: '지역화폐', color: '#C9A961' },
+                    { key: '계좌이체', color: '#4A7A5C' },
+                    { key: '현금', color: '#7A9A8C' },
+                    { key: '기타', color: '#B0ADA6' },
+                  ].filter(m => stats.byMethod[m.key] > 0).map((m, i, arr) => (
+                    <div key={m.key} style={{ width: `${(stats.byMethod[m.key]/stats.revenue*100).toFixed(1)}%`, backgroundColor: m.color, borderRadius: i===0?'4px 0 0 4px':i===arr.length-1?'0 4px 4px 0':'0' }} />
+                  ))}
+                </div>
+              )}
               <div className="space-y-1 text-[11px]">
-                {stats.byMethod.지역화폐 > 0 && (
-                  <div className="flex justify-between">
-                    <span style={{ color: theme.inkSoft }}>🟢 지역화폐 (수수료 0.5%)</span>
-                    <span><strong style={{ color: theme.ink }}>{stats.byMethod.지역화폐.toLocaleString()}원</strong></span>
-                  </div>
-                )}
                 {stats.byMethod.카드 > 0 && (
-                  <div className="flex justify-between">
-                    <span style={{ color: theme.inkSoft }}>🔵 카드 (수수료 2.15%)</span>
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-1.5"><span style={{width:8,height:8,borderRadius:'50%',backgroundColor:'#3A5CC9',display:'inline-block'}}/>💳 카드 (수수료 2.15%)</span>
                     <span><strong style={{ color: theme.ink }}>{stats.byMethod.카드.toLocaleString()}원</strong></span>
                   </div>
                 )}
+                {stats.byMethod.지역화폐 > 0 && (
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-1.5"><span style={{width:8,height:8,borderRadius:'50%',backgroundColor:'#C9A961',display:'inline-block'}}/>🪙 지역화폐 (수수료 0.5%)</span>
+                    <span><strong style={{ color: theme.ink }}>{stats.byMethod.지역화폐.toLocaleString()}원</strong></span>
+                  </div>
+                )}
                 {stats.byMethod.계좌이체 > 0 && (
-                  <div className="flex justify-between">
-                    <span style={{ color: theme.inkSoft }}>⚪ 계좌이체 (수수료 X)</span>
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-1.5"><span style={{width:8,height:8,borderRadius:'50%',backgroundColor:'#4A7A5C',display:'inline-block'}}/>🏦 계좌이체 (수수료 X)</span>
                     <span><strong style={{ color: theme.ink }}>{stats.byMethod.계좌이체.toLocaleString()}원</strong></span>
                   </div>
                 )}
                 {stats.byMethod.현금 > 0 && (
-                  <div className="flex justify-between">
-                    <span style={{ color: theme.inkSoft }}>💵 현금 (수수료 X)</span>
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-1.5"><span style={{width:8,height:8,borderRadius:'50%',backgroundColor:'#7A9A8C',display:'inline-block'}}/>💵 현금 (수수료 X)</span>
                     <span><strong style={{ color: theme.ink }}>{stats.byMethod.현금.toLocaleString()}원</strong></span>
                   </div>
                 )}
                 {stats.byMethod.기타 > 0 && (
-                  <div className="flex justify-between">
-                    <span style={{ color: theme.inkSoft }}>· 기타</span>
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-1.5"><span style={{width:8,height:8,borderRadius:'50%',backgroundColor:'#B0ADA6',display:'inline-block'}}/>· 기타 / 미입력</span>
                     <span><strong style={{ color: theme.ink }}>{stats.byMethod.기타.toLocaleString()}원</strong></span>
                   </div>
                 )}
               </div>
             </div>
+
+            {/* 이번달 결제 내역 */}
+            {stats.payments.length > 0 && (
+              <div className="mb-3">
+                <div className="text-[10px] font-bold mb-2" style={{ color: theme.inkMute }}>📋 이번달 결제 내역</div>
+                <div className="space-y-1.5">
+                  {stats.payments.map((pay, i) => {
+                    const method = pay.method || '';
+                    const isCard = method.includes('카드');
+                    const isLocal = method.includes('지역화폐');
+                    const isCash = method.includes('현금');
+                    const isTransfer = method.includes('계좌') || method.includes('이체');
+                    const tagBg = isCard ? '#E8EDF8' : isLocal ? '#F5EBC8' : isCash ? '#E8F4E8' : isTransfer ? '#E8F4EE' : theme.cardAlt2;
+                    const tagColor = isCard ? '#3A5CC9' : isLocal ? '#7A5C00' : isCash ? '#2C6E2C' : isTransfer ? '#1A5C3A' : theme.inkMute;
+                    const tagLabel = isCard ? '💳 카드' : isLocal ? '🪙 지역화폐' : isCash ? '💵 현금' : isTransfer ? '🏦 이체' : '미입력';
+                    const bonuses = [];
+                    if (pay.rhythmBonus) bonuses.push(`리듬+${pay.rhythmBonus}`);
+                    if (pay.reviewBonus) bonuses.push(`리뷰+${pay.reviewBonus}`);
+                    if (pay.mayBonus) bonuses.push(`5월+${pay.mayBonus}`);
+                    return (
+                      <div key={i} className="flex items-center justify-between rounded-lg px-3 py-2"
+                        style={{ backgroundColor: theme.card, border: `1px solid ${theme.lineLight}` }}>
+                        <div>
+                          <div className="text-[12px] font-bold" style={{ color: theme.ink }}>
+                            {pay.name}
+                            {bonuses.length > 0 && <span className="ml-1 text-[9px] font-normal" style={{ color: '#7A5C00' }}>{bonuses.join(' ')}</span>}
+                          </div>
+                          <div className="text-[10px] mt-0.5" style={{ color: theme.inkMute }}>
+                            {pay.date} · {pay.type}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-[12px] font-bold" style={{ color: theme.ink }}>{pay.price.toLocaleString()}원</div>
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ backgroundColor: tagBg, color: tagColor }}>{tagLabel}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             
             {revenueInsight.prevMonthDelta !== null && (
               <InsightRow label="전월 대비"
@@ -11689,7 +11813,7 @@ function GroupSlotsManager({ groupSlots, setGroupSlots, toast }) {
   );
 }
 
-function SettingsModal({ open, onClose, members, sessions, classLog, trials, setMembers, setSessions, setClassLog, setTrials, groupSlots, setGroupSlots, toast }) {
+function SettingsModal({ open, onClose, members, sessions, classLog, trials, setMembers, setSessions, setClassLog, setTrials, groupSlots, setGroupSlots, feeRates, setFeeRates, toast }) {
   const fileRef = useRef();
   const [importMode, setImportMode] = useState(null); // null | 'overwrite' | 'merge'
   const [pendingImport, setPendingImport] = useState(null);
@@ -11789,6 +11913,66 @@ function SettingsModal({ open, onClose, members, sessions, classLog, trials, set
   return (
     <Modal open={open} onClose={onClose} title="설정" maxWidth="max-w-md">
       <div className="space-y-4">
+        {/* 💳 수수료율 설정 */}
+        <div className="rounded-2xl p-3" style={{ backgroundColor: theme.cardAlt }}>
+          <div className="font-bold text-sm mb-1" style={{ color: theme.ink }}>💳 결제 수수료율 설정</div>
+          <div className="text-[10px] mb-3" style={{ color: theme.inkMute }}>
+            영세 가맹점(연 매출 3억↓): 카드 0.5% · 체크 0.25%<br/>
+            중소 가맹점(3억~5억): 카드 1.1% · 체크 0.85%<br/>
+            일반·신규 가맹점: 카드 최대 2.3% (나중에 환급됨)
+          </div>
+          {/* 빠른 선택 */}
+          <div className="flex gap-1.5 mb-3">
+            {[
+              { label: '영세 (3억↓)', card: 0.005, local: 0.005, check: 0.0025 },
+              { label: '중소 (3~5억)', card: 0.011, local: 0.005, check: 0.0085 },
+              { label: '일반·신규', card: 0.0215, local: 0.005, check: 0.015 },
+            ].map(preset => {
+              const isActive = Math.abs((feeRates?.카드 || 0) - preset.card) < 0.0001;
+              return (
+                <button key={preset.label}
+                  onClick={async () => {
+                    const next = { ...feeRates, 카드: preset.card, 신한카드: preset.card, 체크카드: preset.check, 지역화폐: preset.local };
+                    setFeeRates(next);
+                    await saveKey(K.feeRates, next);
+                    toast(`✓ ${preset.label} 수수료율 적용`);
+                  }}
+                  className="flex-1 py-1.5 rounded-lg text-[10px] font-medium"
+                  style={{ backgroundColor: isActive ? theme.accent : theme.cardAlt2, color: isActive ? '#FFF' : theme.ink }}>
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
+          {/* 직접 입력 */}
+          <div className="space-y-1.5">
+            {[
+              { key: '카드', label: '💳 신용카드 수수료율' },
+              { key: '체크카드', label: '💳 체크카드 수수료율' },
+              { key: '지역화폐', label: '🪙 지역화폐 수수료율' },
+            ].map(({ key, label }) => (
+              <div key={key} className="flex items-center gap-2">
+                <span className="text-[11px] flex-1" style={{ color: theme.inkSoft }}>{label}</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number" step="0.01" min="0" max="10"
+                    value={((feeRates?.[key] || 0) * 100).toFixed(2)}
+                    onChange={async (e) => {
+                      const next = { ...feeRates, [key]: parseFloat(e.target.value) / 100 || 0 };
+                      if (key === '카드') next['신한카드'] = next['카드'];
+                      setFeeRates(next);
+                      await saveKey(K.feeRates, next);
+                    }}
+                    className="w-16 px-2 py-1 rounded text-[11px] text-right"
+                    style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }}
+                  />
+                  <span className="text-[11px]" style={{ color: theme.inkMute }}>%</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
         {/* Backup section */}
         <div className="rounded-2xl p-3" style={{ backgroundColor: theme.cardAlt }}>
           <div className="font-bold text-sm mb-2" style={{ color: theme.ink }}>데이터 백업</div>
@@ -12052,6 +12236,9 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [smsConfirmed, setSmsConfirmed] = useState({});
   const [groupSlots, setGroupSlots] = useState(DEFAULT_GROUP_SLOTS);
+  // 수수료율 설정 (카드사별 실측치 기본값)
+  const DEFAULT_FEE_RATES = { 카드: 0.0215, 신한카드: 0.0215, 체크카드: 0.015, 지역화폐: 0.0151, 계좌이체: 0, 현금: 0 };
+  const [feeRates, setFeeRates] = useState(DEFAULT_FEE_RATES);
   const [closedDays, setClosedDays] = useState([]); // [{date: 'YYYY-MM-DD', reason: '...'}]
   const [ready, setReady] = useState(false);
   const [authed, setAuthed] = useState(false);
@@ -12257,6 +12444,8 @@ export default function App() {
     const sc = await loadKey(K.smsConfirmed, {});
     const gs = await loadKey(K.groupSlots, DEFAULT_GROUP_SLOTS);
     const cd = await loadKey(K.closedDays, []);
+    const fr = await loadKey(K.feeRates, null);
+    if (fr) setFeeRates(fr);
     
     // 마이그레이션: 미래 날짜 sessions의 차감을 되돌리고 status를 'reserved'로 설정
     const migrationFlag = await loadKey({ lkey: 'sosun:migration:reserved-fix:v1', table: 'settings', id: 'migration_reserved_fix_v1' }, false);
@@ -12932,7 +13121,7 @@ export default function App() {
         <ClassLogView classLog={classLog} setClassLog={setClassLog} sessions={sessions} setSessions={setSessions} members={members} groupSlots={groupSlots} toast={toast} />
       )}
       {tab === 'stats' && (
-        <StatsView members={members} trials={trials} sessions={sessions} closedDays={closedDays} />
+        <StatsView members={members} trials={trials} sessions={sessions} closedDays={closedDays} feeRates={feeRates} />
       )}
       <Toast msg={toastMsg} onDone={() => setToastMsg('')} />
       {settingsOpen && (
@@ -12940,6 +13129,7 @@ export default function App() {
           members={members} sessions={sessions} classLog={classLog} trials={trials}
           setMembers={setMembers} setSessions={setSessions} setClassLog={setClassLog} setTrials={setTrials}
           groupSlots={groupSlots} setGroupSlots={setGroupSlots}
+          feeRates={feeRates} setFeeRates={setFeeRates}
           toast={toast} />
       )}
       {smsDialog && (
@@ -12962,6 +13152,113 @@ export default function App() {
 
 
 // ───────── 수강권 수정 모달 ─────────
+// ───────── 환불 계산기 모달 ─────────
+const NORMAL_PRICE_PER_SESSION = 30000; // 정상가 1회 3만원
+
+function RefundModal({ pass, member, onClose, onConfirm }) {
+  const used = (pass.sessionDates || []).length;
+  const price = pass.price || 0;
+  const isCard = (pass.paymentMethod || '').includes('카드');
+  const [customUsed, setCustomUsed] = useState(used);
+  const [note, setNote] = useState('');
+
+  const calc = (u) => {
+    const usedCost = u * NORMAL_PRICE_PER_SESSION;       // 사용 회수 × 정상가
+    const base = Math.max(0, price - usedCost);           // 환불 기준액
+    const cancelFee = Math.round(base * 0.10);            // 위약금 10%
+    const cardFee = isCard ? Math.round(base * 0.10) : 0; // 카드 수수료 10%
+    const refund = Math.max(0, base - cancelFee - cardFee);
+    return { usedCost, base, cancelFee, cardFee, refund };
+  };
+
+  const r = calc(customUsed);
+
+  return (
+    <Modal open={true} onClose={onClose} title="💸 환불 계산기">
+      <div className="space-y-3">
+        {/* 패스 정보 */}
+        <div className="rounded-xl p-3" style={{ backgroundColor: theme.cardAlt2 }}>
+          <div className="text-[12px] font-bold" style={{ color: theme.ink }}>{pass.type}</div>
+          <div className="text-[11px] mt-0.5" style={{ color: theme.inkMute }}>
+            결제 {price.toLocaleString()}원 · {pass.paymentMethod || '결제수단 미입력'}
+          </div>
+        </div>
+
+        {/* 사용 회수 조정 */}
+        <div>
+          <label className="text-[11px] font-medium" style={{ color: theme.inkSoft }}>
+            사용 회수 (정상가 {NORMAL_PRICE_PER_SESSION.toLocaleString()}원/회 적용)
+          </label>
+          <div className="flex items-center gap-3 mt-1.5">
+            <button onClick={() => setCustomUsed(Math.max(0, customUsed - 1))}
+              className="w-9 h-9 rounded-full text-lg font-bold"
+              style={{ backgroundColor: theme.cardAlt2, color: theme.ink }}>−</button>
+            <div className="text-center flex-1">
+              <span className="text-2xl font-bold" style={{ color: theme.ink }}>{customUsed}</span>
+              <span className="text-sm" style={{ color: theme.inkMute }}>회</span>
+              {customUsed !== used && (
+                <div className="text-[10px]" style={{ color: theme.warn }}>
+                  실제 사용 {used}회 · 수동 조정 중
+                </div>
+              )}
+            </div>
+            <button onClick={() => setCustomUsed(Math.min(pass.totalSessions || 99, customUsed + 1))}
+              className="w-9 h-9 rounded-full text-lg font-bold"
+              style={{ backgroundColor: theme.cardAlt2, color: theme.ink }}>+</button>
+          </div>
+        </div>
+
+        {/* 계산 내역 */}
+        <div className="rounded-xl p-3 space-y-2" style={{ backgroundColor: theme.highlight }}>
+          <div className="flex justify-between text-[12px]">
+            <span style={{ color: theme.inkSoft }}>결제 금액</span>
+            <span style={{ color: theme.ink }}>{price.toLocaleString()}원</span>
+          </div>
+          <div className="flex justify-between text-[12px]">
+            <span style={{ color: theme.inkSoft }}>사용 회수 차감 ({customUsed}회 × {NORMAL_PRICE_PER_SESSION.toLocaleString()}원)</span>
+            <span style={{ color: theme.danger }}>−{r.usedCost.toLocaleString()}원</span>
+          </div>
+          <div className="flex justify-between text-[12px] pt-1" style={{ borderTop: `1px solid ${theme.line}` }}>
+            <span style={{ color: theme.inkSoft }}>환불 기준액</span>
+            <span style={{ color: theme.ink, fontWeight: 700 }}>{r.base.toLocaleString()}원</span>
+          </div>
+          <div className="flex justify-between text-[12px]">
+            <span style={{ color: theme.inkSoft }}>위약금 (10%)</span>
+            <span style={{ color: theme.danger }}>−{r.cancelFee.toLocaleString()}원</span>
+          </div>
+          {isCard && (
+            <div className="flex justify-between text-[12px]">
+              <span style={{ color: theme.inkSoft }}>카드 수수료 (10%)</span>
+              <span style={{ color: theme.danger }}>−{r.cardFee.toLocaleString()}원</span>
+            </div>
+          )}
+          <div className="flex justify-between pt-2" style={{ borderTop: `2px solid ${theme.line}` }}>
+            <span className="text-[13px] font-bold" style={{ color: theme.ink }}>환불 금액</span>
+            <span className="text-[18px] font-bold" style={{ color: '#4A7A5C' }}>{r.refund.toLocaleString()}원</span>
+          </div>
+        </div>
+
+        {/* 메모 */}
+        <div>
+          <label className="text-[11px]" style={{ color: theme.inkMute }}>사유 / 메모 (선택)</label>
+          <input type="text" value={note} onChange={e => setNote(e.target.value)}
+            placeholder="예: 개인 사정으로 중도 환불"
+            className="w-full px-3 py-2 rounded-lg text-[12px] mt-1"
+            style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
+        </div>
+
+        <div className="flex gap-2 pt-1">
+          <Button variant="outline" onClick={onClose} className="flex-1">취소</Button>
+          <Button onClick={() => onConfirm(r.refund, note)} className="flex-1"
+            style={{ backgroundColor: theme.danger, color: '#FFF' }}>
+            환불 처리 ({r.refund.toLocaleString()}원)
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function PassEditModal({ pass, onClose, onSave }) {
   const [type, setType] = useState(pass.type || '');
   const [price, setPrice] = useState(pass.price || 0);
