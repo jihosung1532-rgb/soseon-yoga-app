@@ -10782,6 +10782,7 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
           byCat[cat] = (byCat[cat] || 0) + p.price;
           
           // 카드사명 기반 수수료율 결정
+          const method = p.paymentMethod || '';
           const methodLow = method.toLowerCase();
           let feeRate = 0;
           const cardNames = ['현대카드','우리카드','국민카드','신한카드','삼성카드','하나카드','롯데카드','bc카드','농협카드'];
@@ -13163,10 +13164,10 @@ function RefundModal({ pass, member, onClose, onConfirm }) {
   const [note, setNote] = useState('');
 
   const calc = (u) => {
-    const usedCost = u * NORMAL_PRICE_PER_SESSION;       // 사용 회수 × 정상가
-    const base = Math.max(0, price - usedCost);           // 환불 기준액
-    const cancelFee = Math.round(base * 0.10);            // 위약금 10%
-    const cardFee = isCard ? Math.round(base * 0.10) : 0; // 카드 수수료 10%
+    const usedCost = u * NORMAL_PRICE_PER_SESSION;        // 사용 회수 × 정상가
+    const cancelFee = Math.round(price * 0.10);            // 위약금 10% (결제금액 기준)
+    const cardFee = isCard ? Math.round(price * 0.10) : 0; // 카드/현금영수증 수수료 10% (결제금액 기준)
+    const base = Math.max(0, price - usedCost);            // 환불 기준액
     const refund = Math.max(0, base - cancelFee - cardFee);
     return { usedCost, base, cancelFee, cardFee, refund };
   };
@@ -13215,20 +13216,16 @@ function RefundModal({ pass, member, onClose, onConfirm }) {
             <span style={{ color: theme.ink }}>{price.toLocaleString()}원</span>
           </div>
           <div className="flex justify-between text-[12px]">
-            <span style={{ color: theme.inkSoft }}>사용 회수 차감 ({customUsed}회 × {NORMAL_PRICE_PER_SESSION.toLocaleString()}원)</span>
+            <span style={{ color: theme.inkSoft }}>정상가 이용금액 ({customUsed}회 × {NORMAL_PRICE_PER_SESSION.toLocaleString()}원)</span>
             <span style={{ color: theme.danger }}>−{r.usedCost.toLocaleString()}원</span>
           </div>
-          <div className="flex justify-between text-[12px] pt-1" style={{ borderTop: `1px solid ${theme.line}` }}>
-            <span style={{ color: theme.inkSoft }}>환불 기준액</span>
-            <span style={{ color: theme.ink, fontWeight: 700 }}>{r.base.toLocaleString()}원</span>
-          </div>
           <div className="flex justify-between text-[12px]">
-            <span style={{ color: theme.inkSoft }}>위약금 (10%)</span>
+            <span style={{ color: theme.inkSoft }}>위약금 (결제금액 × 10%)</span>
             <span style={{ color: theme.danger }}>−{r.cancelFee.toLocaleString()}원</span>
           </div>
-          {isCard && (
+          {(isCard || r.cardFee > 0) && (
             <div className="flex justify-between text-[12px]">
-              <span style={{ color: theme.inkSoft }}>카드 수수료 (10%)</span>
+              <span style={{ color: theme.inkSoft }}>카드/현금영수증 수수료 (결제금액 × 10%)</span>
               <span style={{ color: theme.danger }}>−{r.cardFee.toLocaleString()}원</span>
             </div>
           )}
