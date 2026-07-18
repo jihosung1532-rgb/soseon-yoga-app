@@ -6586,6 +6586,19 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                       <RefreshCw size={11} /> 전환
                     </Button>
                     <Button size="sm" variant="ghost" icon={Trash2} onClick={() => deletePass(p.id)}></Button>
+                    <Button size="sm" variant="ghost" onClick={async () => {
+                      if (!confirm(`${p.type} 수강권을 종료 처리할까요?\n남은 회수는 소멸되며 이전 수강권으로 이동합니다.`)) return;
+                      const nextMember = {
+                        ...member,
+                        passes: (member.passes || []).map(x =>
+                          x.id === p.id ? { ...x, archived: true, terminatedAt: toYMD(new Date()) } : x
+                        ),
+                      };
+                      await onUpdate(nextMember);
+                      toast('✓ 수강권 종료 처리 완료');
+                    }} style={{ color: theme.warn }}>
+                      🔒 종료
+                    </Button>
                     <Button size="sm" variant="ghost" onClick={() => setRefundingPass(p)}
                       style={{ color: theme.danger }}>
                       💸 환불
@@ -13159,10 +13172,140 @@ const NORMAL_PRICE_PER_SESSION = 30000; // 정상가 1회 3만원
 function RefundModal({ pass, member, onClose, onConfirm }) {
   const used = (pass.sessionDates || []).length;
   const price = pass.price || 0;
+  // 지역화폐 포함 모든 결제수단에 10% 수수료 적용
   const method = pass.paymentMethod || '';
-  // 카드 또는 현금영수증 발행 시 10% 수수료 적용
-  const hasReceiptFee = method.includes('카드') || method.includes('영수증O');
-  const isCard = hasReceiptFee;
+  const noCancelFee = method.includes('영수증X') || method.includes('계좌이체') || method.includes('이체') || (method.includes('현금') && !method.includes('영수증'));
+  const hasReceiptFee = !noCancelFee; // 카드, 지역화폐, 현금영수증O 모두 수수료 적용
+
+  const [customUsed, setCustomUsed] = useState(used);
+  const [note, setNote] = useState('');
+  const [manualAmount, setManualAmount] = useState(''); // 직접 입력 금액
+
+  const calc = (u) => {
+    const usedCost = u * NORMAL_PRICE_PER_SESSION;
+    const cancelFee = Math.round(price * 0.10);
+    const receiptFee = hasReceiptFee ? Math.round(price * 0.10) : 0;
+    const recommended = Math.max(0, price - usedCost - cancelFee - receiptFee);
+    return { usedCost, cancelFee, receiptFee, recommended };
+  };
+
+  const r = calc(customUsed);
+  const finalAmount = manualAmount !== '' ? parseInt(manualAmount.replace(/,/g, '')) || 0 : r.recommended;
+
+  return (
+    <Modal open={true} onClose={onClose} title="💸 환불 계산기">
+      <div className="space-y-3">
+        {/* 패스 정보 */}
+        <div className="rounded-xl p-3" style={{ backgroundColor: theme.cardAlt2 }}>
+          <div className="text-[12px] font-bold" style={{ color: theme.ink }}>{pass.type}</div>
+          <div className="text-[11px] mt-0.5" style={{ color: theme.inkMute }}>
+            결제 {price.toLocaleString()}원 · {method || '결제수단 미입력'}
+          </div>
+        </div>
+
+        {/* 사용 회수 조정 */}
+        <div>
+          <label className="text-[11px] font-medium" style={{ color: theme.inkSoft }}>
+            사용 회수 (정상가 {NORMAL_PRICE_PER_SESSION.toLocaleString()}원/회 적용)
+          </label>
+          <div className="flex items-center gap-3 mt-1.5">
+            <button onClick={() => setCustomUsed(Math.max(0, customUsed - 1))}
+              className="w-9 h-9 rounded-full text-lg font-bold"
+              style={{ backgroundColor: theme.cardAlt2, color: theme.ink }}>−</button>
+            <div className="text-center flex-1">
+              <span className="text-2xl font-bold" style={{ color: theme.ink }}>{customUsed}</span>
+              <span className="text-sm" style={{ color: theme.inkMute }}>회</span>
+              {customUsed !== used && (
+                <div className="text-[10px]" style={{ color: theme.warn }}>실제 {used}회 · 수동 조정 중</div>
+              )}
+            </div>
+            <button onClick={() => setCustomUsed(Math.min(pass.totalSessions || 99, customUsed + 1))}
+              className="w-9 h-9 rounded-full text-lg font-bold"
+              style={{ backgroundColor: theme.cardAlt2, color: theme.ink }}>+</button>
+          </div>
+        </div>
+
+        {/* 계산 내역 */}
+        <div className="rounded-xl p-3 space-y-2" style={{ backgroundColor: theme.highlight }}>
+          <div className="flex justify-between text-[12px]">
+            <span style={{ color: theme.inkSoft }}>결제 금액</span>
+            <span>{price.toLocaleString()}원</span>
+          </div>
+          <div className="flex justify-between text-[12px]">
+            <span style={{ color: theme.inkSoft }}>정상가 이용금액 ({customUsed}회 × {NORMAL_PRICE_PER_SESSION.toLocaleString()}원)</span>
+            <span style={{ color: theme.danger }}>−{r.usedCost.toLocaleString()}원</span>
+          </div>
+          <div className="flex justify-between text-[12px]">
+            <span style={{ color: theme.inkSoft }}>위약금 (결제금액 × 10%)</span>
+            <span style={{ color: theme.danger }}>−{r.cancelFee.toLocaleString()}원</span>
+          </div>
+          {hasReceiptFee && (
+            <div className="flex justify-between text-[12px]">
+              <span style={{ color: theme.inkSoft }}>
+                {method.includes('카드') ? '카드 수수료' : method.includes('지역화폐') ? '지역화폐 수수료' : '수수료'} (결제금액 × 10%)
+              </span>
+              <span style={{ color: theme.danger }}>−{r.receiptFee.toLocaleString()}원</span>
+            </div>
+          )}
+          <div className="flex justify-between pt-2 items-center" style={{ borderTop: `2px solid ${theme.line}` }}>
+            <span className="text-[12px]" style={{ color: theme.inkMute }}>추천 환불 금액</span>
+            <span className="text-[15px] font-bold" style={{ color: '#4A7A5C' }}>
+              {r.recommended.toLocaleString()}원
+            </span>
+          </div>
+        </div>
+
+        {/* 직접 금액 설정 */}
+        <div>
+          <label className="text-[11px] font-medium" style={{ color: theme.inkSoft }}>
+            실제 환불 금액 <span style={{ color: theme.inkMute }}>(추천금액과 다를 경우 직접 입력)</span>
+          </label>
+          <div className="flex items-center gap-2 mt-1.5">
+            <input
+              type="text"
+              value={manualAmount}
+              onChange={e => setManualAmount(e.target.value.replace(/[^0-9]/g, ''))}
+              placeholder={r.recommended.toLocaleString()}
+              className="flex-1 px-3 py-2 rounded-lg text-sm text-right"
+              style={{ border: `1px solid ${manualAmount ? theme.accent : theme.lineLight}`, backgroundColor: theme.card }}
+            />
+            <span className="text-sm" style={{ color: theme.inkMute }}>원</span>
+            {manualAmount && (
+              <button onClick={() => setManualAmount('')}
+                className="text-[11px] px-2 py-1 rounded"
+                style={{ color: theme.inkMute, backgroundColor: theme.cardAlt2 }}>초기화</button>
+            )}
+          </div>
+          {manualAmount && (
+            <div className="text-[10px] mt-1" style={{ color: theme.warn }}>
+              추천({r.recommended.toLocaleString()}원)과 다른 금액으로 처리돼요
+            </div>
+          )}
+        </div>
+
+        {/* 최종 환불 금액 강조 */}
+        <div className="rounded-xl p-3 text-center" style={{ backgroundColor: '#F0F7F3', border: '2px solid #4A7A5C' }}>
+          <div className="text-[11px]" style={{ color: '#4A7A5C' }}>최종 환불 금액</div>
+          <div className="text-[28px] font-bold" style={{ color: '#2C5A3E' }}>{finalAmount.toLocaleString()}원</div>
+        </div>
+
+        {/* 메모 */}
+        <input type="text" value={note} onChange={e => setNote(e.target.value)}
+          placeholder="사유 / 메모 (선택)"
+          className="w-full px-3 py-2 rounded-lg text-[12px]"
+          style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
+
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={onClose} className="flex-1">취소</Button>
+          <Button onClick={() => onConfirm(finalAmount, note)} className="flex-1"
+            style={{ backgroundColor: theme.danger, color: '#FFF' }}>
+            환불 처리 ({finalAmount.toLocaleString()}원)
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
   const [customUsed, setCustomUsed] = useState(used);
   const [note, setNote] = useState('');
 
@@ -13222,45 +13365,6 @@ function RefundModal({ pass, member, onClose, onConfirm }) {
             <span style={{ color: theme.inkSoft }}>정상가 이용금액 ({customUsed}회 × {NORMAL_PRICE_PER_SESSION.toLocaleString()}원)</span>
             <span style={{ color: theme.danger }}>−{r.usedCost.toLocaleString()}원</span>
           </div>
-          <div className="flex justify-between text-[12px]">
-            <span style={{ color: theme.inkSoft }}>위약금 (결제금액 × 10%)</span>
-            <span style={{ color: theme.danger }}>−{r.cancelFee.toLocaleString()}원</span>
-          </div>
-          {(isCard || r.cardFee > 0) && (
-            <div className="flex justify-between text-[12px]">
-              <span style={{ color: theme.inkSoft }}>
-                {method.includes('카드') ? '카드 수수료' : '현금영수증 수수료'} (결제금액 × 10%)
-              </span>
-              <span style={{ color: theme.danger }}>−{r.cardFee.toLocaleString()}원</span>
-            </div>
-          )}
-          <div className="flex justify-between pt-2" style={{ borderTop: `2px solid ${theme.line}` }}>
-            <span className="text-[13px] font-bold" style={{ color: theme.ink }}>환불 금액</span>
-            <span className="text-[18px] font-bold" style={{ color: '#4A7A5C' }}>{r.refund.toLocaleString()}원</span>
-          </div>
-        </div>
-
-        {/* 메모 */}
-        <div>
-          <label className="text-[11px]" style={{ color: theme.inkMute }}>사유 / 메모 (선택)</label>
-          <input type="text" value={note} onChange={e => setNote(e.target.value)}
-            placeholder="예: 개인 사정으로 중도 환불"
-            className="w-full px-3 py-2 rounded-lg text-[12px] mt-1"
-            style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
-        </div>
-
-        <div className="flex gap-2 pt-1">
-          <Button variant="outline" onClick={onClose} className="flex-1">취소</Button>
-          <Button onClick={() => onConfirm(r.refund, note)} className="flex-1"
-            style={{ backgroundColor: theme.danger, color: '#FFF' }}>
-            환불 처리 ({r.refund.toLocaleString()}원)
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
 function PassEditModal({ pass, onClose, onSave }) {
   const [type, setType] = useState(pass.type || '');
   const [price, setPrice] = useState(pass.price || 0);
