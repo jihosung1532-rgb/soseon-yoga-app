@@ -13159,7 +13159,10 @@ const NORMAL_PRICE_PER_SESSION = 30000; // 정상가 1회 3만원
 function RefundModal({ pass, member, onClose, onConfirm }) {
   const used = (pass.sessionDates || []).length;
   const price = pass.price || 0;
-  const isCard = (pass.paymentMethod || '').includes('카드');
+  const method = pass.paymentMethod || '';
+  // 카드 또는 현금영수증 발행 시 10% 수수료 적용
+  const hasReceiptFee = method.includes('카드') || method.includes('영수증O');
+  const isCard = hasReceiptFee;
   const [customUsed, setCustomUsed] = useState(used);
   const [note, setNote] = useState('');
 
@@ -13225,7 +13228,9 @@ function RefundModal({ pass, member, onClose, onConfirm }) {
           </div>
           {(isCard || r.cardFee > 0) && (
             <div className="flex justify-between text-[12px]">
-              <span style={{ color: theme.inkSoft }}>카드/현금영수증 수수료 (결제금액 × 10%)</span>
+              <span style={{ color: theme.inkSoft }}>
+                {method.includes('카드') ? '카드 수수료' : '현금영수증 수수료'} (결제금액 × 10%)
+              </span>
               <span style={{ color: theme.danger }}>−{r.cardFee.toLocaleString()}원</span>
             </div>
           )}
@@ -13334,8 +13339,22 @@ function PassEditModal({ pass, onClose, onSave }) {
         </div>
         <div>
           <label className="text-[11px]" style={{ color: theme.inkMute }}>결제수단</label>
+          <div className="flex flex-wrap gap-1.5 mt-1 mb-2">
+            {['카드', '지역화폐', '계좌이체', '현금(영수증O)', '현금(영수증X)'].map(opt => (
+              <button key={opt} type="button"
+                onClick={() => setPaymentMethod(opt)}
+                className="px-2.5 py-1 rounded-full text-[11px] font-medium"
+                style={{
+                  backgroundColor: paymentMethod === opt ? theme.accent : theme.cardAlt2,
+                  color: paymentMethod === opt ? '#FFF' : theme.ink,
+                  border: `1px solid ${paymentMethod === opt ? theme.accent : theme.line}`,
+                }}>
+                {opt}
+              </button>
+            ))}
+          </div>
           <input type="text" value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}
-            placeholder="예: 계좌이체, 카드, 지역화폐"
+            placeholder="예: 현대카드 일시불, 지역화폐 분할..."
             className="w-full px-3 py-2 rounded-lg text-sm"
             style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
         </div>
