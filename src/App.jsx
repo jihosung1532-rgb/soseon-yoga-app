@@ -6423,6 +6423,23 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                         <RefreshCw size={11} /> 전환
                       </Button>
                       <Button size="sm" variant="ghost" icon={Trash2} onClick={() => deletePass(p.id)}></Button>
+                      <Button size="sm" variant="ghost" onClick={async () => {
+                        if (!confirm(`${p.type} 수강권을 종료 처리할까요?\n남은 회수는 소멸되며 이전 수강권으로 이동합니다.`)) return;
+                        const nextMember = {
+                          ...member,
+                          passes: (member.passes || []).map(x =>
+                            x.id === p.id ? { ...x, archived: true, terminatedAt: toYMD(new Date()) } : x
+                          ),
+                        };
+                        await onUpdate(nextMember);
+                        toast('✓ 수강권 종료 처리 완료');
+                      }} style={{ color: theme.warn }}>
+                        🔒 종료
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setRefundingPass(p)}
+                        style={{ color: theme.danger }}>
+                        💸 환불
+                      </Button>
                     </div>
                   </div>
                 );
