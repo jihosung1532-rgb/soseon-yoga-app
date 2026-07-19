@@ -4312,7 +4312,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
             const newKey = `${toYMD(saveDate)}_${saveTime}`;
             const oldKey = data.originalKey;
             const isMoving = oldKey && oldKey !== newKey;
-            const isDelete = !data.participants || data.participants.length === 0;
+            const isDelete = false; // 빈 수업도 저장 (삭제는 수업삭제 버튼으로만)
 
             // 다른 슬롯으로 이동하는데 그 자리에 이미 다른 수업이 있으면 막기
             if (isMoving && !isDelete && sessions[newKey] && sessions[newKey].participants?.length > 0) {
