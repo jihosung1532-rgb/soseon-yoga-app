@@ -572,7 +572,7 @@ const PASS_PRESETS = [
 ];
 
 // 소그룹 기본 시간 (사용자가 설정에서 변경 가능)
-const DEFAULT_GROUP_SLOTS = ['09:30', '11:00', '19:20', '19:30', '20:50'];
+const DEFAULT_GROUP_SLOTS = ['09:30', '11:00', '19:20', '20:50'];
 // 호환성 유지용 (기존 코드에서 사용)
 const TIME_PRESETS = ['09:30', '11:00', '12:30', '15:00', '19:20', '19:30', '20:50'];
 const TRIAL_FEE = 30000; // 체험비 (3만원)
@@ -3795,7 +3795,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
           && p.status !== 'cancelled_advance' 
           && p.status !== 'cancelled_sameday'
         );
-        if (sess && aliveParticipants.length > 0) {
+        if (sess) {
           // 개인레슨 여부 판단: 참석자 중 classType === '개인' 있거나, 모든 참석자가 개인 카테고리
           const hasPrivate = aliveParticipants.some(p => p.classType === '개인');
           // 그룹 슬롯에 포함되면 group, 아니면 private
