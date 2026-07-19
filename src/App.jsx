@@ -3573,7 +3573,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     const next = { ...sessions };
     // 이동인 경우 옛 키 삭제
     if (isMove) delete next[oldKey];
-    if (!data || !newParts.length) delete next[key];
+    if (!data) delete next[key];
     else {
       // ⭐ 차감 처리되는 회원(newCharges) → status가 None이면 자동으로 'attended' 박기
       //    (sessionDates에 추가되는 회원은 출석 처리된 것으로 간주)
