@@ -13323,65 +13323,6 @@ function RefundModal({ pass, member, onClose, onConfirm }) {
     </Modal>
   );
 }
-  const [customUsed, setCustomUsed] = useState(used);
-  const [note, setNote] = useState('');
-
-  const calc = (u) => {
-    const usedCost = u * NORMAL_PRICE_PER_SESSION;        // 사용 회수 × 정상가
-    const cancelFee = Math.round(price * 0.10);            // 위약금 10% (결제금액 기준)
-    const cardFee = isCard ? Math.round(price * 0.10) : 0; // 카드/현금영수증 수수료 10% (결제금액 기준)
-    const base = Math.max(0, price - usedCost);            // 환불 기준액
-    const refund = Math.max(0, base - cancelFee - cardFee);
-    return { usedCost, base, cancelFee, cardFee, refund };
-  };
-
-  const r = calc(customUsed);
-
-  return (
-    <Modal open={true} onClose={onClose} title="💸 환불 계산기">
-      <div className="space-y-3">
-        {/* 패스 정보 */}
-        <div className="rounded-xl p-3" style={{ backgroundColor: theme.cardAlt2 }}>
-          <div className="text-[12px] font-bold" style={{ color: theme.ink }}>{pass.type}</div>
-          <div className="text-[11px] mt-0.5" style={{ color: theme.inkMute }}>
-            결제 {price.toLocaleString()}원 · {pass.paymentMethod || '결제수단 미입력'}
-          </div>
-        </div>
-
-        {/* 사용 회수 조정 */}
-        <div>
-          <label className="text-[11px] font-medium" style={{ color: theme.inkSoft }}>
-            사용 회수 (정상가 {NORMAL_PRICE_PER_SESSION.toLocaleString()}원/회 적용)
-          </label>
-          <div className="flex items-center gap-3 mt-1.5">
-            <button onClick={() => setCustomUsed(Math.max(0, customUsed - 1))}
-              className="w-9 h-9 rounded-full text-lg font-bold"
-              style={{ backgroundColor: theme.cardAlt2, color: theme.ink }}>−</button>
-            <div className="text-center flex-1">
-              <span className="text-2xl font-bold" style={{ color: theme.ink }}>{customUsed}</span>
-              <span className="text-sm" style={{ color: theme.inkMute }}>회</span>
-              {customUsed !== used && (
-                <div className="text-[10px]" style={{ color: theme.warn }}>
-                  실제 사용 {used}회 · 수동 조정 중
-                </div>
-              )}
-            </div>
-            <button onClick={() => setCustomUsed(Math.min(pass.totalSessions || 99, customUsed + 1))}
-              className="w-9 h-9 rounded-full text-lg font-bold"
-              style={{ backgroundColor: theme.cardAlt2, color: theme.ink }}>+</button>
-          </div>
-        </div>
-
-        {/* 계산 내역 */}
-        <div className="rounded-xl p-3 space-y-2" style={{ backgroundColor: theme.highlight }}>
-          <div className="flex justify-between text-[12px]">
-            <span style={{ color: theme.inkSoft }}>결제 금액</span>
-            <span style={{ color: theme.ink }}>{price.toLocaleString()}원</span>
-          </div>
-          <div className="flex justify-between text-[12px]">
-            <span style={{ color: theme.inkSoft }}>정상가 이용금액 ({customUsed}회 × {NORMAL_PRICE_PER_SESSION.toLocaleString()}원)</span>
-            <span style={{ color: theme.danger }}>−{r.usedCost.toLocaleString()}원</span>
-          </div>
 function PassEditModal({ pass, onClose, onSave }) {
   const [type, setType] = useState(pass.type || '');
   const [price, setPrice] = useState(pass.price || 0);
