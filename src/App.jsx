@@ -2842,7 +2842,9 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
       return { member: m, pass: validPass };
     };
     const result = []; // [{ time, tueMembers, thuMembers, tueCount, thuCount }]
-    (groupSlots || []).forEach(time => {
+    // 19:30은 비정기 수업이라 정원 현황에서 제외
+    const SKIP_CAPACITY_TIMES = ['19:30'];
+    (groupSlots || []).filter(time => !SKIP_CAPACITY_TIMES.includes(time)).forEach(time => {
       const tueMembers = members.map(m => filterValidMember(m, 2, time)).filter(Boolean);
       const thuMembers = members.map(m => filterValidMember(m, 4, time)).filter(Boolean);
       result.push({ 
@@ -3856,7 +3858,26 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
       });
     }
 
-    const items = [...explicit, ...autoItems].sort((a, b) => a.time.localeCompare(b.time));
+    // 3) 고정 반복 빈 수업 (참여자 없어도 항상 표시)
+    const RECURRING_EMPTY = [
+      { dow: 1, time: '19:30', startDate: '2026-07-20' }, // 월요일 19:30 (7/20부터)
+    ];
+    const recurringItems = [];
+    RECURRING_EMPTY.forEach(({ dow: rdow, time, startDate }) => {
+      if (dow !== rdow) return;
+      if (ymd < startDate) return;
+      // 이미 explicit에 같은 시간대 있으면 패스
+      if (explicit.some(e => e.time === time)) return;
+      recurringItems.push({
+        time,
+        category: 'group',
+        isAuto: false,
+        participants: [],
+        isRecurring: true,
+      });
+    });
+
+    const items = [...explicit, ...autoItems, ...recurringItems].sort((a, b) => a.time.localeCompare(b.time));
     return { isHoliday: false, isPast, items };
   };
 
@@ -13018,6 +13039,25 @@ export default function App() {
       }
     }
     
+    // === 월요일 19:30 수업 자동 생성 (7/20~연말) ===
+    {
+      const MON_SESSIONS = [
+        '2026-07-20','2026-07-27','2026-08-03','2026-08-10','2026-08-17','2026-08-24','2026-08-31',
+        '2026-09-07','2026-09-14','2026-09-21','2026-09-28','2026-10-05','2026-10-12','2026-10-19',
+        '2026-10-26','2026-11-02','2026-11-09','2026-11-16','2026-11-23','2026-11-30',
+        '2026-12-07','2026-12-14','2026-12-21','2026-12-28',
+      ];
+      let sessAdded = false;
+      MON_SESSIONS.forEach(date => {
+        const key = `${date}_19:30`;
+        if (!migS[key]) {
+          migS = { ...migS, [key]: { date, time: '19:30', category: 'group', participants: [] } };
+          sessAdded = true;
+        }
+      });
+      if (sessAdded) await saveKey(K.sessions, migS);
+    }
+
     setMembers(migratedM); setSessions(migS); setClassLog(finalC); setTrials(migT);
     setDashDismiss(dd); setSmsConfirmed(sc);
     setGroupSlots(Array.isArray(gs) && gs.length ? gs : DEFAULT_GROUP_SLOTS);
