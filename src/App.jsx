@@ -6015,11 +6015,15 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
     let passToUse = p;
     if ((!p.sessionDates || p.sessionDates.length === 0) && p.usedSessions > 0) {
       const attendedDates = [];
+      const passStart = p.startDate || '0000-00-00';
       Object.keys(sessions || {}).forEach(key => {
         const dateStr = key.split('_')[0];
+        if (dateStr < passStart) return; // 패스 시작일 이전 제외
         const part = (sessions[key]?.participants || []).find(pp =>
-          pp.memberId === member.id && pp.passId === p.id &&
-          pp.status === 'attended' && !pp.cancelled
+          pp.memberId === member.id &&
+          !pp.cancelled &&
+          pp.status === 'attended'
+          // passId 체크 제거 — 시간 변경으로 다른 passId가 박혔을 수 있음
         );
         if (part) attendedDates.push(dateStr);
       });
@@ -9622,7 +9626,7 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
         </div>
       )}
 
-      {adding && <TrialEditor onClose={() => setAdding(false)} onSave={create} />}
+      {adding && <TrialEditor onClose={() => setAdding(false)} onSave={create} groupSlots={groupSlots} />}
       {textImporting && (
         <TrialTextImport
           onClose={() => setTextImporting(false)}
@@ -10014,7 +10018,7 @@ function TrialBulkImport({ onClose, onSave, toast }) {
   );
 }
 
-function TrialEditor({ trial, onClose, onSave }) {
+function TrialEditor({ trial, onClose, onSave, groupSlots = [] }) {
   const [data, setData] = useState(trial || {
     name: '', phone: '', experience: '', painPoints: '',
     date: toYMD(new Date()), time: '11:00', status: '예약확정',
@@ -10161,6 +10165,7 @@ function TrialDetail({ trial, onClose, onUpdate, onDelete, onConvert, onSendSMS 
 
         {editing && (
           <TrialEditor trial={trial} onClose={() => setEditing(false)}
+            groupSlots={groupSlots}
             onSave={async (d) => { await onUpdate(trial.id, d); setEditing(false); }} />
         )}
       </div>
