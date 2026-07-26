@@ -1757,20 +1757,28 @@ function memberRhythmStatus(member, closedDays = []) {
 // (cancelled_advance / cancelled_sameday / cancelled 상태인 participant의 날짜)
 // rhythmStatus에 넘기면 — 취소한 날은 오늘이어도 결석으로 카운트됨
 function getCancelledDatesForPass(sessions, memberId, passId) {
-  const set = new Set();
-  if (!sessions || !memberId) return set;
+  if (!sessions || !memberId) return new Set();
+  const cancelledDates = new Set();
+  const attendedDates = new Set();
+
   Object.entries(sessions).forEach(([key, s]) => {
     const date = key.split('_')[0];
-    const part = (s?.participants || []).find(p => 
-      p.memberId === memberId 
-      && (passId ? p.passId === passId : true)
-    );
-    if (!part) return;
-    if (part.status === 'cancelled_advance' || part.status === 'cancelled_sameday' || part.status === 'cancelled_by_teacher' || part.cancelled) {
-      set.add(date);
-    }
+    (s?.participants || []).forEach(p => {
+      if (p.memberId !== memberId) return;
+      if (passId && p.passId !== passId) return;
+      // 출석한 날짜 수집
+      if (p.status === 'attended' && !p.cancelled) attendedDates.add(date);
+      // 취소된 날짜 수집
+      if (p.status === 'cancelled_advance' || p.status === 'cancelled_sameday' || p.status === 'cancelled_by_teacher' || p.cancelled) {
+        cancelledDates.add(date);
+      }
+    });
   });
-  return set;
+
+  // 같은 날 다른 시간에 출석한 경우 취소 무시 (시간대 변경 케이스)
+  attendedDates.forEach(d => cancelledDates.delete(d));
+
+  return cancelledDates;
 }
 
 /* =========================================================
@@ -6002,7 +6010,25 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
   const rhythmFor = (p) => {
     if (!p) return null;
     const cancelledDates = getCancelledDatesForPass(sessions, member.id, p.id);
-    return rhythmStatus(p, closedDays, cancelledDates);
+
+    // sessionDates가 비어있어도 실제 세션 출석 기록으로 재구성
+    let passToUse = p;
+    if ((!p.sessionDates || p.sessionDates.length === 0) && p.usedSessions > 0) {
+      const attendedDates = [];
+      Object.keys(sessions || {}).forEach(key => {
+        const dateStr = key.split('_')[0];
+        const part = (sessions[key]?.participants || []).find(pp =>
+          pp.memberId === member.id && pp.passId === p.id &&
+          pp.status === 'attended' && !pp.cancelled
+        );
+        if (part) attendedDates.push(dateStr);
+      });
+      if (attendedDates.length > 0) {
+        passToUse = { ...p, sessionDates: [...new Set(attendedDates)].sort() };
+      }
+    }
+
+    return rhythmStatus(passToUse, closedDays, cancelledDates);
   };
 
   const history = useMemo(() => {
@@ -6552,12 +6578,6 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                   </div>
                   
                   {/* 리듬 수련 트래커 박스 */}
-                  {(() => {
-                    const rsP = rhythmFor(p);
-                    // 디버그: 리듬 상태 표시
-                    const debugMsg = !rsP ? 'rsP=null' : rsP.challenging ? `도전중(${rsP.attendedDays}/${rsP.requiredDays})` : rsP.achieved ? '완주' : rsP.expired ? `제외(${rsP.missedDays?.length}결석)` : '기타';
-                    return <div style={{fontSize:9,color:'red',marginBottom:4}}>[리듬:{debugMsg}]</div>;
-                  })()}
                   {(() => {
                     const rsP = rhythmFor(p);
                     if (!rsP) return null;
@@ -9241,7 +9261,7 @@ function DayLogEditor({ date, entries, sessions, onClose, onSave, groupSlots = [
 /* =========================================================
    Trials View — separate tab for trial members
    ========================================================= */
-function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessions, toast, onSendSMS }) {
+function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessions, groupSlots = [], toast, onSendSMS }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(null);
   const [bulkImporting, setBulkImporting] = useState(false);
@@ -10015,7 +10035,7 @@ function TrialEditor({ trial, onClose, onSave }) {
           </Field>
           <Field label="시간">
             <Select value={data.time} onChange={(e) => setData({ ...data, time: e.target.value })}
-              options={['11:00', '19:20', '20:50'].map(t => ({ value: t, label: t }))} />
+              options={(groupSlots.length > 0 ? groupSlots : ['11:00', '19:20', '20:50']).map(t => ({ value: t, label: t }))} />
           </Field>
         </div>
         <Field label="요가·운동 경험">
@@ -13192,6 +13212,7 @@ export default function App() {
         <TrialsView trials={trials} setTrials={setTrials}
           members={members} setMembers={setMembers}
           sessions={sessions} setSessions={setSessions}
+          groupSlots={groupSlots}
           toast={toast} onSendSMS={onSendSMS} />
       )}
       {tab === 'classlog' && (
