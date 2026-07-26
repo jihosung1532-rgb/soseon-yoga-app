@@ -6554,6 +6554,12 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                   {/* 리듬 수련 트래커 박스 */}
                   {(() => {
                     const rsP = rhythmFor(p);
+                    // 디버그: 리듬 상태 표시
+                    const debugMsg = !rsP ? 'rsP=null' : rsP.challenging ? `도전중(${rsP.attendedDays}/${rsP.requiredDays})` : rsP.achieved ? '완주' : rsP.expired ? `제외(${rsP.missedDays?.length}결석)` : '기타';
+                    return <div style={{fontSize:9,color:'red',marginBottom:4}}>[리듬:{debugMsg}]</div>;
+                  })()}
+                  {(() => {
+                    const rsP = rhythmFor(p);
                     if (!rsP) return null;
                     if (rsP.achieved) {
                       return (
