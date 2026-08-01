@@ -114,11 +114,11 @@ const sb = {
   },
 
   // === bookings 테이블 (예약 요청 시스템) ===
-  // pending: 추가 예약 요청 / pending_cancel: 취소 요청
+  // pending: 추가 예약 요청 / pending_cancel: 취소 요청 / pending_cancel_late: 5시간 이내 취소 요청(차감 예정)
   async getPendingBookings() {
     try {
       const res = await fetch(
-        `${SUPABASE_URL}/rest/v1/bookings?status=in.(pending,pending_cancel)&order=created_at.asc`,
+        `${SUPABASE_URL}/rest/v1/bookings?status=in.(pending,pending_cancel,pending_cancel_late)&order=created_at.asc`,
         { headers: sb.headers() }
       );
       if (!res.ok) return [];
@@ -2651,9 +2651,12 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
   // - status='pending': 신규 예약 요청 → sessions에 참여자 추가
   // - status='pending_cancel': 취소 요청 → sessions에서 해당 회원 cancelled_advance로 변경
   const approveBooking = async (booking) => {
-    const isCancelReq = booking.status === 'pending_cancel';
+    const isCancelReq = booking.status === 'pending_cancel' || booking.status === 'pending_cancel_late';
+    const isLateCancel = booking.status === 'pending_cancel_late';
     const confirmMsg = isCancelReq
-      ? `${booking.member_name}님의 ${booking.date} ${fmtTime24(booking.time)} 취소 요청을 승인할까요?\n(이번 회차만 취소되고, 사전취소로 처리됩니다 - 회수 차감 X)`
+      ? (isLateCancel
+          ? `${booking.member_name}님의 ${booking.date} ${fmtTime24(booking.time)} 취소 요청을 승인할까요?\n⚠️ 수업 5시간 이내 취소라 1회 차감 처리됩니다.`
+          : `${booking.member_name}님의 ${booking.date} ${fmtTime24(booking.time)} 취소 요청을 승인할까요?\n(이번 회차만 취소되고, 사전취소로 처리됩니다 - 회수 차감 X)`)
       : `${booking.member_name}님의 ${booking.date} ${fmtTime24(booking.time)} 예약을 승인할까요?`;
     if (!confirm(confirmMsg)) return;
     
@@ -2669,22 +2672,28 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
     
     if (isCancelReq) {
       // === 취소 요청 승인 ===
-      // sessions의 participants에서 해당 회원을 cancelled_advance 상태로 박음 (통째 제거 X)
+      // sessions의 participants에서 해당 회원을 cancelled_advance(무차감) 또는 cancelled_sameday(차감, 5시간 이내) 상태로 박음 (통째 제거 X)
       // → 회원 앱 fixedActive 로직이 "취소된 슬롯"으로 인식해서 "예약됨 · 고정" 안 뜨게 됨
       // 취소 이력은 bookings 테이블의 cancel_approved status에도 남음
       const oldPart = existing?.participants?.find(p => p.memberId === booking.member_id);
       const wasCharged = oldPart && oldPart.passId && isPartCharged(oldPart);
       
+      const cancelStatus = isLateCancel ? 'cancelled_sameday' : 'cancelled_advance';
+      const cancelCharge = isLateCancel ? 'charged' : 'no_charge';
+      const cancelNoteText = isLateCancel 
+        ? '회원 앱 취소 요청 승인 (5시간 이내 · 차감)'
+        : '회원 앱 취소 요청 승인';
+      
       // 취소된 회원 정보 만들기 (기존 oldPart 있으면 그것 기반, 없으면 새로)
       const cancelledPart = oldPart 
-        ? { ...oldPart, status: 'cancelled_advance', cancelled: 'no_charge', cancelNote: '회원 앱 취소 요청 승인' }
+        ? { ...oldPart, status: cancelStatus, cancelled: cancelCharge, cancelNote: cancelNoteText }
         : {
             memberId: booking.member_id,
             memberName: booking.member_name,
             classType: booking.class_type === '개인' ? '개인' : '그룹',
-            status: 'cancelled_advance',
-            cancelled: 'no_charge',
-            cancelNote: '회원 앱 취소 요청 승인',
+            status: cancelStatus,
+            cancelled: cancelCharge,
+            cancelNote: cancelNoteText,
           };
       
       let newSession;
@@ -2784,7 +2793,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
   
   // 예약/취소 요청 거절
   const rejectBooking = async (booking, reason) => {
-    const isCancelReq = booking.status === 'pending_cancel';
+    const isCancelReq = booking.status === 'pending_cancel' || booking.status === 'pending_cancel_late';
     await sb.updateBooking(booking.id, {
       status: isCancelReq ? 'cancel_rejected' : 'rejected',
       responded_at: new Date().toISOString(),
@@ -3042,30 +3051,35 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
       {pendingBookings.length > 0 && (() => {
         const newReqs = pendingBookings.filter(b => b.status === 'pending');
         const cancelReqs = pendingBookings.filter(b => b.status === 'pending_cancel');
+        const lateCancelReqs = pendingBookings.filter(b => b.status === 'pending_cancel_late');
+        const hasUrgent = lateCancelReqs.length > 0;
         const summary = [];
         if (newReqs.length > 0) summary.push(`예약 ${newReqs.length}건`);
         if (cancelReqs.length > 0) summary.push(`취소 ${cancelReqs.length}건`);
+        if (lateCancelReqs.length > 0) summary.push(`⚠️ 당일취소 ${lateCancelReqs.length}건`);
+        // 당일취소(차감) 건을 맨 앞으로 정렬해서 보여줌
+        const sortedForPreview = [...lateCancelReqs, ...pendingBookings.filter(b => b.status !== 'pending_cancel_late')];
         return (
           <div className="rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.99]" 
             style={{ 
-              background: 'linear-gradient(135deg, #FFF8ED 0%, #FFE8C9 100%)',
-              border: '1px solid #C26B4A',
+              background: hasUrgent ? 'linear-gradient(135deg, #FFEDE8 0%, #FFC9B8 100%)' : 'linear-gradient(135deg, #FFF8ED 0%, #FFE8C9 100%)',
+              border: hasUrgent ? '2px solid #C23A2A' : '1px solid #C26B4A',
             }}
             onClick={() => setShowBookingModal(true)}>
             <div className="flex items-center gap-2">
-              <div style={{ fontSize: 18 }}>📩</div>
+              <div style={{ fontSize: 18 }}>{hasUrgent ? '🚨' : '📩'}</div>
               <div className="flex-1">
-                <div className="text-[13px] font-bold" style={{ color: '#8A3F3C' }}>
+                <div className="text-[13px] font-bold" style={{ color: hasUrgent ? '#C23A2A' : '#8A3F3C' }}>
                   새 요청 {summary.join(' · ')}
                 </div>
                 <div className="text-[11px]" style={{ color: '#A0573B' }}>
-                  {pendingBookings.slice(0, 2).map(b => 
-                    `${b.member_name}님 ${b.date} ${fmtTime24(b.time)}${b.status === 'pending_cancel' ? ' (취소)' : ''}`
+                  {sortedForPreview.slice(0, 2).map(b => 
+                    `${b.member_name}님 ${b.date} ${fmtTime24(b.time)}${b.status === 'pending_cancel_late' ? ' (⚠️당일취소·차감)' : b.status === 'pending_cancel' ? ' (취소)' : ''}`
                   ).join(' · ')}
                   {pendingBookings.length > 2 && ` 외 ${pendingBookings.length - 2}건`}
                 </div>
               </div>
-              <div style={{ color: '#C26B4A', fontSize: 18, fontWeight: 600 }}>›</div>
+              <div style={{ color: hasUrgent ? '#C23A2A' : '#C26B4A', fontSize: 18, fontWeight: 600 }}>›</div>
             </div>
           </div>
         );
@@ -3081,23 +3095,27 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
               <div className="text-center py-8 text-[12px]" style={{ color: theme.inkMute }}>
                 대기 중인 요청이 없어요
               </div>
-            ) : pendingBookings.map(b => {
-              const isCancel = b.status === 'pending_cancel';
+            ) : [...pendingBookings].sort((a, b2) => {
+                const rank = s => s === 'pending_cancel_late' ? 0 : s === 'pending_cancel' ? 1 : 2;
+                return rank(a.status) - rank(b2.status);
+              }).map(b => {
+              const isCancel = b.status === 'pending_cancel' || b.status === 'pending_cancel_late';
+              const isLateCancel = b.status === 'pending_cancel_late';
               return (
                 <div key={b.id} className="rounded-xl p-3"
                   style={{ 
-                    backgroundColor: isCancel ? '#FBE4DD' : theme.card, 
-                    border: `1px solid ${isCancel ? '#D19B91' : theme.line}` 
+                    backgroundColor: isLateCancel ? '#FBD9D0' : isCancel ? '#FBE4DD' : theme.card, 
+                    border: isLateCancel ? '2px solid #C23A2A' : `1px solid ${isCancel ? '#D19B91' : theme.line}` 
                   }}>
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex-1">
                       <div className="flex items-center gap-1.5 mb-1">
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" 
                           style={{
-                            backgroundColor: isCancel ? '#C26B4A' : '#5C8A5C',
+                            backgroundColor: isLateCancel ? '#C23A2A' : isCancel ? '#C26B4A' : '#5C8A5C',
                             color: '#FFF',
                           }}>
-                          {isCancel ? '취소 요청' : '예약 요청'}
+                          {isLateCancel ? '⚠️ 당일취소 · 차감예정' : isCancel ? '취소 요청' : '예약 요청'}
                         </span>
                       </div>
                       <div className="text-[13px] font-bold" style={{ color: theme.ink }}>
@@ -3146,7 +3164,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
                     <div className="flex gap-2 mt-2">
                       <Button size="sm" variant="primary" className="flex-1"
                         onClick={() => approveBooking(b)}>
-                        {isCancel ? '✓ 취소 승인' : '✓ 예약 승인'}
+                        {isLateCancel ? '✓ 취소 승인 (1회 차감)' : isCancel ? '✓ 취소 승인' : '✓ 예약 승인'}
                       </Button>
                       <Button size="sm" variant="ghost" className="flex-1"
                         onClick={() => { setRejectingId(b.id); setRejectReason(''); }}>
