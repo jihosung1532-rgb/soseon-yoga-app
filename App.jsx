@@ -114,11 +114,11 @@ const sb = {
   },
 
   // === bookings 테이블 (예약 요청 시스템) ===
-  // pending: 추가 예약 요청 / pending_cancel: 취소 요청
+  // pending: 추가 예약 요청 / pending_cancel: 취소 요청 / pending_cancel_late: 5시간 이내 취소 요청(차감 예정)
   async getPendingBookings() {
     try {
       const res = await fetch(
-        `${SUPABASE_URL}/rest/v1/bookings?status=in.(pending,pending_cancel)&order=created_at.asc`,
+        `${SUPABASE_URL}/rest/v1/bookings?status=in.(pending,pending_cancel,pending_cancel_late)&order=created_at.asc`,
         { headers: sb.headers() }
       );
       if (!res.ok) return [];
@@ -358,6 +358,7 @@ const K = {
   seeded:      { lkey: 'sosun:seeded:v8',      table: 'settings', id: 'seeded' },
   groupSlots:  { lkey: 'sosun:groupSlots:v8',  table: 'settings', id: 'groupSlots' },
   closedDays:  { lkey: 'sosun:closedDays:v8',  table: 'settings', id: 'closedDays' },
+  feeRates:    { lkey: 'sosun:feeRates:v8',    table: 'settings', id: 'feeRates' },
 };
 
 async function loadKey(k, fallback) {
@@ -508,6 +509,22 @@ const fmtTime24 = (t) => {
 };
 const daysBetween = (a, b) => Math.round((fromYMD(b) - fromYMD(a)) / 86400000);
 
+// 예약/취소 요청이 접수된 시각을 "M/D HH:MM"로 표시
+const fmtRequestedAt = (isoStr) => {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return '';
+  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+// 취소 요청 시각 기준, 수업 시작까지 몇 시간 몇 분 남았었는지 계산 (음수면 이미 지난 시각에 요청)
+const getRequestLeadHours = (booking) => {
+  if (!booking?.date || !booking?.time || !booking?.created_at) return null;
+  const classStart = new Date(`${booking.date}T${fmtTime24(booking.time)}:00`);
+  const requestedAt = new Date(booking.created_at);
+  if (isNaN(classStart.getTime()) || isNaN(requestedAt.getTime())) return null;
+  return (classStart.getTime() - requestedAt.getTime()) / 3600000;
+};
+
 // 친밀한 호칭: 이름 두 글자 + 님 (예: 김재영 → 재영님, 이은조 → 은조님)
 // 두 글자 이름은 그대로 (예: 박민 → 박민님)
 const friendlyName = (name) => {
@@ -571,9 +588,9 @@ const PASS_PRESETS = [
 ];
 
 // 소그룹 기본 시간 (사용자가 설정에서 변경 가능)
-const DEFAULT_GROUP_SLOTS = ['11:00', '19:20', '20:50'];
+const DEFAULT_GROUP_SLOTS = ['09:30', '11:00', '19:20', '20:50'];
 // 호환성 유지용 (기존 코드에서 사용)
-const TIME_PRESETS = ['11:00', '12:30', '15:00', '19:20', '20:50'];
+const TIME_PRESETS = ['09:30', '11:00', '12:30', '15:00', '19:20', '19:30', '20:50'];
 const TRIAL_FEE = 30000; // 체험비 (3만원)
 
 /* =========================================================
@@ -1581,12 +1598,16 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   if (p.category === 'private') return null; // 개인레슨은 대상 X
   
   // 자격 대상 수강권 종류 판단 (체험 보너스 +1 포함 인정)
+  // ⭐ 이전 리듬 완주 보상(+1/2/3) 등이 이번 패스 totalSessions에 이미 얹혀있으면 그만큼 빼고 순수 기본 회차로 판단
+  //    (안 그러면 예: 24회 + 리듬보상 3회 = 27회가 되어 8/9,16/17,24/25 어느 것에도 안 걸려 도전 대상에서 통째로 빠짐)
+  const priorBonusAdjust = (p.rhythmBonus || 0) + (p.mayEventBonus || 0) + (p.reviewEventBonus || 0);
+  const coreTotal = (p.totalSessions || 0) - priorBonusAdjust;
   let weeks, bonus, baseSessions;
-  if (p.totalSessions === 8 || p.totalSessions === 9) {
+  if (coreTotal === 8 || coreTotal === 9) {
     weeks = 4; bonus = 1; baseSessions = 8; // 1개월 8회 (또는 +체험 1회)
-  } else if (p.totalSessions === 16 || p.totalSessions === 17) {
+  } else if (coreTotal === 16 || coreTotal === 17) {
     weeks = 8; bonus = 2; baseSessions = 16; // 2개월 16회 (단종)
-  } else if (p.totalSessions === 24 || p.totalSessions === 25) {
+  } else if (coreTotal === 24 || coreTotal === 25) {
     weeks = 12; bonus = 3; baseSessions = 24; // 3개월 24회
   } else {
     return null; // 대상 아님
@@ -1653,28 +1674,54 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   // 취소(당일취소 포함)된 날은 실제 출석에서 제외
   const attendedCount = sortedDates.filter(d => !cancelledSet.has(d)).length;
   const remaining = Math.max(0, requiredCount - attendedCount);
+  
+  // ⭐ 메꿈 처리: 화/목이 아닌 다른 요일(예: 월요일반)에 도전 기간 안에서 추가로 출석한 날이 있으면
+  //    화/목 결석을 그 날로 메꿔서 인정 — 소선요가가 화·목 2일 운영에서 월·화·목 3일 운영으로 바뀌면서 추가됨
+  const validSlotSet = new Set(validSlots);
+  const makeupPool = sortedDates.filter(d => 
+    !cancelledSet.has(d) && d >= challengeStartYMD && d <= challengeEndYMD && !validSlotSet.has(d)
+  ).sort();
+  const makeupPairs = [];
+  const unresolvedMissedDays = [];
+  const poolLeft = [...makeupPool];
+  missedDays.forEach(md => {
+    if (poolLeft.length > 0) {
+      makeupPairs.push({ missed: md, makeup: poolLeft.shift() });
+    } else {
+      unresolvedMissedDays.push(md);
+    }
+  });
+  const makeupUsedSet = new Set(makeupPairs.map(mp => mp.makeup));
+  const makeupCoveredSet = new Set(makeupPairs.map(mp => mp.missed));
 
   const buildSlots = () => {
     const challengeSlots = tueThuDatesBetween(challengeStartYMD, challengeEndYMD).map(d => {
       const dow = fromYMD(d).getDay() === 2 ? '화' : '목';
       let st;
       if (isExemptDay(d, p, closedDays)) st = 'exempt';
-      else if (cancelledSet.has(d)) st = 'missed';   // 취소 먼저 (당일취소 차감도 결석)
+      else if (cancelledSet.has(d)) st = makeupCoveredSet.has(d) ? 'missed_covered' : 'missed';   // 취소 먼저 (당일취소 차감도 결석)
       else if (attendedSet.has(d)) st = 'attended';
-      else if (d <= yesterdayStr) st = 'missed';
+      else if (d <= yesterdayStr) st = makeupCoveredSet.has(d) ? 'missed_covered' : 'missed';
       else st = 'future';
       return { date: d, dow, status: st };
     });
+    // 메꿈으로 쓰인 날(주로 월요일) — 별도 슬롯으로 추가해서 달력에 표시
+    const makeupSlots = makeupPairs.map(mp => ({
+      date: mp.makeup,
+      dow: WEEK_KR[fromYMD(mp.makeup).getDay()],
+      status: 'makeup',
+      forMissed: mp.missed,
+    }));
     const extraSlots = sortedDates
       .filter(d => d > challengeEndYMD && !cancelledSet.has(d))
       .map(d => ({ date: d, dow: fromYMD(d).getDay() === 2 ? '화' : '목', status: 'extra' }));
-    return [...challengeSlots, ...extraSlots];
+    return [...challengeSlots, ...makeupSlots, ...extraSlots];
   };
   const slots = buildSlots();
   
-  // 도전 기간 종료 후 판정 — 결석 0회 + 회수 달성 필요
+  // 도전 기간 종료 후 판정 — 결석 0회(메꿈 반영) + 회수 달성 필요
   if (todayMs > challengeEndMs) {
-    const achieved = missedDays.length === 0 && attendedCount >= requiredCount;
+    const achieved = unresolvedMissedDays.length === 0 && attendedCount >= requiredCount;
     return {
       eligible: true,
       completed: true,
@@ -1683,17 +1730,17 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
       challengeEndYMD,
       requiredDays: requiredCount,
       attendedDays: attendedCount,
-      missedDays, slots,
+      missedDays: unresolvedMissedDays, rawMissedDays: missedDays, makeupPairs, slots,
       message: achieved
-        ? `${requiredCount}회 출석 완주`
-        : (missedDays.length > 0
-            ? `${missedDays.length}회 결석으로 미달`
+        ? (makeupPairs.length > 0 ? `${requiredCount}회 출석 완주 (월요일 등 ${makeupPairs.length}회 메꿈)` : `${requiredCount}회 출석 완주`)
+        : (unresolvedMissedDays.length > 0
+            ? `${unresolvedMissedDays.length}회 결석으로 미달`
             : `${requiredCount}회 미달 (${attendedCount}회 출석)`),
     };
   }
 
-  // 진행 중 — 이미 결석(지나간 화/목 중 안 온 날)이 있으면 탈락 확정
-  if (missedDays.length > 0) {
+  // 진행 중 — 이미 결석(지나간 화/목 중 안 온 날, 메꿈 반영)이 있으면 탈락 확정
+  if (unresolvedMissedDays.length > 0) {
     return {
       eligible: true,
       completed: false,
@@ -1704,14 +1751,14 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
       challengeEndYMD,
       requiredDays: requiredCount,
       attendedDays: attendedCount,
-      missedDays, slots,
-      message: `${missedDays.length}회 결석으로 대상 제외`,
+      missedDays: unresolvedMissedDays, rawMissedDays: missedDays, makeupPairs, slots,
+      message: `${unresolvedMissedDays.length}회 결석으로 대상 제외`,
     };
   }
 
-  // 도전 중 — 아직 결석 없음
+  // 도전 중 — 아직 결석 없음(메꿈 반영)
   // 조기 완주: 결석 0 + 회수 달성 → 기간 종료 전이라도 완주 처리
-  if (missedDays.length === 0 && attendedCount >= requiredCount) {
+  if (unresolvedMissedDays.length === 0 && attendedCount >= requiredCount) {
     return {
       eligible: true,
       completed: true,
@@ -1722,8 +1769,8 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
       requiredDays: requiredCount,
       attendedDays: attendedCount,
       remaining: 0,
-      missedDays, slots,
-      message: `${weeks}주 빠짐없이 완주`,
+      missedDays: unresolvedMissedDays, rawMissedDays: missedDays, makeupPairs, slots,
+      message: makeupPairs.length > 0 ? `${weeks}주 빠짐없이 완주 (메꿈 ${makeupPairs.length}회 포함)` : `${weeks}주 빠짐없이 완주`,
     };
   }
   return {
@@ -1736,7 +1783,7 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
     requiredDays: requiredCount,
     attendedDays: attendedCount,
     remaining,
-    missedDays, slots,
+    missedDays: unresolvedMissedDays, rawMissedDays: missedDays, makeupPairs, slots,
     message: remaining > 0 
       ? `남은 ${remaining}회 빠짐없이`
       : `완주 직전`,
@@ -1756,20 +1803,28 @@ function memberRhythmStatus(member, closedDays = []) {
 // (cancelled_advance / cancelled_sameday / cancelled 상태인 participant의 날짜)
 // rhythmStatus에 넘기면 — 취소한 날은 오늘이어도 결석으로 카운트됨
 function getCancelledDatesForPass(sessions, memberId, passId) {
-  const set = new Set();
-  if (!sessions || !memberId) return set;
+  if (!sessions || !memberId) return new Set();
+  const cancelledDates = new Set();
+  const attendedDates = new Set();
+
   Object.entries(sessions).forEach(([key, s]) => {
     const date = key.split('_')[0];
-    const part = (s?.participants || []).find(p => 
-      p.memberId === memberId 
-      && (passId ? p.passId === passId : true)
-    );
-    if (!part) return;
-    if (part.status === 'cancelled_advance' || part.status === 'cancelled_sameday' || part.status === 'cancelled_by_teacher' || part.cancelled) {
-      set.add(date);
-    }
+    (s?.participants || []).forEach(p => {
+      if (p.memberId !== memberId) return;
+      if (passId && p.passId !== passId) return;
+      // 출석한 날짜 수집
+      if (p.status === 'attended' && !p.cancelled) attendedDates.add(date);
+      // 취소된 날짜 수집
+      if (p.status === 'cancelled_advance' || p.status === 'cancelled_sameday' || p.status === 'cancelled_by_teacher' || p.cancelled) {
+        cancelledDates.add(date);
+      }
+    });
   });
-  return set;
+
+  // 같은 날 다른 시간에 출석한 경우 취소 무시 (시간대 변경 케이스)
+  attendedDates.forEach(d => cancelledDates.delete(d));
+
+  return cancelledDates;
 }
 
 /* =========================================================
@@ -2642,9 +2697,12 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
   // - status='pending': 신규 예약 요청 → sessions에 참여자 추가
   // - status='pending_cancel': 취소 요청 → sessions에서 해당 회원 cancelled_advance로 변경
   const approveBooking = async (booking) => {
-    const isCancelReq = booking.status === 'pending_cancel';
+    const isCancelReq = booking.status === 'pending_cancel' || booking.status === 'pending_cancel_late';
+    const isLateCancel = booking.status === 'pending_cancel_late';
     const confirmMsg = isCancelReq
-      ? `${booking.member_name}님의 ${booking.date} ${fmtTime24(booking.time)} 취소 요청을 승인할까요?\n(이번 회차만 취소되고, 사전취소로 처리됩니다 - 회수 차감 X)`
+      ? (isLateCancel
+          ? `${booking.member_name}님의 ${booking.date} ${fmtTime24(booking.time)} 취소 요청을 승인할까요?\n⚠️ 수업 5시간 이내 취소라 1회 차감 처리됩니다.`
+          : `${booking.member_name}님의 ${booking.date} ${fmtTime24(booking.time)} 취소 요청을 승인할까요?\n(이번 회차만 취소되고, 사전취소로 처리됩니다 - 회수 차감 X)`)
       : `${booking.member_name}님의 ${booking.date} ${fmtTime24(booking.time)} 예약을 승인할까요?`;
     if (!confirm(confirmMsg)) return;
     
@@ -2660,22 +2718,28 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
     
     if (isCancelReq) {
       // === 취소 요청 승인 ===
-      // sessions의 participants에서 해당 회원을 cancelled_advance 상태로 박음 (통째 제거 X)
+      // sessions의 participants에서 해당 회원을 cancelled_advance(무차감) 또는 cancelled_sameday(차감, 5시간 이내) 상태로 박음 (통째 제거 X)
       // → 회원 앱 fixedActive 로직이 "취소된 슬롯"으로 인식해서 "예약됨 · 고정" 안 뜨게 됨
       // 취소 이력은 bookings 테이블의 cancel_approved status에도 남음
       const oldPart = existing?.participants?.find(p => p.memberId === booking.member_id);
       const wasCharged = oldPart && oldPart.passId && isPartCharged(oldPart);
       
+      const cancelStatus = isLateCancel ? 'cancelled_sameday' : 'cancelled_advance';
+      const cancelCharge = isLateCancel ? 'charged' : 'no_charge';
+      const cancelNoteText = isLateCancel 
+        ? '회원 앱 취소 요청 승인 (5시간 이내 · 차감)'
+        : '회원 앱 취소 요청 승인';
+      
       // 취소된 회원 정보 만들기 (기존 oldPart 있으면 그것 기반, 없으면 새로)
       const cancelledPart = oldPart 
-        ? { ...oldPart, status: 'cancelled_advance', cancelled: 'no_charge', cancelNote: '회원 앱 취소 요청 승인' }
+        ? { ...oldPart, status: cancelStatus, cancelled: cancelCharge, cancelNote: cancelNoteText }
         : {
             memberId: booking.member_id,
             memberName: booking.member_name,
             classType: booking.class_type === '개인' ? '개인' : '그룹',
-            status: 'cancelled_advance',
-            cancelled: 'no_charge',
-            cancelNote: '회원 앱 취소 요청 승인',
+            status: cancelStatus,
+            cancelled: cancelCharge,
+            cancelNote: cancelNoteText,
           };
       
       let newSession;
@@ -2775,7 +2839,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
   
   // 예약/취소 요청 거절
   const rejectBooking = async (booking, reason) => {
-    const isCancelReq = booking.status === 'pending_cancel';
+    const isCancelReq = booking.status === 'pending_cancel' || booking.status === 'pending_cancel_late';
     await sb.updateBooking(booking.id, {
       status: isCancelReq ? 'cancel_rejected' : 'rejected',
       responded_at: new Date().toISOString(),
@@ -2841,7 +2905,9 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
       return { member: m, pass: validPass };
     };
     const result = []; // [{ time, tueMembers, thuMembers, tueCount, thuCount }]
-    (groupSlots || []).forEach(time => {
+    // 19:30은 비정기 수업이라 정원 현황에서 제외
+    const SKIP_CAPACITY_TIMES = ['19:30'];
+    (groupSlots || []).filter(time => !SKIP_CAPACITY_TIMES.includes(time)).forEach(time => {
       const tueMembers = members.map(m => filterValidMember(m, 2, time)).filter(Boolean);
       const thuMembers = members.map(m => filterValidMember(m, 4, time)).filter(Boolean);
       result.push({ 
@@ -3031,30 +3097,35 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
       {pendingBookings.length > 0 && (() => {
         const newReqs = pendingBookings.filter(b => b.status === 'pending');
         const cancelReqs = pendingBookings.filter(b => b.status === 'pending_cancel');
+        const lateCancelReqs = pendingBookings.filter(b => b.status === 'pending_cancel_late');
+        const hasUrgent = lateCancelReqs.length > 0;
         const summary = [];
         if (newReqs.length > 0) summary.push(`예약 ${newReqs.length}건`);
         if (cancelReqs.length > 0) summary.push(`취소 ${cancelReqs.length}건`);
+        if (lateCancelReqs.length > 0) summary.push(`⚠️ 당일취소 ${lateCancelReqs.length}건`);
+        // 당일취소(차감) 건을 맨 앞으로 정렬해서 보여줌
+        const sortedForPreview = [...lateCancelReqs, ...pendingBookings.filter(b => b.status !== 'pending_cancel_late')];
         return (
           <div className="rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.99]" 
             style={{ 
-              background: 'linear-gradient(135deg, #FFF8ED 0%, #FFE8C9 100%)',
-              border: '1px solid #C26B4A',
+              background: hasUrgent ? 'linear-gradient(135deg, #FFEDE8 0%, #FFC9B8 100%)' : 'linear-gradient(135deg, #FFF8ED 0%, #FFE8C9 100%)',
+              border: hasUrgent ? '2px solid #C23A2A' : '1px solid #C26B4A',
             }}
             onClick={() => setShowBookingModal(true)}>
             <div className="flex items-center gap-2">
-              <div style={{ fontSize: 18 }}>📩</div>
+              <div style={{ fontSize: 18 }}>{hasUrgent ? '🚨' : '📩'}</div>
               <div className="flex-1">
-                <div className="text-[13px] font-bold" style={{ color: '#8A3F3C' }}>
+                <div className="text-[13px] font-bold" style={{ color: hasUrgent ? '#C23A2A' : '#8A3F3C' }}>
                   새 요청 {summary.join(' · ')}
                 </div>
                 <div className="text-[11px]" style={{ color: '#A0573B' }}>
-                  {pendingBookings.slice(0, 2).map(b => 
-                    `${b.member_name}님 ${b.date} ${fmtTime24(b.time)}${b.status === 'pending_cancel' ? ' (취소)' : ''}`
+                  {sortedForPreview.slice(0, 2).map(b => 
+                    `${b.member_name}님 ${b.date} ${fmtTime24(b.time)}${b.status === 'pending_cancel_late' ? ' (⚠️당일취소·차감)' : b.status === 'pending_cancel' ? ' (취소)' : ''}`
                   ).join(' · ')}
                   {pendingBookings.length > 2 && ` 외 ${pendingBookings.length - 2}건`}
                 </div>
               </div>
-              <div style={{ color: '#C26B4A', fontSize: 18, fontWeight: 600 }}>›</div>
+              <div style={{ color: hasUrgent ? '#C23A2A' : '#C26B4A', fontSize: 18, fontWeight: 600 }}>›</div>
             </div>
           </div>
         );
@@ -3070,23 +3141,27 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
               <div className="text-center py-8 text-[12px]" style={{ color: theme.inkMute }}>
                 대기 중인 요청이 없어요
               </div>
-            ) : pendingBookings.map(b => {
-              const isCancel = b.status === 'pending_cancel';
+            ) : [...pendingBookings].sort((a, b2) => {
+                const rank = s => s === 'pending_cancel_late' ? 0 : s === 'pending_cancel' ? 1 : 2;
+                return rank(a.status) - rank(b2.status);
+              }).map(b => {
+              const isCancel = b.status === 'pending_cancel' || b.status === 'pending_cancel_late';
+              const isLateCancel = b.status === 'pending_cancel_late';
               return (
                 <div key={b.id} className="rounded-xl p-3"
                   style={{ 
-                    backgroundColor: isCancel ? '#FBE4DD' : theme.card, 
-                    border: `1px solid ${isCancel ? '#D19B91' : theme.line}` 
+                    backgroundColor: isLateCancel ? '#FBD9D0' : isCancel ? '#FBE4DD' : theme.card, 
+                    border: isLateCancel ? '2px solid #C23A2A' : `1px solid ${isCancel ? '#D19B91' : theme.line}` 
                   }}>
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex-1">
                       <div className="flex items-center gap-1.5 mb-1">
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" 
                           style={{
-                            backgroundColor: isCancel ? '#C26B4A' : '#5C8A5C',
+                            backgroundColor: isLateCancel ? '#C23A2A' : isCancel ? '#C26B4A' : '#5C8A5C',
                             color: '#FFF',
                           }}>
-                          {isCancel ? '취소 요청' : '예약 요청'}
+                          {isLateCancel ? '⚠️ 당일취소 · 차감예정' : isCancel ? '취소 요청' : '예약 요청'}
                         </span>
                       </div>
                       <div className="text-[13px] font-bold" style={{ color: theme.ink }}>
@@ -3098,6 +3173,21 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
                       <div className="text-[12px] mt-1" style={{ color: theme.accent }}>
                         📅 {b.date} {b.time} · {b.class_type || '소그룹'}
                       </div>
+                      {isCancel && b.created_at && (() => {
+                        const leadHours = getRequestLeadHours(b);
+                        const leadOk = leadHours !== null && leadHours >= 5;
+                        return (
+                          <div className="text-[10.5px] mt-1" style={{ color: leadOk ? theme.inkMute : '#C23A2A', fontWeight: leadOk ? 400 : 700 }}>
+                            📝 {fmtRequestedAt(b.created_at)} 요청
+                            {leadHours !== null && (
+                              leadHours >= 0
+                                ? ` · 수업 ${Math.floor(leadHours)}시간 ${Math.round((leadHours % 1) * 60)}분 전`
+                                : ` · 수업 시작 후 요청`
+                            )}
+                            {!leadOk && ' (5시간 기준 미달)'}
+                          </div>
+                        );
+                      })()}
                       {b.note && (
                         <div className="text-[10px] mt-1 italic" style={{ color: theme.inkSoft }}>
                           {b.note}
@@ -3135,7 +3225,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
                     <div className="flex gap-2 mt-2">
                       <Button size="sm" variant="primary" className="flex-1"
                         onClick={() => approveBooking(b)}>
-                        {isCancel ? '✓ 취소 승인' : '✓ 예약 승인'}
+                        {isLateCancel ? '✓ 취소 승인 (1회 차감)' : isCancel ? '✓ 취소 승인' : '✓ 예약 승인'}
                       </Button>
                       <Button size="sm" variant="ghost" className="flex-1"
                         onClick={() => { setRejectingId(b.id); setRejectReason(''); }}>
@@ -3572,7 +3662,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     const next = { ...sessions };
     // 이동인 경우 옛 키 삭제
     if (isMove) delete next[oldKey];
-    if (!data || !newParts.length) delete next[key];
+    if (!data) delete next[key];
     else {
       // ⭐ 차감 처리되는 회원(newCharges) → status가 None이면 자동으로 'attended' 박기
       //    (sessionDates에 추가되는 회원은 출석 처리된 것으로 간주)
@@ -3794,7 +3884,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
           && p.status !== 'cancelled_advance' 
           && p.status !== 'cancelled_sameday'
         );
-        if (sess && aliveParticipants.length > 0) {
+        if (sess) {
           // 개인레슨 여부 판단: 참석자 중 classType === '개인' 있거나, 모든 참석자가 개인 카테고리
           const hasPrivate = aliveParticipants.some(p => p.classType === '개인');
           // 그룹 슬롯에 포함되면 group, 아니면 private
@@ -3855,7 +3945,26 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
       });
     }
 
-    const items = [...explicit, ...autoItems].sort((a, b) => a.time.localeCompare(b.time));
+    // 3) 고정 반복 빈 수업 (참여자 없어도 항상 표시)
+    const RECURRING_EMPTY = [
+      { dow: 1, time: '19:30', startDate: '2026-07-20' }, // 월요일 19:30 (7/20부터)
+    ];
+    const recurringItems = [];
+    RECURRING_EMPTY.forEach(({ dow: rdow, time, startDate }) => {
+      if (dow !== rdow) return;
+      if (ymd < startDate) return;
+      // 이미 explicit에 같은 시간대 있으면 패스
+      if (explicit.some(e => e.time === time)) return;
+      recurringItems.push({
+        time,
+        category: 'group',
+        isAuto: false,
+        participants: [],
+        isRecurring: true,
+      });
+    });
+
+    const items = [...explicit, ...autoItems, ...recurringItems].sort((a, b) => a.time.localeCompare(b.time));
     return { isHoliday: false, isPast, items };
   };
 
@@ -4311,7 +4420,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
             const newKey = `${toYMD(saveDate)}_${saveTime}`;
             const oldKey = data.originalKey;
             const isMoving = oldKey && oldKey !== newKey;
-            const isDelete = !data.participants || data.participants.length === 0;
+            const isDelete = false; // 빈 수업도 저장 (삭제는 수업삭제 버튼으로만)
 
             // 다른 슬롯으로 이동하는데 그 자리에 이미 다른 수업이 있으면 막기
             if (isMoving && !isDelete && sessions[newKey] && sessions[newKey].participants?.length > 0) {
@@ -5969,6 +6078,7 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
   const [addingPass, setAddingPass] = useState(false);
   const [convertingPass, setConvertingPass] = useState(null);
   const [editingPass, setEditingPass] = useState(null);
+  const [refundingPass, setRefundingPass] = useState(null);
   const [editingHistory, setEditingHistory] = useState(null); // {passId, date, time}
   const [rhythmCalPass, setRhythmCalPass] = useState(null); // 리듬 달력 모달 대상 패스
 
@@ -5979,7 +6089,29 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
   const rhythmFor = (p) => {
     if (!p) return null;
     const cancelledDates = getCancelledDatesForPass(sessions, member.id, p.id);
-    return rhythmStatus(p, closedDays, cancelledDates);
+
+    // sessionDates가 비어있어도 실제 세션 출석 기록으로 재구성
+    let passToUse = p;
+    if ((!p.sessionDates || p.sessionDates.length === 0) && p.usedSessions > 0) {
+      const attendedDates = [];
+      const passStart = p.startDate || '0000-00-00';
+      Object.keys(sessions || {}).forEach(key => {
+        const dateStr = key.split('_')[0];
+        if (dateStr < passStart) return; // 패스 시작일 이전 제외
+        const part = (sessions[key]?.participants || []).find(pp =>
+          pp.memberId === member.id &&
+          !pp.cancelled &&
+          pp.status === 'attended'
+          // passId 체크 제거 — 시간 변경으로 다른 passId가 박혔을 수 있음
+        );
+        if (part) attendedDates.push(dateStr);
+      });
+      if (attendedDates.length > 0) {
+        passToUse = { ...p, sessionDates: [...new Set(attendedDates)].sort() };
+      }
+    }
+
+    return rhythmStatus(passToUse, closedDays, cancelledDates);
   };
 
   const history = useMemo(() => {
@@ -6421,6 +6553,23 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                         <RefreshCw size={11} /> 전환
                       </Button>
                       <Button size="sm" variant="ghost" icon={Trash2} onClick={() => deletePass(p.id)}></Button>
+                      <Button size="sm" variant="ghost" onClick={async () => {
+                        if (!confirm(`${p.type} 수강권을 종료 처리할까요?\n남은 회수는 소멸되며 이전 수강권으로 이동합니다.`)) return;
+                        const nextMember = {
+                          ...member,
+                          passes: (member.passes || []).map(x =>
+                            x.id === p.id ? { ...x, archived: true, terminatedAt: toYMD(new Date()) } : x
+                          ),
+                        };
+                        await onUpdate(nextMember);
+                        toast('✓ 수강권 종료 처리 완료');
+                      }} style={{ color: theme.warn }}>
+                        🔒 종료
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setRefundingPass(p)}
+                        style={{ color: theme.danger }}>
+                        💸 환불
+                      </Button>
                     </div>
                   </div>
                 );
@@ -6584,6 +6733,23 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                       <RefreshCw size={11} /> 전환
                     </Button>
                     <Button size="sm" variant="ghost" icon={Trash2} onClick={() => deletePass(p.id)}></Button>
+                    <Button size="sm" variant="ghost" onClick={async () => {
+                      if (!confirm(`${p.type} 수강권을 종료 처리할까요?\n남은 회수는 소멸되며 이전 수강권으로 이동합니다.`)) return;
+                      const nextMember = {
+                        ...member,
+                        passes: (member.passes || []).map(x =>
+                          x.id === p.id ? { ...x, archived: true, terminatedAt: toYMD(new Date()) } : x
+                        ),
+                      };
+                      await onUpdate(nextMember);
+                      toast('✓ 수강권 종료 처리 완료');
+                    }} style={{ color: theme.warn }}>
+                      🔒 종료
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setRefundingPass(p)}
+                      style={{ color: theme.danger }}>
+                      💸 환불
+                    </Button>
                   </div>
                 </div>
               );
@@ -6867,6 +7033,34 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
               await onUpdate(nextMember);
               setEditingPass(null);
               toast('✓ 수강권 수정 완료');
+            }}
+          />
+        )}
+        {refundingPass && (
+          <RefundModal
+            pass={refundingPass}
+            member={member}
+            onClose={() => setRefundingPass(null)}
+            onConfirm={async (refundAmount, note) => {
+              const today = toYMD(new Date());
+              const refundRecord = {
+                id: `rf-${Date.now()}`,
+                passId: refundingPass.id,
+                date: today,
+                amount: refundAmount,
+                note,
+              };
+              // 수강권 archived 처리 + 환불 기록 저장
+              const nextMember = {
+                ...member,
+                passes: (member.passes || []).map(p =>
+                  p.id === refundingPass.id ? { ...p, archived: true } : p
+                ),
+                refunds: [...(member.refunds || []), refundRecord],
+              };
+              await onUpdate(nextMember);
+              setRefundingPass(null);
+              toast(`✓ 환불 처리 완료 (${refundAmount.toLocaleString()}원)`);
             }}
           />
         )}
@@ -9150,7 +9344,7 @@ function DayLogEditor({ date, entries, sessions, onClose, onSave, groupSlots = [
 /* =========================================================
    Trials View — separate tab for trial members
    ========================================================= */
-function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessions, toast, onSendSMS }) {
+function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessions, groupSlots = [], toast, onSendSMS }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(null);
   const [bulkImporting, setBulkImporting] = useState(false);
@@ -9511,7 +9705,7 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
         </div>
       )}
 
-      {adding && <TrialEditor onClose={() => setAdding(false)} onSave={create} />}
+      {adding && <TrialEditor onClose={() => setAdding(false)} onSave={create} groupSlots={groupSlots} />}
       {textImporting && (
         <TrialTextImport
           onClose={() => setTextImporting(false)}
@@ -9903,7 +10097,7 @@ function TrialBulkImport({ onClose, onSave, toast }) {
   );
 }
 
-function TrialEditor({ trial, onClose, onSave }) {
+function TrialEditor({ trial, onClose, onSave, groupSlots = [] }) {
   const [data, setData] = useState(trial || {
     name: '', phone: '', experience: '', painPoints: '',
     date: toYMD(new Date()), time: '11:00', status: '예약확정',
@@ -9924,7 +10118,7 @@ function TrialEditor({ trial, onClose, onSave }) {
           </Field>
           <Field label="시간">
             <Select value={data.time} onChange={(e) => setData({ ...data, time: e.target.value })}
-              options={['11:00', '19:20', '20:50'].map(t => ({ value: t, label: t }))} />
+              options={(groupSlots.length > 0 ? groupSlots : ['11:00', '19:20', '20:50']).map(t => ({ value: t, label: t }))} />
           </Field>
         </div>
         <Field label="요가·운동 경험">
@@ -10050,6 +10244,7 @@ function TrialDetail({ trial, onClose, onUpdate, onDelete, onConvert, onSendSMS 
 
         {editing && (
           <TrialEditor trial={trial} onClose={() => setEditing(false)}
+            groupSlots={groupSlots}
             onSave={async (d) => { await onUpdate(trial.id, d); setEditing(false); }} />
         )}
       </div>
@@ -10701,7 +10896,7 @@ function getMonthlyAlerts(targetMonth) {
   return alerts;
 }
 
-function StatsView({ members, trials, sessions, closedDays = [] }) {
+function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
   const now = new Date();
   const [monthOffset, setMonthOffset] = useState(0);
 
@@ -10716,14 +10911,29 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
     const byMethod = { 카드: 0, 지역화폐: 0, 계좌이체: 0, 현금: 0, 기타: 0 };
     const payments = []; // 이번달 결제 목록
     
-    // 결제수단별 수수료율 (실측치)
-    const FEE_RATE = {
-      신한카드: 0.0215,   // 2.15% (유연선 360,000 → 352,260 실측)
-      카드: 0.0215,       // 일반 카드도 같은 비율로 추정
-      지역화폐: 0.005,    // 0.50% (지역화폐 1,940,000 → 1,930,325 실측)
+    // 결제수단별 수수료율 (설정에서 변경 가능)
+    // 카드사별 실측치: 현대 2.27%, 우리/국민 2.30%, 신한 2.15%, 경기지역화폐 1.51%
+    const DEFAULT_FR = { 카드: 0.005, 신한카드: 0.005, 체크카드: 0.0025, 지역화폐: 0.005, 계좌이체: 0, 현금: 0 };
+    const MEASURED_FR = {
+      현대카드: 0.0227,
+      우리카드: 0.0230,
+      국민카드: 0.0230,
+      신한카드: 0.0215,
+      삼성카드: 0.0215, // 미실측, 신한카드 유사 추정
+      하나카드: 0.0215,
+      롯데카드: 0.0215,
+      bc카드:   0.0215,
+      농협카드: 0.0215,
+      카드:     0.0215, // 기타 카드
+      체크카드: 0.0150, // 체크 추정
+      지역화폐: 0.0151, // 경기지역화폐 실측
+      경기지역화폐: 0.0151,
       계좌이체: 0,
       현금: 0,
     };
+    const savedFR = feeRates || {};
+    // savedFR에 커스텀 설정이 있으면 우선, 없으면 실측치, 그것도 없으면 기본값
+    const FEE_RATE = { ...MEASURED_FR, ...savedFR };
     
     members.forEach(m => {
       (m.passes || []).forEach(p => {
@@ -10732,14 +10942,21 @@ function StatsView({ members, trials, sessions, closedDays = [] }) {
           const cat = p.category || 'other';
           byCat[cat] = (byCat[cat] || 0) + p.price;
           
-          // 결제수단별 수수료 계산
+          // 카드사명 기반 수수료율 결정
           const method = p.paymentMethod || '';
+          const methodLow = method.toLowerCase();
           let feeRate = 0;
-          if (method.includes('지역화폐')) {
-            feeRate = FEE_RATE.지역화폐;
+          const cardNames = ['현대카드','우리카드','국민카드','신한카드','삼성카드','하나카드','롯데카드','bc카드','농협카드'];
+          const matchedCard = cardNames.find(c => method.includes(c.replace('카드','')) || methodLow.includes(c));
+          
+          if (method.includes('지역화폐') || method.includes('지역화')) {
+            feeRate = FEE_RATE.지역화폐 || FEE_RATE.경기지역화폐 || 0.0151;
             byMethod.지역화폐 += p.price;
+          } else if (matchedCard) {
+            feeRate = FEE_RATE[matchedCard] || FEE_RATE.카드 || 0.0215;
+            byMethod.카드 += p.price;
           } else if (method.includes('카드')) {
-            feeRate = FEE_RATE.카드;
+            feeRate = FEE_RATE.카드 || 0.0215;
             byMethod.카드 += p.price;
           } else if (method.includes('계좌') || method.includes('이체')) {
             byMethod.계좌이체 += p.price;
@@ -11758,7 +11975,7 @@ function GroupSlotsManager({ groupSlots, setGroupSlots, toast }) {
   );
 }
 
-function SettingsModal({ open, onClose, members, sessions, classLog, trials, setMembers, setSessions, setClassLog, setTrials, groupSlots, setGroupSlots, toast }) {
+function SettingsModal({ open, onClose, members, sessions, classLog, trials, setMembers, setSessions, setClassLog, setTrials, groupSlots, setGroupSlots, feeRates, setFeeRates, toast }) {
   const fileRef = useRef();
   const [importMode, setImportMode] = useState(null); // null | 'overwrite' | 'merge'
   const [pendingImport, setPendingImport] = useState(null);
@@ -11858,6 +12075,66 @@ function SettingsModal({ open, onClose, members, sessions, classLog, trials, set
   return (
     <Modal open={open} onClose={onClose} title="설정" maxWidth="max-w-md">
       <div className="space-y-4">
+        {/* 💳 수수료율 설정 */}
+        <div className="rounded-2xl p-3" style={{ backgroundColor: theme.cardAlt }}>
+          <div className="font-bold text-sm mb-1" style={{ color: theme.ink }}>💳 결제 수수료율 설정</div>
+          <div className="text-[10px] mb-3" style={{ color: theme.inkMute }}>
+            영세 가맹점(연 매출 3억↓): 카드 0.5% · 체크 0.25%<br/>
+            중소 가맹점(3억~5억): 카드 1.1% · 체크 0.85%<br/>
+            일반·신규 가맹점: 카드 최대 2.3% (나중에 환급됨)
+          </div>
+          {/* 빠른 선택 */}
+          <div className="flex gap-1.5 mb-3">
+            {[
+              { label: '영세 (3억↓)', card: 0.005, local: 0.005, check: 0.0025 },
+              { label: '중소 (3~5억)', card: 0.011, local: 0.005, check: 0.0085 },
+              { label: '일반·신규', card: 0.0215, local: 0.005, check: 0.015 },
+            ].map(preset => {
+              const isActive = Math.abs((feeRates?.카드 || 0) - preset.card) < 0.0001;
+              return (
+                <button key={preset.label}
+                  onClick={async () => {
+                    const next = { ...feeRates, 카드: preset.card, 신한카드: preset.card, 체크카드: preset.check, 지역화폐: preset.local };
+                    setFeeRates(next);
+                    await saveKey(K.feeRates, next);
+                    toast(`✓ ${preset.label} 수수료율 적용`);
+                  }}
+                  className="flex-1 py-1.5 rounded-lg text-[10px] font-medium"
+                  style={{ backgroundColor: isActive ? theme.accent : theme.cardAlt2, color: isActive ? '#FFF' : theme.ink }}>
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
+          {/* 직접 입력 */}
+          <div className="space-y-1.5">
+            {[
+              { key: '카드', label: '💳 신용카드 수수료율' },
+              { key: '체크카드', label: '💳 체크카드 수수료율' },
+              { key: '지역화폐', label: '🪙 지역화폐 수수료율' },
+            ].map(({ key, label }) => (
+              <div key={key} className="flex items-center gap-2">
+                <span className="text-[11px] flex-1" style={{ color: theme.inkSoft }}>{label}</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number" step="0.01" min="0" max="10"
+                    value={((feeRates?.[key] || 0) * 100).toFixed(2)}
+                    onChange={async (e) => {
+                      const next = { ...feeRates, [key]: parseFloat(e.target.value) / 100 || 0 };
+                      if (key === '카드') next['신한카드'] = next['카드'];
+                      setFeeRates(next);
+                      await saveKey(K.feeRates, next);
+                    }}
+                    className="w-16 px-2 py-1 rounded text-[11px] text-right"
+                    style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }}
+                  />
+                  <span className="text-[11px]" style={{ color: theme.inkMute }}>%</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
         {/* Backup section */}
         <div className="rounded-2xl p-3" style={{ backgroundColor: theme.cardAlt }}>
           <div className="font-bold text-sm mb-2" style={{ color: theme.ink }}>데이터 백업</div>
@@ -12121,6 +12398,9 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [smsConfirmed, setSmsConfirmed] = useState({});
   const [groupSlots, setGroupSlots] = useState(DEFAULT_GROUP_SLOTS);
+  // 수수료율 설정 (카드사별 실측치 기본값)
+  const DEFAULT_FEE_RATES = { 카드: 0.0215, 신한카드: 0.0215, 체크카드: 0.015, 지역화폐: 0.0151, 계좌이체: 0, 현금: 0 };
+  const [feeRates, setFeeRates] = useState(DEFAULT_FEE_RATES);
   const [closedDays, setClosedDays] = useState([]); // [{date: 'YYYY-MM-DD', reason: '...'}]
   const [ready, setReady] = useState(false);
   const [authed, setAuthed] = useState(false);
@@ -12326,6 +12606,8 @@ export default function App() {
     const sc = await loadKey(K.smsConfirmed, {});
     const gs = await loadKey(K.groupSlots, DEFAULT_GROUP_SLOTS);
     const cd = await loadKey(K.closedDays, []);
+    const fr = await loadKey(K.feeRates, null);
+    if (fr) setFeeRates(fr);
     
     // 마이그레이션: 미래 날짜 sessions의 차감을 되돌리고 status를 'reserved'로 설정
     const migrationFlag = await loadKey({ lkey: 'sosun:migration:reserved-fix:v1', table: 'settings', id: 'migration_reserved_fix_v1' }, false);
@@ -12867,6 +13149,25 @@ export default function App() {
       }
     }
     
+    // === 월요일 19:30 수업 자동 생성 (7/20~연말) ===
+    {
+      const MON_SESSIONS = [
+        '2026-07-20','2026-07-27','2026-08-03','2026-08-10','2026-08-17','2026-08-24','2026-08-31',
+        '2026-09-07','2026-09-14','2026-09-21','2026-09-28','2026-10-05','2026-10-12','2026-10-19',
+        '2026-10-26','2026-11-02','2026-11-09','2026-11-16','2026-11-23','2026-11-30',
+        '2026-12-07','2026-12-14','2026-12-21','2026-12-28',
+      ];
+      let sessAdded = false;
+      MON_SESSIONS.forEach(date => {
+        const key = `${date}_19:30`;
+        if (!migS[key]) {
+          migS = { ...migS, [key]: { date, time: '19:30', category: 'group', participants: [] } };
+          sessAdded = true;
+        }
+      });
+      if (sessAdded) await saveKey(K.sessions, migS);
+    }
+
     setMembers(migratedM); setSessions(migS); setClassLog(finalC); setTrials(migT);
     setDashDismiss(dd); setSmsConfirmed(sc);
     setGroupSlots(Array.isArray(gs) && gs.length ? gs : DEFAULT_GROUP_SLOTS);
@@ -12995,13 +13296,14 @@ export default function App() {
         <TrialsView trials={trials} setTrials={setTrials}
           members={members} setMembers={setMembers}
           sessions={sessions} setSessions={setSessions}
+          groupSlots={groupSlots}
           toast={toast} onSendSMS={onSendSMS} />
       )}
       {tab === 'classlog' && (
         <ClassLogView classLog={classLog} setClassLog={setClassLog} sessions={sessions} setSessions={setSessions} members={members} groupSlots={groupSlots} toast={toast} />
       )}
       {tab === 'stats' && (
-        <StatsView members={members} trials={trials} sessions={sessions} closedDays={closedDays} />
+        <StatsView members={members} trials={trials} sessions={sessions} closedDays={closedDays} feeRates={feeRates} />
       )}
       <Toast msg={toastMsg} onDone={() => setToastMsg('')} />
       {settingsOpen && (
@@ -13009,6 +13311,7 @@ export default function App() {
           members={members} sessions={sessions} classLog={classLog} trials={trials}
           setMembers={setMembers} setSessions={setSessions} setClassLog={setClassLog} setTrials={setTrials}
           groupSlots={groupSlots} setGroupSlots={setGroupSlots}
+          feeRates={feeRates} setFeeRates={setFeeRates}
           toast={toast} />
       )}
       {smsDialog && (
@@ -13031,6 +13334,146 @@ export default function App() {
 
 
 // ───────── 수강권 수정 모달 ─────────
+// ───────── 환불 계산기 모달 ─────────
+const NORMAL_PRICE_PER_SESSION = 30000; // 정상가 1회 3만원
+
+function RefundModal({ pass, member, onClose, onConfirm }) {
+  const used = (pass.sessionDates || []).length;
+  const price = pass.price || 0;
+  // 지역화폐 포함 모든 결제수단에 10% 수수료 적용
+  const method = pass.paymentMethod || '';
+  const noCancelFee = method.includes('영수증X') || method.includes('계좌이체') || method.includes('이체') || (method.includes('현금') && !method.includes('영수증'));
+  const hasReceiptFee = !noCancelFee; // 카드, 지역화폐, 현금영수증O 모두 수수료 적용
+
+  const [customUsed, setCustomUsed] = useState(used);
+  const [note, setNote] = useState('');
+  const [manualAmount, setManualAmount] = useState(''); // 직접 입력 금액
+
+  const calc = (u) => {
+    const usedCost = u * NORMAL_PRICE_PER_SESSION;
+    const cancelFee = Math.round(price * 0.10);
+    const receiptFee = hasReceiptFee ? Math.round(price * 0.10) : 0;
+    const recommended = Math.max(0, price - usedCost - cancelFee - receiptFee);
+    return { usedCost, cancelFee, receiptFee, recommended };
+  };
+
+  const r = calc(customUsed);
+  const finalAmount = manualAmount !== '' ? parseInt(manualAmount.replace(/,/g, '')) || 0 : r.recommended;
+
+  return (
+    <Modal open={true} onClose={onClose} title="💸 환불 계산기">
+      <div className="space-y-3">
+        {/* 패스 정보 */}
+        <div className="rounded-xl p-3" style={{ backgroundColor: theme.cardAlt2 }}>
+          <div className="text-[12px] font-bold" style={{ color: theme.ink }}>{pass.type}</div>
+          <div className="text-[11px] mt-0.5" style={{ color: theme.inkMute }}>
+            결제 {price.toLocaleString()}원 · {method || '결제수단 미입력'}
+          </div>
+        </div>
+
+        {/* 사용 회수 조정 */}
+        <div>
+          <label className="text-[11px] font-medium" style={{ color: theme.inkSoft }}>
+            사용 회수 (정상가 {NORMAL_PRICE_PER_SESSION.toLocaleString()}원/회 적용)
+          </label>
+          <div className="flex items-center gap-3 mt-1.5">
+            <button onClick={() => setCustomUsed(Math.max(0, customUsed - 1))}
+              className="w-9 h-9 rounded-full text-lg font-bold"
+              style={{ backgroundColor: theme.cardAlt2, color: theme.ink }}>−</button>
+            <div className="text-center flex-1">
+              <span className="text-2xl font-bold" style={{ color: theme.ink }}>{customUsed}</span>
+              <span className="text-sm" style={{ color: theme.inkMute }}>회</span>
+              {customUsed !== used && (
+                <div className="text-[10px]" style={{ color: theme.warn }}>실제 {used}회 · 수동 조정 중</div>
+              )}
+            </div>
+            <button onClick={() => setCustomUsed(Math.min(pass.totalSessions || 99, customUsed + 1))}
+              className="w-9 h-9 rounded-full text-lg font-bold"
+              style={{ backgroundColor: theme.cardAlt2, color: theme.ink }}>+</button>
+          </div>
+        </div>
+
+        {/* 계산 내역 */}
+        <div className="rounded-xl p-3 space-y-2" style={{ backgroundColor: theme.highlight }}>
+          <div className="flex justify-between text-[12px]">
+            <span style={{ color: theme.inkSoft }}>결제 금액</span>
+            <span>{price.toLocaleString()}원</span>
+          </div>
+          <div className="flex justify-between text-[12px]">
+            <span style={{ color: theme.inkSoft }}>정상가 이용금액 ({customUsed}회 × {NORMAL_PRICE_PER_SESSION.toLocaleString()}원)</span>
+            <span style={{ color: theme.danger }}>−{r.usedCost.toLocaleString()}원</span>
+          </div>
+          <div className="flex justify-between text-[12px]">
+            <span style={{ color: theme.inkSoft }}>위약금 (결제금액 × 10%)</span>
+            <span style={{ color: theme.danger }}>−{r.cancelFee.toLocaleString()}원</span>
+          </div>
+          {hasReceiptFee && (
+            <div className="flex justify-between text-[12px]">
+              <span style={{ color: theme.inkSoft }}>
+                {method.includes('카드') ? '카드 수수료' : method.includes('지역화폐') ? '지역화폐 수수료' : '수수료'} (결제금액 × 10%)
+              </span>
+              <span style={{ color: theme.danger }}>−{r.receiptFee.toLocaleString()}원</span>
+            </div>
+          )}
+          <div className="flex justify-between pt-2 items-center" style={{ borderTop: `2px solid ${theme.line}` }}>
+            <span className="text-[12px]" style={{ color: theme.inkMute }}>추천 환불 금액</span>
+            <span className="text-[15px] font-bold" style={{ color: '#4A7A5C' }}>
+              {r.recommended.toLocaleString()}원
+            </span>
+          </div>
+        </div>
+
+        {/* 직접 금액 설정 */}
+        <div>
+          <label className="text-[11px] font-medium" style={{ color: theme.inkSoft }}>
+            실제 환불 금액 <span style={{ color: theme.inkMute }}>(추천금액과 다를 경우 직접 입력)</span>
+          </label>
+          <div className="flex items-center gap-2 mt-1.5">
+            <input
+              type="text"
+              value={manualAmount}
+              onChange={e => setManualAmount(e.target.value.replace(/[^0-9]/g, ''))}
+              placeholder={r.recommended.toLocaleString()}
+              className="flex-1 px-3 py-2 rounded-lg text-sm text-right"
+              style={{ border: `1px solid ${manualAmount ? theme.accent : theme.lineLight}`, backgroundColor: theme.card }}
+            />
+            <span className="text-sm" style={{ color: theme.inkMute }}>원</span>
+            {manualAmount && (
+              <button onClick={() => setManualAmount('')}
+                className="text-[11px] px-2 py-1 rounded"
+                style={{ color: theme.inkMute, backgroundColor: theme.cardAlt2 }}>초기화</button>
+            )}
+          </div>
+          {manualAmount && (
+            <div className="text-[10px] mt-1" style={{ color: theme.warn }}>
+              추천({r.recommended.toLocaleString()}원)과 다른 금액으로 처리돼요
+            </div>
+          )}
+        </div>
+
+        {/* 최종 환불 금액 강조 */}
+        <div className="rounded-xl p-3 text-center" style={{ backgroundColor: '#F0F7F3', border: '2px solid #4A7A5C' }}>
+          <div className="text-[11px]" style={{ color: '#4A7A5C' }}>최종 환불 금액</div>
+          <div className="text-[28px] font-bold" style={{ color: '#2C5A3E' }}>{finalAmount.toLocaleString()}원</div>
+        </div>
+
+        {/* 메모 */}
+        <input type="text" value={note} onChange={e => setNote(e.target.value)}
+          placeholder="사유 / 메모 (선택)"
+          className="w-full px-3 py-2 rounded-lg text-[12px]"
+          style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
+
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={onClose} className="flex-1">취소</Button>
+          <Button onClick={() => onConfirm(finalAmount, note)} className="flex-1"
+            style={{ backgroundColor: theme.danger, color: '#FFF' }}>
+            환불 처리 ({finalAmount.toLocaleString()}원)
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
 function PassEditModal({ pass, onClose, onSave }) {
   const [type, setType] = useState(pass.type || '');
   const [price, setPrice] = useState(pass.price || 0);
@@ -13109,8 +13552,22 @@ function PassEditModal({ pass, onClose, onSave }) {
         </div>
         <div>
           <label className="text-[11px]" style={{ color: theme.inkMute }}>결제수단</label>
+          <div className="flex flex-wrap gap-1.5 mt-1 mb-2">
+            {['카드', '지역화폐', '계좌이체', '현금(영수증O)', '현금(영수증X)'].map(opt => (
+              <button key={opt} type="button"
+                onClick={() => setPaymentMethod(opt)}
+                className="px-2.5 py-1 rounded-full text-[11px] font-medium"
+                style={{
+                  backgroundColor: paymentMethod === opt ? theme.accent : theme.cardAlt2,
+                  color: paymentMethod === opt ? '#FFF' : theme.ink,
+                  border: `1px solid ${paymentMethod === opt ? theme.accent : theme.line}`,
+                }}>
+                {opt}
+              </button>
+            ))}
+          </div>
           <input type="text" value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}
-            placeholder="예: 계좌이체, 카드, 지역화폐"
+            placeholder="예: 현대카드 일시불, 지역화폐 분할..."
             className="w-full px-3 py-2 rounded-lg text-sm"
             style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
         </div>
@@ -13160,16 +13617,19 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
     const diffToMon = (d.getDay() + 6) % 7;
     return toYMD(addDays(d, -diffToMon));
   };
+  const hasMakeup = slots.some(s => s.status === 'makeup');
   const weekMap = {};
   slots.forEach(s => {
     const k = weekKey(s.date);
-    if (!weekMap[k]) weekMap[k] = { 화: null, 목: null };
-    weekMap[k][s.dow] = s;
+    if (!weekMap[k]) weekMap[k] = { 월: null, 화: null, 목: null };
+    // 한 주에 메꿈이 여러 개면 화/목 슬롯을 밀어내지 않도록 월 칸에만 담음(메꿈은 항상 dow 월 가정)
+    if (s.status === 'makeup') weekMap[k]['월'] = s;
+    else weekMap[k][s.dow] = s;
   });
   const weekKeys = Object.keys(weekMap).sort();
   const mmdd = (ymd) => { const [, m, d] = ymd.split('-'); return `${Number(m)}/${Number(d)}`; };
-  const GREEN = '#4A7A5C', RED = theme.accent2, FUTURE = '#E2E0D4', EXTRA = '#A8C8B4';
-  const COL = { attended: GREEN, missed: RED, future: FUTURE, exempt: theme.bg, extra: EXTRA };
+  const GREEN = '#4A7A5C', RED = theme.accent2, FUTURE = '#E2E0D4', EXTRA = '#A8C8B4', AMBER = theme.warn || '#B8863E';
+  const COL = { attended: GREEN, missed: RED, missed_covered: AMBER, future: FUTURE, exempt: theme.bg, extra: EXTRA, makeup: GREEN };
 
   const Cell = ({ slot }) => {
     if (!slot) return <div style={{ flex: 1 }} />;
@@ -13179,10 +13639,10 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
         <div style={{
           width: 52, height: 52, borderRadius: 14, background: COL[status],
-          border: isExempt ? `1.5px solid ${theme.line}` : 'none',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          border: isExempt ? `1.5px solid ${theme.line}` : status === 'makeup' ? `2px solid ${GREEN}` : 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative',
         }}>
-          {(status === 'attended' || status === 'extra') && (
+          {(status === 'attended' || status === 'extra' || status === 'makeup') && (
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
               <circle cx="12" cy="12" r="10" stroke="#FFF" strokeWidth="2" />
               <path d="M8 12.5l2.5 2.5L16 9" stroke="#FFF" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
@@ -13192,6 +13652,9 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
               <path d="M7 7l10 10M17 7L7 17" stroke="#FFF" strokeWidth="2.4" strokeLinecap="round" />
             </svg>
+          )}
+          {status === 'missed_covered' && (
+            <span style={{ fontSize: 9, fontWeight: 700, color: '#FFF', textAlign: 'center', lineHeight: 1.1 }}>메꿈<br/>완료</span>
           )}
           {isExempt && <span style={{ fontSize: 9, color: theme.inkMute }}>휴원</span>}
         </div>
@@ -13221,12 +13684,14 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
         <div className="flex flex-wrap gap-3">
           <Legend color={GREEN} label="출석" />
           <Legend color={RED} label="결석" />
+          {hasMakeup && <Legend color={AMBER} label="메꿈 완료(월요일 등)" />}
           <Legend color={FUTURE} label="예정" />
           <Legend color={EXTRA} label="도전 이후" />
           <Legend color={theme.bg} label="휴원" border />
         </div>
         <div>
           <div className="flex mb-1.5" style={{ paddingLeft: 28 }}>
+            {hasMakeup && <div style={{ flex: 1, textAlign: 'center', fontSize: 12, fontWeight: 700, color: theme.ink }}>월</div>}
             <div style={{ flex: 1, textAlign: 'center', fontSize: 12, fontWeight: 700, color: theme.ink }}>화</div>
             <div style={{ flex: 1, textAlign: 'center', fontSize: 12, fontWeight: 700, color: theme.ink }}>목</div>
           </div>
@@ -13245,6 +13710,7 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
                 )}
                 <div style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 10 }}>
                   <div style={{ width: 28, fontSize: 10, color: theme.inkMute, paddingTop: 18 }}>{i + 1}주</div>
+                  {hasMakeup && <Cell slot={weekMap[wk]['월']} />}
                   <Cell slot={weekMap[wk]['화']} />
                   <Cell slot={weekMap[wk]['목']} />
                 </div>
@@ -13256,6 +13722,7 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
     </Modal>
   );
 }
+
 
 function HistoryEditModal({ record, onClose, onSave, onDelete }) {
   const [date, setDate] = useState(record.date || '');
