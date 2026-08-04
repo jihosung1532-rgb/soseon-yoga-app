@@ -1698,9 +1698,10 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
     const challengeSlots = tueThuDatesBetween(challengeStartYMD, challengeEndYMD).map(d => {
       const dow = fromYMD(d).getDay() === 2 ? '화' : '목';
       let st;
-      if (isExemptDay(d, p, closedDays)) st = 'exempt';
+      // ⭐ 실제 출석 기록이 있으면 그게 최우선 — 홀딩/휴무일 설정과 상관없이 실제로 온 건 온 거임
+      if (attendedSet.has(d)) st = 'attended';
+      else if (isExemptDay(d, p, closedDays)) st = 'exempt';
       else if (cancelledSet.has(d)) st = makeupCoveredSet.has(d) ? 'missed_covered' : 'missed';   // 취소 먼저 (당일취소 차감도 결석)
-      else if (attendedSet.has(d)) st = 'attended';
       else if (d <= yesterdayStr) st = makeupCoveredSet.has(d) ? 'missed_covered' : 'missed';
       else st = 'future';
       return { date: d, dow, status: st };
@@ -5447,7 +5448,11 @@ function MemberCard({ member, onClick, closedDays = [], sessions = {} }) {
                 : rs?.achieved 
                   ? <span style={{ color: '#C9A961', fontWeight: 600 }}>{rs.message}</span>
                   : `~ ${pass.expiryDate}`}
-              {pass.holdUsed && !ps?.notStarted && !rs?.achieved && <span style={{ color: theme.warn }}> · 홀딩</span>}
+              {pass.holdUsed && !ps?.notStarted && !rs?.achieved && (() => {
+                const today = toYMD(new Date());
+                const isActiveHold = pass.holdStart && pass.holdEnd && today >= pass.holdStart && today <= pass.holdEnd;
+                return <span style={{ color: theme.warn }}> · {isActiveHold ? '홀딩 중' : '홀딩 사용함'}</span>;
+              })()}
             </span>
             {!ps?.notStarted && !ps?.done && ps?.daysLeft !== undefined && !rs?.achieved && (
               <span style={{ color: ps.daysLeft <= 7 ? theme.danger : theme.inkMute, fontWeight: ps.daysLeft <= 7 ? 600 : 400 }}>
@@ -6459,7 +6464,11 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                         </div>
                         <div className="text-[10.5px] mt-0.5" style={{ color: theme.inkMute }}>
                           {p.startDate} ~ {p.expiryDate}
-                          {p.holdUsed && <span style={{ color: theme.warn }}> · 홀딩{p.holdDays}일</span>}
+                          {p.holdUsed && (() => {
+                            const today = toYMD(new Date());
+                            const isActiveHold = p.holdStart && p.holdEnd && today >= p.holdStart && today <= p.holdEnd;
+                            return <span style={{ color: theme.warn }}> · 홀딩{p.holdDays}일{isActiveHold ? ' 중' : ' 사용함'}</span>;
+                          })()}
                         </div>
                         {(() => {
                           const perSession = p.pricePerSession || (p.price > 0 && p.totalSessions > 0 ? Math.round(p.price / p.totalSessions) : 0);
@@ -11354,6 +11363,52 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
     })).sort((a, b) => b.count - a.count);
   }, [sessions, members, trials, targetYM]);
 
+  // 일별(날짜별) 수익 집계 — 캘린더 상세용. timeSlotStats와 같은 계산이지만 시간대가 아니라 날짜로 그룹핑
+  const dailyStats = useMemo(() => {
+    if (!sessions) return {};
+    const todayStr = toYMD(new Date());
+    const memberMap = {};
+    members.forEach(m => { memberMap[m.id] = m; });
+    const trialByName = {};
+    (trials || []).forEach(t => { if (t.name) trialByName[t.name] = t; });
+
+    const days = {}; // { '2026-08-04': { count, totalRevenue, sessions: [{time, count:1, ppl, revenue}] } }
+    Object.values(sessions).forEach(s => {
+      if (!s?.date?.startsWith(targetYM) || s.date > todayStr) return;
+      const attendees = (s.participants || []).filter(p =>
+        !p.cancelled && p.status !== 'reserved' && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday' && p.status !== 'cancelled_by_teacher' && p.status !== 'no_show'
+      );
+      if (attendees.length === 0) return;
+      let sessionRevenue = 0;
+      attendees.forEach(p => {
+        if (p.isTrial) {
+          const trial = trialByName[p.memberName];
+          if (trial?.status === '회원전환') return;
+          if (trial?.paid === true) sessionRevenue += TRIAL_FEE;
+          return;
+        }
+        const member = memberMap[p.memberId];
+        if (!member) return;
+        const pass = (member.passes || []).find(x => x.id === p.passId);
+        if (!pass || !pass.price || !pass.totalSessions) return;
+        const perSession = pass.pricePerSession || Math.round(pass.price / pass.totalSessions);
+        sessionRevenue += perSession;
+      });
+      if (!days[s.date]) days[s.date] = { date: s.date, count: 0, totalRevenue: 0, sessions: [] };
+      days[s.date].count += 1;
+      days[s.date].totalRevenue += sessionRevenue;
+      days[s.date].sessions.push({
+        time: s.time,
+        classType: s.classType || (attendees.some(p => p.classType === '개인') ? '개인' : '소그룹'),
+        ppl: attendees.length,
+        revenue: sessionRevenue,
+      });
+    });
+    Object.values(days).forEach(d => d.sessions.sort((a, b) => a.time.localeCompare(b.time)));
+    return days;
+  }, [sessions, members, trials, targetYM]);
+  const [dailyCalendarOpen, setDailyCalendarOpen] = useState(false);
+
   return (
     <div className="px-3 pb-28 pt-2 space-y-3">
       {/* Month nav */}
@@ -11766,18 +11821,27 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
                   const totalRev = timeSlotStats.reduce((s, t) => s + (t.totalRevenue || 0), 0);
                   if (totalRev > 0) {
                     return (
-                      <div className="mt-3 pt-3 flex justify-between items-baseline" 
-                        style={{ borderTop: `1px solid ${theme.line}` }}>
-                        <div>
-                          <div className="text-[11px]" style={{ color: theme.inkMute }}>이번 달 진행된 수업료 합계</div>
-                          <div className="text-[10px] mt-0.5" style={{ color: theme.inkSoft }}>
-                            ({totalCount}회 진행 · 결제 시점 X, 실제 수업 발생 기준)
+                      <>
+                        <div className="mt-3 pt-3 flex justify-between items-baseline" 
+                          style={{ borderTop: `1px solid ${theme.line}` }}>
+                          <div>
+                            <div className="text-[11px]" style={{ color: theme.inkMute }}>이번 달 진행된 수업료 합계</div>
+                            <div className="text-[10px] mt-0.5" style={{ color: theme.inkSoft }}>
+                              ({totalCount}회 진행 · 결제 시점 X, 실제 수업 발생 기준)
+                            </div>
+                          </div>
+                          <div className="text-xl font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif }}>
+                            {totalRev.toLocaleString()}원
                           </div>
                         </div>
-                        <div className="text-xl font-bold tabular-nums" style={{ color: theme.accent, fontFamily: theme.serif }}>
-                          {totalRev.toLocaleString()}원
-                        </div>
-                      </div>
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); setDailyCalendarOpen(true); }}
+                          className="w-full mt-3 py-2.5 rounded-xl text-[12px] font-bold flex items-center justify-center gap-1.5"
+                          style={{ backgroundColor: theme.accentSoft, color: theme.accent }}
+                        >
+                          📅 일별로 보기 ›
+                        </button>
+                      </>
                     );
                   }
                   return null;
@@ -11787,6 +11851,14 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
           </>
         }
       />
+      
+      {dailyCalendarOpen && (
+        <DailyRevenueCalendarModal
+          targetMonth={targetMonth}
+          dailyStats={dailyStats}
+          onClose={() => setDailyCalendarOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -13718,6 +13790,141 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
             );
           })}
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+
+function DailyRevenueCalendarModal({ targetMonth, dailyStats, onClose }) {
+  const year = targetMonth.getFullYear();
+  const month = targetMonth.getMonth(); // 0-indexed
+  const firstDow = new Date(year, month, 1).getDay(); // 0=일
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const todayStr = toYMD(new Date());
+  const mm = pad(month + 1);
+
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const [selected, setSelected] = useState(() => {
+    // 기본: 데이터 있는 날 중 가장 최근 날짜
+    const withData = Object.keys(dailyStats).sort();
+    return withData.length > 0 ? withData[withData.length - 1] : null;
+  });
+
+  const fmtRev = (n) => n.toLocaleString();
+  const selDay = selected ? dailyStats[selected] : null;
+  const totalMonthRev = Object.values(dailyStats).reduce((s, d) => s + d.totalRevenue, 0);
+  const totalMonthCount = Object.values(dailyStats).reduce((s, d) => s + d.count, 0);
+  const avgPerSession = totalMonthCount > 0 ? Math.round(totalMonthRev / totalMonthCount) : 0;
+
+  return (
+    <Modal open={true} onClose={onClose} title={`${year}년 ${month + 1}월 · 일별 수익`}>
+      <div className="space-y-3">
+        <div className="rounded-2xl p-4" style={{ background: `linear-gradient(135deg, ${theme.accent} 0%, #1F3A2E 100%)`, color: '#fff' }}>
+          <div className="text-[11px]" style={{ opacity: 0.75 }}>이번 달 진행 수업료 합계</div>
+          <div className="text-[26px] font-bold" style={{ fontFamily: theme.serif }}>{fmtRev(totalMonthRev)}원</div>
+          <div className="flex gap-4 mt-3 pt-2.5" style={{ borderTop: '1px solid rgba(255,255,255,0.15)' }}>
+            <div>
+              <div className="text-[14px] font-bold">{totalMonthCount}회</div>
+              <div className="text-[10px]" style={{ opacity: 0.75 }}>진행된 수업</div>
+            </div>
+            <div>
+              <div className="text-[14px] font-bold">{fmtRev(avgPerSession)}원</div>
+              <div className="text-[10px]" style={{ opacity: 0.75 }}>평균 회당</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-7 gap-1">
+          {['일', '월', '화', '수', '목', '금', '토'].map(d => (
+            <div key={d} className="text-center text-[10.5px] font-bold" style={{ color: theme.inkMute }}>{d}</div>
+          ))}
+          {cells.map((d, i) => {
+            if (d === null) return <div key={`e${i}`} />;
+            const ymd = `${year}-${mm}-${pad(d)}`;
+            const info = dailyStats[ymd];
+            const isFuture = ymd > todayStr;
+            const isToday = ymd === todayStr;
+            const isSelected = selected === ymd;
+            return (
+              <div
+                key={ymd}
+                onClick={() => info && setSelected(ymd)}
+                style={{
+                  aspectRatio: '1/1.05',
+                  borderRadius: 10,
+                  padding: '4px 3px',
+                  display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+                  cursor: info ? 'pointer' : 'default',
+                  backgroundColor: isSelected ? theme.accent : info ? theme.accentSoft : 'transparent',
+                  outline: isToday ? `1.5px solid ${theme.accent2}` : 'none',
+                  outlineOffset: -1.5,
+                  opacity: isFuture ? 0.35 : 1,
+                }}
+              >
+                <span style={{ fontSize: 11, fontWeight: 700, color: isSelected ? '#FFF' : info ? theme.ink : theme.inkMute }}>{d}</span>
+                {info && (
+                  <>
+                    <span style={{
+                      fontSize: 8, fontWeight: 700, borderRadius: 5, padding: '1px 3px', alignSelf: 'flex-start',
+                      backgroundColor: isSelected ? 'rgba(255,255,255,0.25)' : theme.accent, color: '#fff',
+                    }}>{info.count}회</span>
+                    <span style={{ fontSize: 7.5, fontWeight: 700, color: isSelected ? '#FFF' : theme.accent, letterSpacing: '-0.2px' }}>
+                      {fmtRev(info.totalRevenue)}
+                    </span>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex gap-3 text-[10.5px]" style={{ color: theme.inkMute }}>
+          <span className="flex items-center gap-1">
+            <span style={{ width: 8, height: 8, borderRadius: 999, backgroundColor: theme.accentSoft, border: `1px solid ${theme.accent}` }} />
+            수업 있음
+          </span>
+          <span className="flex items-center gap-1">
+            <span style={{ width: 8, height: 8, borderRadius: 999, backgroundColor: theme.accent }} />
+            선택됨
+          </span>
+          <span className="flex items-center gap-1">
+            <span style={{ width: 8, height: 8, borderRadius: 999, border: `1.5px solid ${theme.accent2}` }} />
+            오늘
+          </span>
+        </div>
+
+        {selDay ? (
+          <div className="rounded-2xl p-3.5" style={{ backgroundColor: theme.cardAlt2 }}>
+            <div className="flex justify-between items-baseline">
+              <div className="font-bold" style={{ fontFamily: theme.serif, fontSize: 17 }}>
+                {Number(selected.split('-')[1])}월 {Number(selected.split('-')[2])}일 ({WEEK_KR[fromYMD(selected).getDay()]})
+              </div>
+              <div className="font-bold" style={{ color: theme.accent2, fontFamily: theme.serif, fontSize: 17 }}>
+                {fmtRev(selDay.totalRevenue)}원
+              </div>
+            </div>
+            <div className="text-[11px] mb-2" style={{ color: theme.inkMute }}>
+              소그룹·개인 {selDay.count}회 · 참여 인원 {selDay.sessions.reduce((s, x) => s + x.ppl, 0)}명
+            </div>
+            {selDay.sessions.map((s, i) => (
+              <div key={i} className="flex items-center justify-between py-2" style={{ borderTop: i > 0 ? `1px solid ${theme.lineLight}` : 'none' }}>
+                <div className="text-[12.5px] font-bold" style={{ width: 52, flexShrink: 0 }}>{fmtTime24(s.time)}</div>
+                <div className="text-[11px] flex-1" style={{ color: theme.inkSoft }}>{s.classType} · {s.ppl}명</div>
+                <div className="text-[12.5px] font-bold" style={{ color: theme.accent }}>{fmtRev(s.revenue)}원</div>
+              </div>
+            ))}
+            <div className="flex justify-between mt-2 pt-2.5 font-bold text-[13px]" style={{ borderTop: `1.5px solid ${theme.line}` }}>
+              <span>이 날 합계</span>
+              <span style={{ color: theme.accent2, fontFamily: theme.serif, fontSize: 17 }}>{fmtRev(selDay.totalRevenue)}원</span>
+            </div>
+          </div>
+        ) : (
+          <div className="text-center text-[12px] py-6" style={{ color: theme.inkMute }}>이번 달 진행된 수업이 없어요</div>
+        )}
       </div>
     </Modal>
   );
