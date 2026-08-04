@@ -509,6 +509,22 @@ const fmtTime24 = (t) => {
 };
 const daysBetween = (a, b) => Math.round((fromYMD(b) - fromYMD(a)) / 86400000);
 
+// 예약/취소 요청이 접수된 시각을 "M/D HH:MM"로 표시
+const fmtRequestedAt = (isoStr) => {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return '';
+  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+// 취소 요청 시각 기준, 수업 시작까지 몇 시간 몇 분 남았었는지 계산 (음수면 이미 지난 시각에 요청)
+const getRequestLeadHours = (booking) => {
+  if (!booking?.date || !booking?.time || !booking?.created_at) return null;
+  const classStart = new Date(`${booking.date}T${fmtTime24(booking.time)}:00`);
+  const requestedAt = new Date(booking.created_at);
+  if (isNaN(classStart.getTime()) || isNaN(requestedAt.getTime())) return null;
+  return (classStart.getTime() - requestedAt.getTime()) / 3600000;
+};
+
 // 친밀한 호칭: 이름 두 글자 + 님 (예: 김재영 → 재영님, 이은조 → 은조님)
 // 두 글자 이름은 그대로 (예: 박민 → 박민님)
 const friendlyName = (name) => {
@@ -3127,6 +3143,21 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
                       <div className="text-[12px] mt-1" style={{ color: theme.accent }}>
                         📅 {b.date} {b.time} · {b.class_type || '소그룹'}
                       </div>
+                      {isCancel && b.created_at && (() => {
+                        const leadHours = getRequestLeadHours(b);
+                        const leadOk = leadHours !== null && leadHours >= 5;
+                        return (
+                          <div className="text-[10.5px] mt-1" style={{ color: leadOk ? theme.inkMute : '#C23A2A', fontWeight: leadOk ? 400 : 700 }}>
+                            📝 {fmtRequestedAt(b.created_at)} 요청
+                            {leadHours !== null && (
+                              leadHours >= 0
+                                ? ` · 수업 ${Math.floor(leadHours)}시간 ${Math.round((leadHours % 1) * 60)}분 전`
+                                : ` · 수업 시작 후 요청`
+                            )}
+                            {!leadOk && ' (5시간 기준 미달)'}
+                          </div>
+                        );
+                      })()}
                       {b.note && (
                         <div className="text-[10px] mt-1 italic" style={{ color: theme.inkSoft }}>
                           {b.note}
