@@ -1598,12 +1598,16 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   if (p.category === 'private') return null; // 개인레슨은 대상 X
   
   // 자격 대상 수강권 종류 판단 (체험 보너스 +1 포함 인정)
+  // ⭐ 이전 리듬 완주 보상(+1/2/3) 등이 이번 패스 totalSessions에 이미 얹혀있으면 그만큼 빼고 순수 기본 회차로 판단
+  //    (안 그러면 예: 24회 + 리듬보상 3회 = 27회가 되어 8/9,16/17,24/25 어느 것에도 안 걸려 도전 대상에서 통째로 빠짐)
+  const priorBonusAdjust = (p.rhythmBonus || 0) + (p.mayEventBonus || 0) + (p.reviewEventBonus || 0);
+  const coreTotal = (p.totalSessions || 0) - priorBonusAdjust;
   let weeks, bonus, baseSessions;
-  if (p.totalSessions === 8 || p.totalSessions === 9) {
+  if (coreTotal === 8 || coreTotal === 9) {
     weeks = 4; bonus = 1; baseSessions = 8; // 1개월 8회 (또는 +체험 1회)
-  } else if (p.totalSessions === 16 || p.totalSessions === 17) {
+  } else if (coreTotal === 16 || coreTotal === 17) {
     weeks = 8; bonus = 2; baseSessions = 16; // 2개월 16회 (단종)
-  } else if (p.totalSessions === 24 || p.totalSessions === 25) {
+  } else if (coreTotal === 24 || coreTotal === 25) {
     weeks = 12; bonus = 3; baseSessions = 24; // 3개월 24회
   } else {
     return null; // 대상 아님
@@ -1670,28 +1674,54 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   // 취소(당일취소 포함)된 날은 실제 출석에서 제외
   const attendedCount = sortedDates.filter(d => !cancelledSet.has(d)).length;
   const remaining = Math.max(0, requiredCount - attendedCount);
+  
+  // ⭐ 메꿈 처리: 화/목이 아닌 다른 요일(예: 월요일반)에 도전 기간 안에서 추가로 출석한 날이 있으면
+  //    화/목 결석을 그 날로 메꿔서 인정 — 소선요가가 화·목 2일 운영에서 월·화·목 3일 운영으로 바뀌면서 추가됨
+  const validSlotSet = new Set(validSlots);
+  const makeupPool = sortedDates.filter(d => 
+    !cancelledSet.has(d) && d >= challengeStartYMD && d <= challengeEndYMD && !validSlotSet.has(d)
+  ).sort();
+  const makeupPairs = [];
+  const unresolvedMissedDays = [];
+  const poolLeft = [...makeupPool];
+  missedDays.forEach(md => {
+    if (poolLeft.length > 0) {
+      makeupPairs.push({ missed: md, makeup: poolLeft.shift() });
+    } else {
+      unresolvedMissedDays.push(md);
+    }
+  });
+  const makeupUsedSet = new Set(makeupPairs.map(mp => mp.makeup));
+  const makeupCoveredSet = new Set(makeupPairs.map(mp => mp.missed));
 
   const buildSlots = () => {
     const challengeSlots = tueThuDatesBetween(challengeStartYMD, challengeEndYMD).map(d => {
       const dow = fromYMD(d).getDay() === 2 ? '화' : '목';
       let st;
       if (isExemptDay(d, p, closedDays)) st = 'exempt';
-      else if (cancelledSet.has(d)) st = 'missed';   // 취소 먼저 (당일취소 차감도 결석)
+      else if (cancelledSet.has(d)) st = makeupCoveredSet.has(d) ? 'missed_covered' : 'missed';   // 취소 먼저 (당일취소 차감도 결석)
       else if (attendedSet.has(d)) st = 'attended';
-      else if (d <= yesterdayStr) st = 'missed';
+      else if (d <= yesterdayStr) st = makeupCoveredSet.has(d) ? 'missed_covered' : 'missed';
       else st = 'future';
       return { date: d, dow, status: st };
     });
+    // 메꿈으로 쓰인 날(주로 월요일) — 별도 슬롯으로 추가해서 달력에 표시
+    const makeupSlots = makeupPairs.map(mp => ({
+      date: mp.makeup,
+      dow: WEEK_KR[fromYMD(mp.makeup).getDay()],
+      status: 'makeup',
+      forMissed: mp.missed,
+    }));
     const extraSlots = sortedDates
       .filter(d => d > challengeEndYMD && !cancelledSet.has(d))
       .map(d => ({ date: d, dow: fromYMD(d).getDay() === 2 ? '화' : '목', status: 'extra' }));
-    return [...challengeSlots, ...extraSlots];
+    return [...challengeSlots, ...makeupSlots, ...extraSlots];
   };
   const slots = buildSlots();
   
-  // 도전 기간 종료 후 판정 — 결석 0회 + 회수 달성 필요
+  // 도전 기간 종료 후 판정 — 결석 0회(메꿈 반영) + 회수 달성 필요
   if (todayMs > challengeEndMs) {
-    const achieved = missedDays.length === 0 && attendedCount >= requiredCount;
+    const achieved = unresolvedMissedDays.length === 0 && attendedCount >= requiredCount;
     return {
       eligible: true,
       completed: true,
@@ -1700,17 +1730,17 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
       challengeEndYMD,
       requiredDays: requiredCount,
       attendedDays: attendedCount,
-      missedDays, slots,
+      missedDays: unresolvedMissedDays, rawMissedDays: missedDays, makeupPairs, slots,
       message: achieved
-        ? `${requiredCount}회 출석 완주`
-        : (missedDays.length > 0
-            ? `${missedDays.length}회 결석으로 미달`
+        ? (makeupPairs.length > 0 ? `${requiredCount}회 출석 완주 (월요일 등 ${makeupPairs.length}회 메꿈)` : `${requiredCount}회 출석 완주`)
+        : (unresolvedMissedDays.length > 0
+            ? `${unresolvedMissedDays.length}회 결석으로 미달`
             : `${requiredCount}회 미달 (${attendedCount}회 출석)`),
     };
   }
 
-  // 진행 중 — 이미 결석(지나간 화/목 중 안 온 날)이 있으면 탈락 확정
-  if (missedDays.length > 0) {
+  // 진행 중 — 이미 결석(지나간 화/목 중 안 온 날, 메꿈 반영)이 있으면 탈락 확정
+  if (unresolvedMissedDays.length > 0) {
     return {
       eligible: true,
       completed: false,
@@ -1721,14 +1751,14 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
       challengeEndYMD,
       requiredDays: requiredCount,
       attendedDays: attendedCount,
-      missedDays, slots,
-      message: `${missedDays.length}회 결석으로 대상 제외`,
+      missedDays: unresolvedMissedDays, rawMissedDays: missedDays, makeupPairs, slots,
+      message: `${unresolvedMissedDays.length}회 결석으로 대상 제외`,
     };
   }
 
-  // 도전 중 — 아직 결석 없음
+  // 도전 중 — 아직 결석 없음(메꿈 반영)
   // 조기 완주: 결석 0 + 회수 달성 → 기간 종료 전이라도 완주 처리
-  if (missedDays.length === 0 && attendedCount >= requiredCount) {
+  if (unresolvedMissedDays.length === 0 && attendedCount >= requiredCount) {
     return {
       eligible: true,
       completed: true,
@@ -1739,8 +1769,8 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
       requiredDays: requiredCount,
       attendedDays: attendedCount,
       remaining: 0,
-      missedDays, slots,
-      message: `${weeks}주 빠짐없이 완주`,
+      missedDays: unresolvedMissedDays, rawMissedDays: missedDays, makeupPairs, slots,
+      message: makeupPairs.length > 0 ? `${weeks}주 빠짐없이 완주 (메꿈 ${makeupPairs.length}회 포함)` : `${weeks}주 빠짐없이 완주`,
     };
   }
   return {
@@ -1753,7 +1783,7 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
     requiredDays: requiredCount,
     attendedDays: attendedCount,
     remaining,
-    missedDays, slots,
+    missedDays: unresolvedMissedDays, rawMissedDays: missedDays, makeupPairs, slots,
     message: remaining > 0 
       ? `남은 ${remaining}회 빠짐없이`
       : `완주 직전`,
@@ -13587,16 +13617,19 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
     const diffToMon = (d.getDay() + 6) % 7;
     return toYMD(addDays(d, -diffToMon));
   };
+  const hasMakeup = slots.some(s => s.status === 'makeup');
   const weekMap = {};
   slots.forEach(s => {
     const k = weekKey(s.date);
-    if (!weekMap[k]) weekMap[k] = { 화: null, 목: null };
-    weekMap[k][s.dow] = s;
+    if (!weekMap[k]) weekMap[k] = { 월: null, 화: null, 목: null };
+    // 한 주에 메꿈이 여러 개면 화/목 슬롯을 밀어내지 않도록 월 칸에만 담음(메꿈은 항상 dow 월 가정)
+    if (s.status === 'makeup') weekMap[k]['월'] = s;
+    else weekMap[k][s.dow] = s;
   });
   const weekKeys = Object.keys(weekMap).sort();
   const mmdd = (ymd) => { const [, m, d] = ymd.split('-'); return `${Number(m)}/${Number(d)}`; };
-  const GREEN = '#4A7A5C', RED = theme.accent2, FUTURE = '#E2E0D4', EXTRA = '#A8C8B4';
-  const COL = { attended: GREEN, missed: RED, future: FUTURE, exempt: theme.bg, extra: EXTRA };
+  const GREEN = '#4A7A5C', RED = theme.accent2, FUTURE = '#E2E0D4', EXTRA = '#A8C8B4', AMBER = theme.warn || '#B8863E';
+  const COL = { attended: GREEN, missed: RED, missed_covered: AMBER, future: FUTURE, exempt: theme.bg, extra: EXTRA, makeup: GREEN };
 
   const Cell = ({ slot }) => {
     if (!slot) return <div style={{ flex: 1 }} />;
@@ -13606,10 +13639,10 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
         <div style={{
           width: 52, height: 52, borderRadius: 14, background: COL[status],
-          border: isExempt ? `1.5px solid ${theme.line}` : 'none',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          border: isExempt ? `1.5px solid ${theme.line}` : status === 'makeup' ? `2px solid ${GREEN}` : 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative',
         }}>
-          {(status === 'attended' || status === 'extra') && (
+          {(status === 'attended' || status === 'extra' || status === 'makeup') && (
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
               <circle cx="12" cy="12" r="10" stroke="#FFF" strokeWidth="2" />
               <path d="M8 12.5l2.5 2.5L16 9" stroke="#FFF" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
@@ -13619,6 +13652,9 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
               <path d="M7 7l10 10M17 7L7 17" stroke="#FFF" strokeWidth="2.4" strokeLinecap="round" />
             </svg>
+          )}
+          {status === 'missed_covered' && (
+            <span style={{ fontSize: 9, fontWeight: 700, color: '#FFF', textAlign: 'center', lineHeight: 1.1 }}>메꿈<br/>완료</span>
           )}
           {isExempt && <span style={{ fontSize: 9, color: theme.inkMute }}>휴원</span>}
         </div>
@@ -13648,12 +13684,14 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
         <div className="flex flex-wrap gap-3">
           <Legend color={GREEN} label="출석" />
           <Legend color={RED} label="결석" />
+          {hasMakeup && <Legend color={AMBER} label="메꿈 완료(월요일 등)" />}
           <Legend color={FUTURE} label="예정" />
           <Legend color={EXTRA} label="도전 이후" />
           <Legend color={theme.bg} label="휴원" border />
         </div>
         <div>
           <div className="flex mb-1.5" style={{ paddingLeft: 28 }}>
+            {hasMakeup && <div style={{ flex: 1, textAlign: 'center', fontSize: 12, fontWeight: 700, color: theme.ink }}>월</div>}
             <div style={{ flex: 1, textAlign: 'center', fontSize: 12, fontWeight: 700, color: theme.ink }}>화</div>
             <div style={{ flex: 1, textAlign: 'center', fontSize: 12, fontWeight: 700, color: theme.ink }}>목</div>
           </div>
@@ -13672,6 +13710,7 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
                 )}
                 <div style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 10 }}>
                   <div style={{ width: 28, fontSize: 10, color: theme.inkMute, paddingTop: 18 }}>{i + 1}주</div>
+                  {hasMakeup && <Cell slot={weekMap[wk]['월']} />}
                   <Cell slot={weekMap[wk]['화']} />
                   <Cell slot={weekMap[wk]['목']} />
                 </div>
@@ -13683,6 +13722,7 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
     </Modal>
   );
 }
+
 
 function HistoryEditModal({ record, onClose, onSave, onDelete }) {
   const [date, setDate] = useState(record.date || '');
