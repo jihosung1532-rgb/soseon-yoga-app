@@ -8191,6 +8191,7 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
   const [category, setCategory] = useState(preset.category || 'group');
   const [canHold, setCanHold] = useState(!!preset.canHold);
   const [note, setNote] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState('');
 
   useEffect(() => {
     const p = PASS_PRESETS[presetIdx];
@@ -8215,13 +8216,13 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
           type: '스타터 · 개인레슨 3회', category: 'private',
           totalSessions: 3, days: 90,
           paymentDate, startDate, expiryDate: computeExpiry(startDate, 90),
-          price: 0, bundleOf: '스타터 패키지',
+          price: 0, bundleOf: '스타터 패키지', paymentMethod: paymentMethod || undefined,
         },
         {
           type: '스타터 · 소그룹 6회', category: 'group',
           totalSessions: 6, days: 35,
           paymentDate, startDate, expiryDate: computeExpiry(startDate, 35),
-          price: 360000, bundleOf: '스타터 패키지',
+          price: 360000, bundleOf: '스타터 패키지', paymentMethod: paymentMethod || undefined,
         },
       ]);
     } else {
@@ -8230,6 +8231,7 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
         type, category, totalSessions: total + totalBonus,
         paymentDate, startDate, expiryDate: extendedExpiry,
         price, canHold, days, note: note || undefined,
+        paymentMethod: paymentMethod || undefined,
       };
       if (pricePerSession > 0) data.pricePerSession = pricePerSession;
       // 보상 적용 정보
@@ -8432,6 +8434,23 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
                 <Input type="number" value={pricePerSession} onChange={(e) => setPricePerSession(Number(e.target.value))} placeholder="0" />
               </Field>
             </div>
+            <Field label="결제수단">
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {['카드', '지역화폐', '계좌이체', '현금(영수증O)', '현금(영수증X)'].map(opt => (
+                  <button key={opt} type="button"
+                    onClick={() => setPaymentMethod(opt)}
+                    className="px-2.5 py-1 rounded-full text-[11px] font-medium"
+                    style={{
+                      backgroundColor: paymentMethod === opt ? theme.accent : theme.cardAlt2,
+                      color: paymentMethod === opt ? '#FFF' : theme.ink,
+                      border: `1px solid ${paymentMethod === opt ? theme.accent : theme.line}`,
+                    }}>
+                    {opt}
+                  </button>
+                ))}
+              </div>
+              <Input value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} placeholder="예: 현대카드 일시불, 지역화폐 분할..." />
+            </Field>
             <Field label="메모 (선택)">
               <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="예: 할인가 적용, 특별 사항" />
             </Field>
