@@ -4416,6 +4416,14 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
           toast={toast} goto={goto}
           onClose={() => setSlotModal(null)}
           onSave={async (data) => {
+            // ⭐ "수업 삭제" 버튼 — 참여자만 비우는 게 아니라 이 날짜/시간 항목 자체를 통째로 삭제
+            if (data.__delete) {
+              const delDate = data.date ? new Date(data.date + 'T00:00:00') : slotModal.date;
+              await saveSession(delDate, data.time || slotModal.time, null, data.originalKey);
+              setSlotModal(null);
+              toast('삭제되었어요');
+              return;
+            }
             const saveTime = data.time || slotModal.time;
             const saveDate = data.date ? new Date(data.date + 'T00:00:00') : slotModal.date;
             const newKey = `${toYMD(saveDate)}_${saveTime}`;
@@ -4932,7 +4940,7 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
 
         <div className="flex justify-between gap-2 pt-2">
           {existing && (
-            <Button variant="danger" size="sm" icon={Trash2} onClick={() => onSave({ participants: [], time, date, originalKey, classNote: '' })}>수업 삭제</Button>
+            <Button variant="danger" size="sm" icon={Trash2} onClick={() => onSave({ __delete: true, time, date, originalKey })}>수업 삭제</Button>
           )}
           <div className="flex gap-2 ml-auto">
             <Button variant="ghost" onClick={onClose}>취소</Button>
