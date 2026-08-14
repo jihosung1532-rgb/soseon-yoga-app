@@ -2679,6 +2679,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
   const [rejectingId, setRejectingId] = useState(null);
   const [rejectReason, setRejectReason] = useState('');
   const [showBookingModal, setShowBookingModal] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
   
   // 📊 정원현황 시트 (시간대 탭하면 회원 목록 보기)
   const [capacitySheetTime, setCapacitySheetTime] = useState(null); // 선택된 시간 (null이면 닫힘)
@@ -3094,8 +3095,8 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
         )}
       </div>
 
-      {/* 📩 예약/취소 요청 알림 (pending bookings) */}
-      {pendingBookings.length > 0 && (() => {
+      {/* 📩 새 요청 + 지난 요청 전체보기 (하나의 카드, 가로선으로 위/아래 구분) */}
+      {(() => {
         const newReqs = pendingBookings.filter(b => b.status === 'pending');
         const cancelReqs = pendingBookings.filter(b => b.status === 'pending_cancel');
         const lateCancelReqs = pendingBookings.filter(b => b.status === 'pending_cancel_late');
@@ -3107,30 +3108,44 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
         // 당일취소(차감) 건을 맨 앞으로 정렬해서 보여줌
         const sortedForPreview = [...lateCancelReqs, ...pendingBookings.filter(b => b.status !== 'pending_cancel_late')];
         return (
-          <div className="rounded-2xl p-3 cursor-pointer transition-all active:scale-[0.99]" 
-            style={{ 
-              background: hasUrgent ? 'linear-gradient(135deg, #FFEDE8 0%, #FFC9B8 100%)' : 'linear-gradient(135deg, #FFF8ED 0%, #FFE8C9 100%)',
-              border: hasUrgent ? '2px solid #C23A2A' : '1px solid #C26B4A',
-            }}
-            onClick={() => setShowBookingModal(true)}>
-            <div className="flex items-center gap-2">
-              <div style={{ fontSize: 18 }}>{hasUrgent ? '🚨' : '📩'}</div>
-              <div className="flex-1">
-                <div className="text-[13px] font-bold" style={{ color: hasUrgent ? '#C23A2A' : '#8A3F3C' }}>
-                  새 요청 {summary.join(' · ')}
-                </div>
-                <div className="text-[11px]" style={{ color: '#A0573B' }}>
-                  {sortedForPreview.slice(0, 2).map(b => 
-                    `${b.member_name}님 ${b.date} ${fmtTime24(b.time)}${b.status === 'pending_cancel_late' ? ' (⚠️당일취소·차감)' : b.status === 'pending_cancel' ? ' (취소)' : ''}`
-                  ).join(' · ')}
-                  {pendingBookings.length > 2 && ` 외 ${pendingBookings.length - 2}건`}
+          <div className="rounded-2xl overflow-hidden" style={{ border: `1px solid ${theme.line}` }}>
+            {pendingBookings.length > 0 && (
+              <div className="p-3 cursor-pointer transition-all active:scale-[0.99]"
+                style={{
+                  background: hasUrgent ? 'linear-gradient(135deg, #FFEDE8 0%, #FFC9B8 100%)' : 'linear-gradient(135deg, #FFF8ED 0%, #FFE8C9 100%)',
+                }}
+                onClick={() => setShowBookingModal(true)}>
+                <div className="flex items-center gap-2">
+                  <div style={{ fontSize: 18 }}>{hasUrgent ? '🚨' : '📩'}</div>
+                  <div className="flex-1">
+                    <div className="text-[13px] font-bold" style={{ color: hasUrgent ? '#C23A2A' : '#8A3F3C' }}>
+                      새 요청 {summary.join(' · ')}
+                    </div>
+                    <div className="text-[11px]" style={{ color: '#A0573B' }}>
+                      {sortedForPreview.slice(0, 2).map(b =>
+                        `${b.member_name}님 ${b.date} ${fmtTime24(b.time)}${b.status === 'pending_cancel_late' ? ' (⚠️당일취소·차감)' : b.status === 'pending_cancel' ? ' (취소)' : ''}`
+                      ).join(' · ')}
+                      {pendingBookings.length > 2 && ` 외 ${pendingBookings.length - 2}건`}
+                    </div>
+                  </div>
+                  <div style={{ color: hasUrgent ? '#C23A2A' : '#C26B4A', fontSize: 18, fontWeight: 600 }}>›</div>
                 </div>
               </div>
-              <div style={{ color: hasUrgent ? '#C23A2A' : '#C26B4A', fontSize: 18, fontWeight: 600 }}>›</div>
+            )}
+            <div className="flex items-center justify-between px-3.5 py-2.5 cursor-pointer"
+              style={{ backgroundColor: theme.card, borderTop: pendingBookings.length > 0 ? `1px solid ${theme.line}` : 'none' }}
+              onClick={() => setShowHistoryModal(true)}>
+              <span className="text-[12.5px] font-bold" style={{ color: theme.ink }}>📋 지난 요청</span>
+              <span className="text-[10.5px]" style={{ color: theme.inkMute }}>전체보기 →</span>
             </div>
           </div>
         );
       })()}
+      
+      {/* 지난 요청 히스토리 모달 */}
+      {showHistoryModal && (
+        <BookingHistoryModal onClose={() => setShowHistoryModal(false)} />
+      )}
       
       {/* 예약 요청 모달 */}
       {showBookingModal && (
@@ -13951,6 +13966,139 @@ function DailyRevenueCalendarModal({ targetMonth, dailyStats, onClose }) {
           </div>
         ) : (
           <div className="text-center text-[12px] py-6" style={{ color: theme.inkMute }}>이번 달 진행된 수업이 없어요</div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+
+function BookingHistoryModal({ onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [bookings, setBookings] = useState([]);
+  const [filter, setFilter] = useState('all'); // all | approved | rejected | lateCancel
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      const items = await sb.getAllBookings();
+      const processed = (items || []).filter(b =>
+        ['approved', 'rejected', 'cancel_approved', 'cancel_rejected'].includes(b.status)
+      );
+      setBookings(processed);
+      setLoading(false);
+    })();
+  }, []);
+
+  const isLateCancel = (b) => b.status === 'cancel_approved' && (b.note || '').includes('5시간 이내');
+
+  const filtered = bookings.filter(b => {
+    if (search && !(b.member_name || '').includes(search)) return false;
+    if (filter === 'approved') return b.status === 'approved' || (b.status === 'cancel_approved' && !isLateCancel(b));
+    if (filter === 'rejected') return b.status === 'rejected' || b.status === 'cancel_rejected';
+    if (filter === 'lateCancel') return isLateCancel(b);
+    return true;
+  });
+
+  // 날짜별(요청 처리된 날 = responded_at 기준) 그룹핑
+  const groups = {};
+  filtered.forEach(b => {
+    const day = (b.responded_at || b.created_at || '').slice(0, 10);
+    if (!groups[day]) groups[day] = [];
+    groups[day].push(b);
+  });
+  const dayKeys = Object.keys(groups).sort((a, b) => b.localeCompare(a));
+
+  const badgeInfo = (b) => {
+    if (isLateCancel(b)) return { label: '⚠️ 당일취소 승인(차감)', bg: theme.warnBg, color: theme.warn };
+    if (b.status === 'approved') return { label: '예약 승인', bg: theme.successBg, color: theme.success };
+    if (b.status === 'cancel_approved') return { label: '취소 승인', bg: theme.successBg, color: theme.success };
+    if (b.status === 'rejected') return { label: '예약 거절', bg: theme.dangerBg, color: theme.danger };
+    if (b.status === 'cancel_rejected') return { label: '취소 거절', bg: theme.dangerBg, color: theme.danger };
+    return { label: b.status, bg: theme.cardAlt, color: theme.inkMute };
+  };
+
+  const fmtDay = (ymd) => {
+    if (!ymd) return '';
+    const d = fromYMD(ymd);
+    const today = toYMD(new Date());
+    if (ymd === today) return `오늘 · ${d.getMonth() + 1}월 ${d.getDate()}일`;
+    return `${d.getMonth() + 1}월 ${d.getDate()}일 (${WEEK_KR[d.getDay()]})`;
+  };
+  const fmtDateTime = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const leadTime = (b) => {
+    if (!b.created_at || !b.responded_at) return '';
+    const ms = new Date(b.responded_at) - new Date(b.created_at);
+    const min = Math.round(ms / 60000);
+    if (min < 60) return `${min}분 후`;
+    return `${Math.floor(min / 60)}시간 ${min % 60}분 후`;
+  };
+
+  return (
+    <Modal open={true} onClose={onClose} title="요청 히스토리">
+      <div className="space-y-3">
+        <div className="flex flex-wrap gap-1.5">
+          {[
+            { id: 'all', label: '전체' },
+            { id: 'approved', label: '승인됨' },
+            { id: 'rejected', label: '거절됨' },
+            { id: 'lateCancel', label: '당일취소(차감)' },
+          ].map(f => (
+            <button key={f.id} onClick={() => setFilter(f.id)}
+              className="px-3 py-1.5 rounded-full text-[11px] font-bold"
+              style={{
+                backgroundColor: filter === f.id ? theme.accent : theme.cardAlt,
+                color: filter === f.id ? '#fff' : theme.inkMute,
+              }}>
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <div className="rounded-xl px-3 py-2 flex items-center gap-2" style={{ backgroundColor: theme.cardAlt }}>
+          <Search size={14} color={theme.inkMute} />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="회원 이름으로 검색"
+            className="bg-transparent outline-none text-[12.5px] flex-1"
+            style={{ color: theme.ink }}
+          />
+        </div>
+
+        {loading ? (
+          <div className="text-center py-8 text-[12px]" style={{ color: theme.inkMute }}>불러오는 중...</div>
+        ) : dayKeys.length === 0 ? (
+          <div className="text-center py-8 text-[12px]" style={{ color: theme.inkMute }}>처리된 요청이 없어요</div>
+        ) : (
+          dayKeys.map(day => (
+            <div key={day}>
+              <div className="text-[11px] font-bold mb-1.5 px-0.5" style={{ color: theme.inkMute }}>{fmtDay(day)}</div>
+              {groups[day].map(b => {
+                const badge = badgeInfo(b);
+                return (
+                  <div key={b.id} className="rounded-xl px-3 py-2.5 mb-1.5" style={{ backgroundColor: theme.cardAlt2 }}>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="text-[13px] font-bold">{b.member_name}</span>
+                      <span className="text-[9.5px] font-bold px-2 py-0.5 rounded-full" style={{ backgroundColor: badge.bg, color: badge.color }}>
+                        {badge.label}
+                      </span>
+                    </div>
+                    <div className="text-[11px]" style={{ color: theme.inkSoft }}>
+                      {b.date} {fmtTime24(b.time)} · {b.class_type || '소그룹'}
+                    </div>
+                    <div className="text-[10px] mt-0.5" style={{ color: theme.inkMute }}>
+                      요청 {fmtDateTime(b.created_at)} → 처리 {fmtDateTime(b.responded_at)} ({leadTime(b)})
+                      {b.note && !isLateCancel(b) ? ` · ${b.note}` : ''}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ))
         )}
       </div>
     </Modal>
