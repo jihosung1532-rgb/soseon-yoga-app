@@ -9772,6 +9772,7 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
           onDelete={() => del(editing.id)}
           onConvert={() => convertToMember(editing)}
           onSendSMS={onSendSMS}
+          groupSlots={groupSlots}
         />
       )}
     </div>
@@ -10235,7 +10236,7 @@ function TrialEditor({ trial, onClose, onSave, groupSlots = [] }) {
   );
 }
 
-function TrialDetail({ trial, onClose, onUpdate, onDelete, onConvert, onSendSMS }) {
+function TrialDetail({ trial, onClose, onUpdate, onDelete, onConvert, onSendSMS, groupSlots = [] }) {
   const [editing, setEditing] = useState(false);
   return (
     <Modal open={true} onClose={onClose} title={trial.name} maxWidth="max-w-md">
