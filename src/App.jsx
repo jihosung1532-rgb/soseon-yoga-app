@@ -619,8 +619,8 @@ ${rhythmAchieved ? "\n🏆 리듬 수련을 완주하셔서\n재등록 시 1회�
 수강권이 종료되어 안내드려요.
 
 그동안 수련 함께해주셔서 감사드립니다.
-다시 몸이 필요하실 때
-편하게 언제든 찾아주세요.
+언제든 수련이 필요하실 때
+다시 찾아주세요.
 
 좋은 하루 보내세요 🌿`,
   }),
@@ -648,8 +648,8 @@ ${rhythmAchieved ? "\n🏆 리듬 수련을 완주하셔서\n재등록 시 1회�
 
 · 휴회 기간: ${fmtKRShort(holdStart)} ~ ${fmtKRShort(holdEnd)}
 
-해당 기간 동안은 수련이 중단되고
-이후 자동으로 이어서 사용 가능합니다.
+해당 기간 이후 이어서 수련이 가능합니다.
+· 변경된 만료일: ${fmtKRShort(pass.expiryDate)}
 
 변동사항 있으시면 편하게 말씀 주세요 🌿`,
   }),
@@ -3799,6 +3799,41 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     }
   };
 
+  // ⭐ 같은 날짜 안에서 회원 한 명만 다른 시간대로 옮기기 (예: 09:30 → 20:50)
+  // 같은 날짜라 pass의 usedSessions/sessionDates(날짜 기준 차감)는 안 건드려도 됨 — 참가자만 옮기면 됨
+  const moveParticipant = async (participant, fromKey, toTime) => {
+    const dateStr = fromKey.slice(0, 10);
+    const toKey = `${dateStr}_${toTime}`;
+    if (toKey === fromKey) return;
+    const targetExisting = sessions[toKey];
+    const alreadyThere = (targetExisting?.participants || []).some(x =>
+      participant.isTrial ? (x.isTrial && x.memberName === participant.memberName) : (x.memberId && x.memberId === participant.memberId)
+    );
+    if (alreadyThere) {
+      toast('이미 그 시간에 있어요');
+      return false;
+    }
+    const next = { ...sessions };
+    const fromSess = next[fromKey];
+    if (fromSess) {
+      next[fromKey] = {
+        ...fromSess,
+        participants: (fromSess.participants || []).filter(x =>
+          participant.isTrial ? !(x.isTrial && x.memberName === participant.memberName) : x.memberId !== participant.memberId
+        ),
+      };
+    }
+    const toSess = next[toKey] || { date: dateStr, time: toTime, participants: [] };
+    next[toKey] = {
+      ...toSess,
+      participants: [...(toSess.participants || []), { ...participant, _isAutoAdded: false }],
+    };
+    setSessions(next);
+    await saveKey(K.sessions, next);
+    toast(`${fmtTime24(toTime)}로 이동했어요`);
+    return true;
+  };
+
   const smallGroupDay = (d) => d.getDay() === 2 || d.getDay() === 4;
   const todayYMD = toYMD(new Date());
   
@@ -4429,6 +4464,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
         <SessionEditor
           slot={slotModal} members={members} setMembers={setMembers} saveMembers={saveMembers} groupSlots={groupSlots}
           toast={toast} goto={goto}
+          onMoveParticipant={moveParticipant}
           onClose={() => setSlotModal(null)}
           onSave={async (data) => {
             // ⭐ "수업 삭제" 버튼 — 참여자만 비우는 게 아니라 이 날짜/시간 항목 자체를 통째로 삭제
@@ -4551,7 +4587,7 @@ function MemberSearchPicker({ members, selectedId, onChange, onAdd, existingPart
   );
 }
 
-function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toast, onClose, onSave, goto }) {
+function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toast, onClose, onSave, goto, onMoveParticipant }) {
   const existing = slot.existing;
   const isNewMode = !!slot.isNew;
   
@@ -4617,6 +4653,8 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
   const [mode, setMode] = useState('member');
   // 자동 추천 회원 제외 의도 모달
   const [excludeTarget, setExcludeTarget] = useState(null); // { idx, member }
+  // 다른 시간대로 이동 — 이동할 참가자 인덱스 (인라인 선택기 표시용)
+  const [movingIdx, setMovingIdx] = useState(null);
 
   const addExisting = () => {
     if (!addingMember) return;
@@ -4854,18 +4892,47 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
                       </div>
                       {/* X 버튼은 활성 회원만 - 취소/노쇼 기록은 통계 보존 위해 유지 (상태 해제로 풀거나 그대로 둠) */}
                       {!isCancelled && p.status !== 'no_show' && (
-                        <button onClick={() => {
-                          // 자동 추천으로 들어온 회원이면 의도 모달
-                          if (p._isAutoAdded) {
-                            setExcludeTarget({ idx: i, member: p });
-                          } else {
-                            setParts(parts.filter((_, j) => j !== i));
-                          }
-                        }} className="p-1 rounded" style={{ color: theme.danger }}>
-                          <X size={14} />
-                        </button>
+                        <div className="flex items-center gap-0.5">
+                          {onMoveParticipant && originalKey && !p.isTrial && (
+                            <button onClick={() => setMovingIdx(movingIdx === i ? null : i)}
+                              className="px-1.5 py-1 rounded text-[10px] font-bold" style={{ color: theme.accent }}>
+                              ↔ 이동
+                            </button>
+                          )}
+                          <button onClick={() => {
+                            // 자동 추천으로 들어온 회원이면 의도 모달
+                            if (p._isAutoAdded) {
+                              setExcludeTarget({ idx: i, member: p });
+                            } else {
+                              setParts(parts.filter((_, j) => j !== i));
+                            }
+                          }} className="p-1 rounded" style={{ color: theme.danger }}>
+                            <X size={14} />
+                          </button>
+                        </div>
                       )}
                     </div>
+                    {/* 이동할 시간대 선택 (같은 날짜 안에서만) */}
+                    {movingIdx === i && (
+                      <div className="flex flex-wrap gap-1.5 mt-2 p-2 rounded-lg" style={{ backgroundColor: theme.cardAlt2 }}>
+                        <span className="text-[10.5px] w-full mb-0.5" style={{ color: theme.inkMute }}>같은 날 다른 시간으로 이동:</span>
+                        {(groupSlots?.length > 0 ? groupSlots : ['09:30', '11:00', '13:00', '19:20', '20:50'])
+                          .filter(t => t !== time)
+                          .map(t => (
+                            <button key={t} onClick={async () => {
+                              const ok = await onMoveParticipant(p, originalKey, t);
+                              if (ok) {
+                                setParts(parts.filter((_, j) => j !== i));
+                                setMovingIdx(null);
+                              }
+                            }}
+                              className="px-2.5 py-1 rounded-full text-[11px] font-bold"
+                              style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}`, color: theme.ink }}>
+                              {fmtTime24(t)}
+                            </button>
+                          ))}
+                      </div>
+                    )}
                     {p.cancelNote && (
                       <div className="text-[10px] mt-1" style={{ color: theme.inkMute }}>메모: {p.cancelNote}</div>
                     )}
@@ -6254,7 +6321,7 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
     // Offer SMS
     onSendSMS({
       phone: member.phone, name: member.name,
-      template: SMS_TEMPLATES.hold(member, p, holdStart, holdEnd),
+      template: SMS_TEMPLATES.hold(member, { ...p, expiryDate: newExpiry }, holdStart, holdEnd),
     });
   };
   
