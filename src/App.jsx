@@ -3538,7 +3538,7 @@ function Stat({ label, value, color }) {
 /* =========================================================
    Schedule View
    ========================================================= */
-function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {}, setClassLog, groupSlots, setGroupSlots, closedDays = [], setClosedDays, toast, goto }) {
+function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {}, setClassLog, groupSlots, setGroupSlots, trials = [], setTrials, closedDays = [], setClosedDays, toast, goto }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [slotModal, setSlotModal] = useState(null);
   const [slotsManagerOpen, setSlotsManagerOpen] = useState(false);
@@ -3832,6 +3832,48 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     await saveKey(K.sessions, next);
     toast(`${fmtTime24(toTime)}로 이동했어요`);
     return true;
+  };
+
+  // ⭐ 수업 편집 화면에서 체험자를 바로 정식 회원으로 전환 (체험 탭 안 거쳐도 되게)
+  const convertTrialToMemberInline = async (trial) => {
+    if (!confirm(`${trial.name}님을 정식 회원으로 전환할까요?`)) return null;
+    const buildTrialHistoryNote = (t) => {
+      const parts = [];
+      if (t.date && t.time) parts.push(`${t.date} ${fmtTime24(t.time)} 체험`);
+      else if (t.date) parts.push(`${t.date} 체험`);
+      if (t.source) parts.push(`유입: ${t.source}`);
+      if (t.paid === true) parts.push('체험비 입금완료');
+      else if (t.paid === false) parts.push('체험비 미입금');
+      if (t.experience) parts.push(`요가 경험: ${t.experience}`);
+      if (t.painPoints) parts.push(`통증: ${t.painPoints}`);
+      if (t.memo) parts.push(`체험 메모: ${t.memo}`);
+      return parts.join(' · ');
+    };
+    const trialHistoryNote = buildTrialHistoryNote(trial);
+    const baseNotes = trial.painPoints || '';
+    const isMayBonus = isMayEventTrial(trial.date);
+    const eventNote = isMayBonus ? '🌿 5월 이벤트 대상 (수강권 등록 시 +1회 보너스 적용)' : '';
+    const fullNotes = [baseNotes, trialHistoryNote, eventNote].filter(Boolean).join('\n\n');
+    const m = {
+      id: uid(), name: trial.name, phone: trial.phone,
+      yogaExperience: trial.experience,
+      notes: fullNotes,
+      keyPoint: trial.painPoints,
+      passes: [], memoTimeline: [], progressLog: [],
+      fixedSlots: [], createdAt: toYMD(new Date()),
+      fromTrial: trial.id,
+      mayEventBonus: isMayBonus,
+    };
+    const newMembers = [...members, m];
+    setMembers(newMembers);
+    await saveKey(K.members, newMembers);
+    if (setTrials) {
+      const newTrials = trials.map(t => t.id === trial.id ? { ...t, status: '회원전환', convertedAt: toYMD(new Date()), convertedToMemberId: m.id } : t);
+      setTrials(newTrials);
+      await saveKey(K.trials, newTrials);
+    }
+    toast(isMayBonus ? '회원 전환됨 · 🌿 5월 이벤트 대상' : '정식 회원으로 전환됨');
+    return m;
   };
 
   const smallGroupDay = (d) => d.getDay() === 2 || d.getDay() === 4;
@@ -4465,6 +4507,8 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
           slot={slotModal} members={members} setMembers={setMembers} saveMembers={saveMembers} groupSlots={groupSlots}
           toast={toast} goto={goto}
           onMoveParticipant={moveParticipant}
+          onConvertTrial={convertTrialToMemberInline}
+          trials={trials}
           onClose={() => setSlotModal(null)}
           onSave={async (data) => {
             // ⭐ "수업 삭제" 버튼 — 참여자만 비우는 게 아니라 이 날짜/시간 항목 자체를 통째로 삭제
@@ -4587,7 +4631,7 @@ function MemberSearchPicker({ members, selectedId, onChange, onAdd, existingPart
   );
 }
 
-function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toast, onClose, onSave, goto, onMoveParticipant }) {
+function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toast, onClose, onSave, goto, onMoveParticipant, onConvertTrial, trials = [] }) {
   const existing = slot.existing;
   const isNewMode = !!slot.isNew;
   
@@ -4897,6 +4941,26 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
                             <button onClick={() => setMovingIdx(movingIdx === i ? null : i)}
                               className="px-1.5 py-1 rounded text-[10px] font-bold" style={{ color: theme.accent }}>
                               ↔ 이동
+                            </button>
+                          )}
+                          {p.isTrial && onConvertTrial && (
+                            <button onClick={async () => {
+                              const matchedTrial = trials.find(t => t.name === p.memberName && t.status !== '회원전환');
+                              if (!matchedTrial) {
+                                toast('체험 탭에서 해당 이름을 찾을 수 없어요');
+                                return;
+                              }
+                              const newMember = await onConvertTrial(matchedTrial);
+                              if (newMember) {
+                                // 이 세션의 참가자도 정식 회원으로 갱신 (체험 표시 제거)
+                                setParts(parts.map((x, j) => j === i
+                                  ? { memberId: newMember.id, memberName: newMember.name, classType: category === 'private' ? '개인' : undefined, ...(x.status ? { status: x.status } : {}) }
+                                  : x
+                                ));
+                              }
+                            }}
+                              className="px-1.5 py-1 rounded text-[10px] font-bold" style={{ color: theme.accent2 }}>
+                              ✓ 정식 전환
                             </button>
                           )}
                           <button onClick={() => {
@@ -9668,6 +9732,7 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
     if (s === '회원전환') return 'success';   // 초록
     if (s === '수업완료') return 'neutral';   // 회색
     if (s === '예약확정') return 'warn';      // 노랑
+    if (s === '보류') return 'peach';         // 살구색
     if (s === '취소' || s === '미참석') return 'danger';        // 빨강
     return 'neutral';
   };
@@ -9685,6 +9750,7 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
       const timeOk = filterTime === 'all' ? true 
         : filterTime === 'confirmed' ? t.status === '예약확정'
         : filterTime === 'completed' ? t.status === '수업완료'
+        : filterTime === 'hold' ? t.status === '보류'
         : filterTime === 'cancelled' ? (t.status === '취소' || t.status === '미참석')
         : true;
       // 등록 필터
@@ -9744,6 +9810,7 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
           }}>
           <option value="confirmed">예약확정</option>
           <option value="completed">수업완료</option>
+          <option value="hold">보류</option>
           <option value="cancelled">취소</option>
           <option value="all">전체</option>
         </select>
@@ -9778,6 +9845,7 @@ function TrialsView({ trials, setTrials, members, setMembers, sessions, setSessi
       <div className="text-[12px] mb-3 px-1" style={{ color: theme.inkSoft }}>
         {filterTime === 'confirmed' && <span>예약확정 <strong style={{ color: theme.ink }}>{confirmedCount}명</strong></span>}
         {filterTime === 'completed' && <span>수업완료 <strong style={{ color: theme.ink }}>{trials.filter(t => t.status === '수업완료').length}명</strong></span>}
+        {filterTime === 'hold' && <span>보류 <strong style={{ color: theme.ink }}>{trials.filter(t => t.status === '보류').length}명</strong></span>}
         {filterTime === 'cancelled' && <span>취소 <strong style={{ color: theme.danger }}>{trials.filter(t => t.status === '취소' || t.status === '미참석').length}명</strong></span>}
         {filterTime === 'all' && <span>전체 <strong style={{ color: theme.ink }}>{trials.length}명</strong></span>}
         {trials.length > 0 && (
@@ -10343,8 +10411,31 @@ function TrialDetail({ trial, onClose, onUpdate, onDelete, onConvert, onSendSMS,
           </button>
         )}
         
-        {/* 취소 버튼 (수업완료 또는 예약확정에서 표시) */}
+        {/* 보류 버튼 (수업완료 또는 예약확정에서 표시) */}
         {(trial.status === '수업완료' || trial.status === '예약확정') && (
+          <button 
+            onClick={async () => {
+              await onUpdate(trial.id, { ...trial, status: '보류' });
+            }}
+            className="w-full py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5"
+            style={{ backgroundColor: 'transparent', color: theme.warn, border: `1px solid ${theme.warn}` }}>
+            ⏸ 보류로 표시
+          </button>
+        )}
+        {/* 보류 상태면 되돌리기 버튼 */}
+        {trial.status === '보류' && (
+          <button 
+            onClick={async () => {
+              await onUpdate(trial.id, { ...trial, status: '수업완료' });
+            }}
+            className="w-full py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5"
+            style={{ backgroundColor: 'transparent', color: theme.accent, border: `1px solid ${theme.accent}` }}>
+            ↺ 보류 해제 (수업완료로 되돌리기)
+          </button>
+        )}
+        
+        {/* 취소 버튼 (수업완료/예약확정/보류에서 표시) */}
+        {(trial.status === '수업완료' || trial.status === '예약확정' || trial.status === '보류') && (
           <button 
             onClick={async () => {
               if (!confirm('취소로 처리할까요?')) return;
@@ -13466,6 +13557,7 @@ export default function App() {
           sessions={sessions} setSessions={setSessions}
           classLog={classLog} setClassLog={setClassLog}
           groupSlots={groupSlots} setGroupSlots={setGroupSlots}
+          trials={trials} setTrials={setTrials}
           closedDays={closedDays} setClosedDays={setClosedDays} toast={toast} goto={goto} />
       )}
       {tab === 'members' && (
