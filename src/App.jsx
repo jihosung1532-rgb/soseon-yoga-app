@@ -3876,6 +3876,25 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     return m;
   };
 
+  // ⭐ 방금 전환된 회원한테 수강권을 바로 등록 (오늘부터 시작해서 오늘 수업이 1회차로 차감되게)
+  const addPassToMemberInline = async (memberObj, passData) => {
+    let newPasses = [...(memberObj.passes || [])];
+    let createdPass;
+    if (Array.isArray(passData)) {
+      const created = passData.map(p => ({ id: uid(), ...p, usedSessions: 0, sessionDates: [] }));
+      newPasses = newPasses.concat(created);
+      createdPass = created[created.length - 1];
+    } else {
+      createdPass = { id: uid(), ...passData, usedSessions: 0, sessionDates: [] };
+      newPasses.push(createdPass);
+    }
+    const updatedMember = { ...memberObj, passes: newPasses };
+    const newMembers = members.map(m => m.id === memberObj.id ? updatedMember : m);
+    setMembers(newMembers);
+    await saveKey(K.members, newMembers);
+    return { updatedMember, createdPass };
+  };
+
   const smallGroupDay = (d) => d.getDay() === 2 || d.getDay() === 4;
   const todayYMD = toYMD(new Date());
   
@@ -4508,6 +4527,8 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
           toast={toast} goto={goto}
           onMoveParticipant={moveParticipant}
           onConvertTrial={convertTrialToMemberInline}
+          onAddPass={addPassToMemberInline}
+          closedDays={closedDays}
           trials={trials}
           onClose={() => setSlotModal(null)}
           onSave={async (data) => {
@@ -4631,7 +4652,7 @@ function MemberSearchPicker({ members, selectedId, onChange, onAdd, existingPart
   );
 }
 
-function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toast, onClose, onSave, goto, onMoveParticipant, onConvertTrial, trials = [] }) {
+function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toast, onClose, onSave, goto, onMoveParticipant, onConvertTrial, onAddPass, closedDays = [], trials = [] }) {
   const existing = slot.existing;
   const isNewMode = !!slot.isNew;
   
@@ -4699,6 +4720,11 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
   const [excludeTarget, setExcludeTarget] = useState(null); // { idx, member }
   // 다른 시간대로 이동 — 이동할 참가자 인덱스 (인라인 선택기 표시용)
   const [movingIdx, setMovingIdx] = useState(null);
+  // 체험→회원 전환 직후, 그 회원한테 바로 수강권 등록시키는 흐름
+  const [passSetupFor, setPassSetupFor] = useState(null); // { idx, member }
+  // 이미 회원+수강권 등록을 따로 해둔 경우 — 그 기존 회원과 이 참가자를 연결
+  const [linkingIdx, setLinkingIdx] = useState(null);
+  const [linkSearch, setLinkSearch] = useState('');
 
   const addExisting = () => {
     if (!addingMember) return;
@@ -4953,16 +4979,34 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
                               const newMember = await onConvertTrial(matchedTrial);
                               if (newMember) {
                                 // 이 세션의 참가자도 정식 회원으로 갱신 (체험 표시 제거)
-                                setParts(parts.map((x, j) => j === i
+                                setParts(prevParts => prevParts.map((x, j) => j === i
                                   ? { memberId: newMember.id, memberName: newMember.name, classType: category === 'private' ? '개인' : undefined, ...(x.status ? { status: x.status } : {}) }
                                   : x
                                 ));
+                                // 바로 이어서 수강권 등록 (오늘부터 시작 → 오늘 수업이 1회차로 차감되게)
+                                if (onAddPass) setPassSetupFor({ idx: i, member: newMember });
                               }
                             }}
                               className="px-1.5 py-1 rounded text-[10px] font-bold" style={{ color: theme.accent2 }}>
                               ✓ 정식 전환
                             </button>
                           )}
+                          {p.isTrial && (
+                            <button onClick={() => { setLinkingIdx(linkingIdx === i ? null : i); setLinkSearch(''); }}
+                              className="px-1.5 py-1 rounded text-[10px] font-bold" style={{ color: theme.accent }}>
+                              🔗 회원 연결
+                            </button>
+                          )}
+                          {!p.isTrial && p.memberId && !p.passId && onAddPass && (() => {
+                            const mem = (members || []).find(m => m.id === p.memberId);
+                            if (!mem) return null;
+                            return (
+                              <button onClick={() => setPassSetupFor({ idx: i, member: mem })}
+                                className="px-1.5 py-1 rounded text-[10px] font-bold" style={{ color: theme.accent2 }}>
+                                + 수강권 등록
+                              </button>
+                            );
+                          })()}
                           <button onClick={() => {
                             // 자동 추천으로 들어온 회원이면 의도 모달
                             if (p._isAutoAdded) {
@@ -4995,6 +5039,58 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
                               {fmtTime24(t)}
                             </button>
                           ))}
+                      </div>
+                    )}
+                    {linkingIdx === i && (
+                      <div className="mt-2 p-2 rounded-lg" style={{ backgroundColor: theme.cardAlt2 }}>
+                        <div className="text-[10.5px] mb-1.5" style={{ color: theme.inkMute }}>
+                          이미 등록해둔 회원 검색해서 연결 (수강권도 이미 있으면 자동으로 잡혀요):
+                        </div>
+                        <input
+                          value={linkSearch}
+                          onChange={(e) => setLinkSearch(e.target.value)}
+                          placeholder="회원 이름 검색"
+                          className="w-full px-2.5 py-1.5 rounded-lg text-[12px] mb-1.5"
+                          style={{ border: `1px solid ${theme.line}`, backgroundColor: theme.card, color: theme.ink }}
+                          autoFocus
+                        />
+                        {linkSearch.trim() && (
+                          <div className="space-y-1 max-h-40 overflow-y-auto">
+                            {(members || [])
+                              .filter(m => m.name.includes(linkSearch.trim()))
+                              .slice(0, 8)
+                              .map(m => {
+                                const pass = activePass(m, category === 'private' ? 'private' : 'group');
+                                return (
+                                  <button key={m.id} onClick={() => {
+                                    setParts(parts.map((x, j) => j === i
+                                      ? {
+                                          memberId: m.id, memberName: m.name,
+                                          passId: pass?.id,
+                                          sessionNumber: pass ? pass.usedSessions + 1 : undefined,
+                                          totalSessions: pass?.totalSessions,
+                                          classType: (pass?.category === 'private' || category === 'private') ? '개인' : undefined,
+                                        }
+                                      : x
+                                    ));
+                                    setLinkingIdx(null);
+                                    setLinkSearch('');
+                                    toast(pass ? `${m.name}님 연결됨 (수강권 자동 연결)` : `${m.name}님 연결됨 (수강권 없음 — 회원 탭에서 확인해주세요)`);
+                                  }}
+                                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-[12px] flex items-center justify-between"
+                                    style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}` }}>
+                                    <span>{m.name}</span>
+                                    <span style={{ color: pass ? theme.accent : theme.inkMute, fontSize: 10 }}>
+                                      {pass ? `${pass.type} · ${pass.usedSessions}/${pass.totalSessions}` : '활성 수강권 없음'}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            {(members || []).filter(m => m.name.includes(linkSearch.trim())).length === 0 && (
+                              <div className="text-[11px] text-center py-1.5" style={{ color: theme.inkMute }}>검색 결과 없어요</div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                     {p.cancelNote && (
@@ -5167,6 +5263,23 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
             </button>
           </div>
         </Modal>
+      )}
+      {passSetupFor && onAddPass && (
+        <PassEditor
+          member={passSetupFor.member}
+          closedDays={closedDays}
+          onClose={() => setPassSetupFor(null)}
+          onSave={async (data, rewardSourceId, mayBonusUsed) => {
+            const { createdPass } = await onAddPass(passSetupFor.member, data);
+            // 이 세션의 참가자한테 방금 만든 수강권 연결 → 저장하면 오늘 수업이 1회차로 정상 차감
+            setParts(prevParts => prevParts.map((x, j) => j === passSetupFor.idx
+              ? { ...x, passId: createdPass.id, sessionNumber: 1, totalSessions: createdPass.totalSessions }
+              : x
+            ));
+            setPassSetupFor(null);
+            toast('수강권 등록 완료 · 저장하면 오늘 수업이 1회차로 차감돼요');
+          }}
+        />
       )}
     </Modal>
   );
