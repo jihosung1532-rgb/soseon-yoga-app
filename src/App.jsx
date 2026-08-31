@@ -4385,7 +4385,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                     return (
                       <div key={cardKey} className="relative mb-1.5 overflow-hidden rounded-xl">
                         {/* 스와이프하면 뒤에서 나타나는 휴강 처리 버튼 */}
-                        <div className="absolute inset-y-0 right-0 flex items-stretch">
+                        <div className="absolute inset-y-0 right-0 flex items-stretch" style={{ zIndex: 0 }}>
                           <button onClick={() => { toggleClosedSlot(ymd, item.time); setSwipedKey(null); }}
                             className="px-5 text-[12px] font-bold text-white"
                             style={{ backgroundColor: theme.inkMute }}>
@@ -4395,14 +4395,18 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                         <div
                         className="rounded-xl transition-transform"
                         style={{
+                          position: 'relative',
+                          zIndex: 1,
                           backgroundColor: item.isAuto ? 'transparent' : theme.card,
                           border: item.isAuto ? `1px dashed ${theme.line}` 
                                   : isNext ? `1px solid ${theme.accent2}` 
                                   : `1px solid ${theme.line}`,
                           transform: isSwiped ? 'translateX(-84px)' : 'translateX(0)',
                         }}
-                        onTouchStart={(e) => { swipeStartX.current = e.touches[0].clientX; }}
+                        onTouchStart={(e) => { e.stopPropagation(); swipeStartX.current = e.touches[0].clientX; }}
+                        onTouchMove={(e) => { if (swipeStartX.current != null) e.stopPropagation(); }}
                         onTouchEnd={(e) => {
+                          e.stopPropagation();
                           if (swipeStartX.current == null) return;
                           const deltaX = e.changedTouches[0].clientX - swipeStartX.current;
                           if (deltaX < -40) setSwipedKey(cardKey);
