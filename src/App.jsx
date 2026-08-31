@@ -3564,7 +3564,26 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     setClosedDays(next);
     await saveKey(K.closedDays, next);
   };
-  const isClosedDay = (ymd) => closedDays.some(c => c.date === ymd);
+  const isClosedDay = (ymd) => closedDays.some(c => c.date === ymd && !c.time);
+  
+  // ⭐ 슬롯 하나(날짜+시간)만 이번주만 임시 폐강 처리 — 인원 부족 등으로 이번만 안 여는 것, 반복 자체는 안 건드림
+  const toggleClosedSlot = async (ymd, time) => {
+    const exists = closedDays.some(c => c.date === ymd && c.time === time);
+    let next;
+    if (exists) {
+      next = closedDays.filter(c => !(c.date === ymd && c.time === time));
+      toast('폐강 표시를 해제했어요');
+    } else {
+      next = [...closedDays, { date: ymd, time, reason: '' }].sort((a, b) => a.date.localeCompare(b.date));
+      toast('이 수업만 폐강으로 표시했어요');
+    }
+    setClosedDays(next);
+    await saveKey(K.closedDays, next);
+  };
+  const isClosedSlot = (ymd, time) => closedDays.some(c => c.date === ymd && c.time === time);
+  // 스와이프(밀기)로 휴강 처리 — 카드 하나 키 저장
+  const [swipedKey, setSwipedKey] = useState(null);
+  const swipeStartX = useRef(null);
 
   const days = [0, 1, 2, 3, 4].map(i => addDays(weekStart, i));
 
@@ -4342,17 +4361,55 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                     const isPrivate = item.category === 'private';
                     const cardKey = `${ymd}_${item.time}`;
                     const isNext = cardKey === nextClassKey;
+                    const slotClosed = isClosedSlot(ymd, item.time);
+                    const isSwiped = swipedKey === cardKey;
+                    
+                    if (slotClosed) {
+                      return (
+                        <div key={cardKey}
+                          className="rounded-xl mb-1.5 px-3 py-2.5 flex items-center justify-between"
+                          style={{ backgroundColor: theme.cardAlt, border: `1px solid ${theme.line}` }}>
+                          <div className="flex items-center gap-2">
+                            <span style={{ fontFamily: theme.serif, fontSize: 15, fontWeight: 600, color: theme.inkMute }}>{item.time}</span>
+                            <span className="text-[11px] italic" style={{ color: theme.inkMute }}>폐강 (이번만 · 인원 부족)</span>
+                          </div>
+                          <button onClick={() => toggleClosedSlot(ymd, item.time)}
+                            className="text-[10px] px-2.5 py-1 rounded-full"
+                            style={{ color: theme.inkMute, border: `1px solid ${theme.line}`, backgroundColor: 'transparent' }}>
+                            폐강 해제
+                          </button>
+                        </div>
+                      );
+                    }
                     
                     return (
-                      <div key={cardKey}
-                        className="rounded-xl mb-1.5 transition-all"
+                      <div key={cardKey} className="relative mb-1.5 overflow-hidden rounded-xl">
+                        {/* 스와이프하면 뒤에서 나타나는 휴강 처리 버튼 */}
+                        <div className="absolute inset-y-0 right-0 flex items-stretch">
+                          <button onClick={() => { toggleClosedSlot(ymd, item.time); setSwipedKey(null); }}
+                            className="px-5 text-[12px] font-bold text-white"
+                            style={{ backgroundColor: theme.inkMute }}>
+                            폐강 처리
+                          </button>
+                        </div>
+                        <div
+                        className="rounded-xl transition-transform"
                         style={{
                           backgroundColor: item.isAuto ? 'transparent' : theme.card,
                           border: item.isAuto ? `1px dashed ${theme.line}` 
                                   : isNext ? `1px solid ${theme.accent2}` 
                                   : `1px solid ${theme.line}`,
+                          transform: isSwiped ? 'translateX(-84px)' : 'translateX(0)',
+                        }}
+                        onTouchStart={(e) => { swipeStartX.current = e.touches[0].clientX; }}
+                        onTouchEnd={(e) => {
+                          if (swipeStartX.current == null) return;
+                          const deltaX = e.changedTouches[0].clientX - swipeStartX.current;
+                          if (deltaX < -40) setSwipedKey(cardKey);
+                          else if (deltaX > 20) setSwipedKey(null);
+                          swipeStartX.current = null;
                         }}>
-                        <div onClick={() => onCardClick(d, item)}
+                        <div onClick={() => isSwiped ? setSwipedKey(null) : onCardClick(d, item)}
                           className="px-3 py-2.5 flex gap-3 cursor-pointer">
                         {/* Time block */}
                         <div className="flex flex-col justify-center pr-3 flex-shrink-0"
@@ -4500,6 +4557,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                             </span>
                           </div>
                         )}
+                      </div>
                       </div>
                     );
                   })}
