@@ -87,30 +87,40 @@ const sb = {
   },
 
   async get(table, id) {
+    // ⭐ settings 테이블만 컬럼명이 다름 (key/value), 나머지는 id/data
+    const idCol = table === 'settings' ? 'key' : 'id';
+    const dataCol = table === 'settings' ? 'value' : 'data';
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/${table}?id=eq.${encodeURIComponent(id)}&select=data`,
+      `${SUPABASE_URL}/rest/v1/${table}?${idCol}=eq.${encodeURIComponent(id)}&select=${dataCol}`,
       { headers: sb.headers() }
     );
     if (!res.ok) return null;
     const rows = await res.json();
-    return rows[0]?.data ?? null;
+    return rows[0]?.[dataCol] ?? null;
   },
 
   async upsert(table, id, data) {
+    const idCol = table === 'settings' ? 'key' : 'id';
+    const dataCol = table === 'settings' ? 'value' : 'data';
     await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
       method: 'POST',
       headers: { ...sb.headers(), 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify({ id, data, updated_at: new Date().toISOString() }),
+      body: JSON.stringify({ [idCol]: id, [dataCol]: data, updated_at: new Date().toISOString() }),
     });
   },
 
   async getAll(table) {
+    const idCol = table === 'settings' ? 'key' : 'id';
+    const dataCol = table === 'settings' ? 'value' : 'data';
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/${table}?select=id,data`,
+      `${SUPABASE_URL}/rest/v1/${table}?select=${idCol},${dataCol}`,
       { headers: sb.headers() }
     );
     if (!res.ok) return null;
-    return res.json();
+    const rows = await res.json();
+    // 호출부는 다 .id/.data로 접근하므로 settings여도 동일한 모양으로 맞춰서 반환
+    if (table === 'settings') return rows.map(r => ({ id: r.key, data: r.value }));
+    return rows;
   },
 
   // === bookings 테이블 (예약 요청 시스템) ===
@@ -4384,27 +4394,22 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                     
                     return (
                       <div key={cardKey} className="relative mb-1.5 overflow-hidden rounded-xl">
-                        {/* 스와이프하면 뒤에서 나타나는 휴강 처리 버튼 */}
-                        <div className="absolute inset-y-0 right-0 flex items-stretch" style={{ zIndex: 0 }}>
-                          <button onClick={() => { toggleClosedSlot(ymd, item.time); setSwipedKey(null); }}
-                            className="px-5 text-[12px] font-bold text-white"
-                            style={{ backgroundColor: theme.inkMute }}>
-                            폐강 처리
-                          </button>
-                        </div>
+                        <div className="flex" style={{
+                          transform: isSwiped ? 'translateX(-84px)' : 'translateX(0)',
+                          transition: 'transform 0.15s ease-out',
+                        }}>
                         <div
-                        className="rounded-xl transition-transform"
+                        className="rounded-xl"
                         style={{
-                          position: 'relative',
-                          zIndex: 1,
-                          backgroundColor: item.isAuto ? 'transparent' : theme.card,
+                          width: '100%',
+                          flexShrink: 0,
+                          backgroundColor: item.isAuto ? theme.bg : theme.card,
                           border: item.isAuto ? `1px dashed ${theme.line}` 
                                   : isNext ? `1px solid ${theme.accent2}` 
                                   : `1px solid ${theme.line}`,
-                          transform: isSwiped ? 'translateX(-84px)' : 'translateX(0)',
                         }}
                         onTouchStart={(e) => { e.stopPropagation(); swipeStartX.current = e.touches[0].clientX; }}
-                        onTouchMove={(e) => { if (swipeStartX.current != null) e.stopPropagation(); }}
+                        onTouchMove={(e) => { e.stopPropagation(); }}
                         onTouchEnd={(e) => {
                           e.stopPropagation();
                           if (swipeStartX.current == null) return;
@@ -4562,6 +4567,14 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                           </div>
                         )}
                       </div>
+                        <div style={{ minWidth: 84, flexShrink: 0 }}>
+                          <button onClick={() => { toggleClosedSlot(ymd, item.time); setSwipedKey(null); }}
+                            className="w-full h-full text-[12px] font-bold text-white"
+                            style={{ backgroundColor: theme.inkMute }}>
+                            폐강 처리
+                          </button>
+                        </div>
+                        </div>
                       </div>
                     );
                   })}
