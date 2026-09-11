@@ -2628,6 +2628,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
               && p.startDate && p.expiryDate
               && todayYMD <= p.expiryDate
               && (p.usedSessions || 0) < (p.totalSessions || 0)
+              && !(p.holdStart && p.holdEnd && todayYMD >= p.holdStart && todayYMD <= p.holdEnd)
             );
             if (validPasses.length === 0) return false;
             return true; // 활성 패스 있으면 일단 표시
@@ -11779,8 +11780,14 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
         const member = memberMap[p.memberId];
         if (!member) return;
         const pass = (member.passes || []).find(x => x.id === p.passId);
-        if (!pass || !pass.price || !pass.totalSessions) return;
-        const perSession = pass.pricePerSession || Math.round(pass.price / pass.totalSessions);
+        if (!pass || !pass.totalSessions) return;
+        let perSession = pass.pricePerSession || (pass.price ? Math.round(pass.price / pass.totalSessions) : 0);
+        // ⭐ 스타터 패키지처럼 price=0으로 묶인 수강권(bundleOf 있음)은 짝(묶음) 수강권의 회당 단가를 대신 사용
+        if (!perSession && pass.bundleOf) {
+          const sibling = (member.passes || []).find(x => x.id !== pass.id && x.bundleOf === pass.bundleOf && x.price);
+          if (sibling) perSession = sibling.pricePerSession || Math.round(sibling.price / sibling.totalSessions);
+        }
+        if (!perSession) return;
         sessionRevenue += perSession;
       });
       if (!days[s.date]) days[s.date] = { date: s.date, count: 0, totalRevenue: 0, sessions: [] };
