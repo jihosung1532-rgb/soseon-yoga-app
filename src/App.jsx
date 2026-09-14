@@ -705,6 +705,29 @@ ${schedule}
 
 좋은 하루 보내세요 🌿`,
   }),
+  privateLessonRecap: (member, bodyStatus, lastClass, keyPoints, direction) => {
+    const bullet = (arr) => (arr || []).filter(Boolean).map(l => `· ${l}`).join('\n');
+    const bodyLines = bullet(bodyStatus);
+    const classLines = bullet(lastClass);
+    const keyLines = bullet(keyPoints);
+    return {
+      title: '개인레슨 관찰 정리',
+      body: `안녕하세요 ${friendlyName(member.name)} 😊
+지난 수업에서 관찰한 내용 간단히 정리해서 보내드려요.
+
+🧘 현재 몸 상태
+${bodyLines}
+
+📝 지난 수업 내용
+${classLines}
+
+💡 기억할 내용
+${keyLines}
+
+🌱 앞으로 수업 방향
+${direction || ''} 🙂`,
+    };
+  },
 };
 
 /* =========================================================
@@ -3549,7 +3572,7 @@ function Stat({ label, value, color }) {
 /* =========================================================
    Schedule View
    ========================================================= */
-function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {}, setClassLog, groupSlots, setGroupSlots, trials = [], setTrials, closedDays = [], setClosedDays, toast, goto }) {
+function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {}, setClassLog, groupSlots, setGroupSlots, trials = [], setTrials, closedDays = [], setClosedDays, toast, goto, onSendSMS }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [slotModal, setSlotModal] = useState(null);
   const [slotsManagerOpen, setSlotsManagerOpen] = useState(false);
@@ -4606,6 +4629,7 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
           onAddPass={addPassToMemberInline}
           closedDays={closedDays}
           trials={trials}
+          onSendSMS={onSendSMS}
           onClose={() => setSlotModal(null)}
           onSave={async (data) => {
             // ⭐ "수업 삭제" 버튼 — 참여자만 비우는 게 아니라 이 날짜/시간 항목 자체를 통째로 삭제
@@ -4728,7 +4752,7 @@ function MemberSearchPicker({ members, selectedId, onChange, onAdd, existingPart
   );
 }
 
-function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toast, onClose, onSave, goto, onMoveParticipant, onConvertTrial, onAddPass, closedDays = [], trials = [] }) {
+function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toast, onClose, onSave, goto, onMoveParticipant, onConvertTrial, onAddPass, closedDays = [], trials = [], onSendSMS }) {
   const existing = slot.existing;
   const isNewMode = !!slot.isNew;
   
@@ -4789,6 +4813,7 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
   const [parts, setParts] = useState(initial);
   const [note, setNote] = useState(existing?.note || '');
   const [classNote, setClassNote] = useState(existing?.classNote || '');
+  const [recapFor, setRecapFor] = useState(null); // 관찰 정리 문자 작성 대상 회원
   const [addingMember, setAddingMember] = useState('');
   const [trialName, setTrialName] = useState('');
   const [mode, setMode] = useState('member');
@@ -5252,6 +5277,17 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
           </div>
         </Field>
 
+        {category === 'private' && onSendSMS && (() => {
+          const activePriv = parts.find(p => p.memberId && !p.isTrial);
+          const mem = activePriv ? (members || []).find(m => m.id === activePriv.memberId) : null;
+          if (!mem) return null;
+          return (
+            <Button variant="soft" onClick={() => setRecapFor(mem)}>
+              📋 {mem.name}님 관찰 정리 문자 작성
+            </Button>
+          );
+        })()}
+
         <Field label="메모 (선택)">
           <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="예: open class" />
         </Field>
@@ -5357,6 +5393,75 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
           }}
         />
       )}
+      {recapFor && onSendSMS && (
+        <RecapComposerModal
+          member={recapFor}
+          onClose={() => setRecapFor(null)}
+          onSend={(bodyStatus, lastClass, keyPoints, direction) => {
+            onSendSMS({
+              phone: recapFor.phone, name: recapFor.name,
+              template: SMS_TEMPLATES.privateLessonRecap(recapFor, bodyStatus, lastClass, keyPoints, direction),
+            });
+            setRecapFor(null);
+          }}
+        />
+      )}
+    </Modal>
+  );
+}
+
+function RecapComposerModal({ member, onClose, onSend }) {
+  const [bodyStatus, setBodyStatus] = useState('');
+  const [lastClass, setLastClass] = useState('');
+  const [keyPoints, setKeyPoints] = useState('');
+  const [direction, setDirection] = useState('');
+  const toLines = (s) => s.split('\n').map(l => l.trim()).filter(Boolean);
+
+  return (
+    <Modal open={true} onClose={onClose} title={`${member.name}님 관찰 정리`} sub="한 줄에 하나씩 적어주세요">
+      <div className="space-y-3">
+        <Field label="현재 몸 상태 (관찰 포인트, 줄바꿈으로 구분)">
+          <textarea
+            value={bodyStatus} onChange={(e) => setBodyStatus(e.target.value)}
+            placeholder={'예:\n목이 살짝 앞으로 나와 있고, 어깨도 안쪽으로 말려있는 편이에요\n골반은 앞으로 살짝 기울어져 있어요'}
+            rows={4}
+            className="w-full px-3 py-2 rounded-lg text-[12.5px]"
+            style={{ border: `1px solid ${theme.line}`, backgroundColor: theme.card, color: theme.ink }}
+          />
+        </Field>
+        <Field label="지난 수업 내용 (동작/자세, 줄바꿈으로 구분)">
+          <textarea
+            value={lastClass} onChange={(e) => setLastClass(e.target.value)}
+            placeholder={'예:\n손의 4지점, 발의 4지점\n수리야 나마스카라 A'}
+            rows={3}
+            className="w-full px-3 py-2 rounded-lg text-[12.5px]"
+            style={{ border: `1px solid ${theme.line}`, backgroundColor: theme.card, color: theme.ink }}
+          />
+        </Field>
+        <Field label="기억할 내용 (핵심 포인트, 줄바꿈으로 구분)">
+          <textarea
+            value={keyPoints} onChange={(e) => setKeyPoints(e.target.value)}
+            placeholder={'예:\n손의 4지점, 발의 4지점'}
+            rows={2}
+            className="w-full px-3 py-2 rounded-lg text-[12.5px]"
+            style={{ border: `1px solid ${theme.line}`, backgroundColor: theme.card, color: theme.ink }}
+          />
+        </Field>
+        <Field label="앞으로 수업 방향 (한두 문장)">
+          <textarea
+            value={direction} onChange={(e) => setDirection(e.target.value)}
+            placeholder="예: 무리하게 늘리기보다는, 먼저 몸의 긴장을 풀고 기본 정렬을 찾아가는 데 집중할 예정이에요."
+            rows={2}
+            className="w-full px-3 py-2 rounded-lg text-[12.5px]"
+            style={{ border: `1px solid ${theme.line}`, backgroundColor: theme.card, color: theme.ink }}
+          />
+        </Field>
+        <Button
+          disabled={!bodyStatus.trim() && !lastClass.trim() && !keyPoints.trim() && !direction.trim()}
+          onClick={() => onSend(toLines(bodyStatus), toLines(lastClass), toLines(keyPoints), direction.trim())}>
+          문자 미리보기로 이동
+        </Button>
+      </div>
     </Modal>
   );
 }
@@ -6570,6 +6675,32 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
         ? { ...x, expiryDate: newExpiry, holdUsed: true, holdDays: days, holdStart, holdEnd }
         : x),
     });
+    // ⭐ 홀딩 기간 안에 이미 실제로 배정(저장)된 일정이 있으면 거기서도 이 회원을 빼줌
+    // (지금까지는 수강권 만료일만 늘어나고, 일정엔 그대로 남아있는 버그가 있었음)
+    if (sessions && setSessions) {
+      let touched = false;
+      const nextSessions = { ...sessions };
+      Object.keys(nextSessions).forEach(key => {
+        const sessDate = key.slice(0, 10);
+        if (sessDate < holdStart || sessDate > holdEnd) return;
+        const sess = nextSessions[key];
+        const idx = (sess.participants || []).findIndex(x => x.memberId === member.id && !x.cancelled && x.status !== 'attended');
+        if (idx === -1) return;
+        touched = true;
+        const newParticipants = [...sess.participants];
+        newParticipants[idx] = {
+          ...newParticipants[idx],
+          status: 'cancelled_advance',
+          cancelled: 'no_charge',
+          cancelNote: '홀딩으로 자동 제외',
+        };
+        nextSessions[key] = { ...sess, participants: newParticipants };
+      });
+      if (touched) {
+        setSessions(nextSessions);
+        await saveKey(K.sessions, nextSessions);
+      }
+    }
     toast(`${days}일 홀딩 적용`);
     // Offer SMS
     onSendSMS({
@@ -13753,7 +13884,8 @@ export default function App() {
           classLog={classLog} setClassLog={setClassLog}
           groupSlots={groupSlots} setGroupSlots={setGroupSlots}
           trials={trials} setTrials={setTrials}
-          closedDays={closedDays} setClosedDays={setClosedDays} toast={toast} goto={goto} />
+          closedDays={closedDays} setClosedDays={setClosedDays} toast={toast} goto={goto}
+          onSendSMS={onSendSMS} />
       )}
       {tab === 'members' && (
         <MembersView members={members} setMembers={setMembers}
