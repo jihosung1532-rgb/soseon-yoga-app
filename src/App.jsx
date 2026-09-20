@@ -6555,6 +6555,7 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
   const [refundingPass, setRefundingPass] = useState(null);
   const [editingHistory, setEditingHistory] = useState(null); // {passId, date, time}
   const [rhythmCalPass, setRhythmCalPass] = useState(null); // 리듬 달력 모달 대상 패스
+  const [holdModalFor, setHoldModalFor] = useState(null); // 홀딩 시작일/일수 지정 모달 대상 pass id
 
   const pass = activePass(member);
   
@@ -6683,13 +6684,13 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
     toast('1회 복구');
   };
 
-  const applyHold = async (pid, days = 7) => {
+  const applyHold = async (pid, days = 7, customStart = null) => {
     const p = member.passes.find(x => x.id === pid);
     if (!p) return;
     if (p.holdUsed) { toast('홀딩은 1회만 가능해요'); return; }
     const newExpiry = toYMD(addDays(fromYMD(p.expiryDate), days));
-    const holdStart = toYMD(new Date());
-    const holdEnd = toYMD(addDays(new Date(), days));
+    const holdStart = customStart || toYMD(new Date());
+    const holdEnd = toYMD(addDays(fromYMD(holdStart), days));
     await onUpdate({
       ...member,
       passes: member.passes.map(x => x.id === pid
@@ -7222,7 +7223,7 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                   
                   <div className="flex gap-1.5 justify-end flex-wrap">
                     {p.canHold && !p.holdUsed && (
-                      <Button size="sm" variant="ghost" onClick={() => applyHold(p.id, 7)}>홀딩 7일</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setHoldModalFor(p.id)}>홀딩</Button>
                     )}
                     {p.holdUsed && (
                       <Button size="sm" variant="ghost" onClick={() => cancelHold(p.id)}
@@ -7573,6 +7574,15 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
             rhythm={rhythmFor(rhythmCalPass)}
             passType={rhythmCalPass.type}
             onClose={() => setRhythmCalPass(null)}
+          />
+        )}
+        {holdModalFor && (
+          <HoldDateModal
+            onClose={() => setHoldModalFor(null)}
+            onConfirm={(startDate, days) => {
+              applyHold(holdModalFor, days, startDate);
+              setHoldModalFor(null);
+            }}
           />
         )}
         {editingHistory && (
@@ -14231,6 +14241,46 @@ function PassEditModal({ pass, onClose, onSave }) {
 
 // ───────── 수강이력 수정 모달 ─────────
 // ───────── 리듬 수련 달력 모달 ─────────
+function HoldDateModal({ onClose, onConfirm }) {
+  const [startDate, setStartDate] = useState(toYMD(new Date()));
+  const [days, setDays] = useState(7);
+  const endDate = toYMD(addDays(fromYMD(startDate), Number(days) || 0));
+
+  return (
+    <Modal open={true} onClose={onClose} title="홀딩 설정">
+      <div className="space-y-3">
+        <Field label="홀딩 시작일">
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg text-[13px]"
+            style={{ border: `1px solid ${theme.line}`, backgroundColor: theme.card, color: theme.ink }}
+          />
+          <div className="text-[10px] mt-1" style={{ color: theme.inkMute }}>
+            오늘 이전 날짜도 지정 가능해요 (이미 지난 날부터 소급 적용)
+          </div>
+        </Field>
+        <Field label="홀딩 일수">
+          <input
+            type="number"
+            min={1}
+            value={days}
+            onChange={(e) => setDays(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg text-[13px]"
+            style={{ border: `1px solid ${theme.line}`, backgroundColor: theme.card, color: theme.ink }}
+          />
+        </Field>
+        <div className="rounded-xl p-3 text-[12px]" style={{ backgroundColor: theme.cardAlt2, color: theme.inkSoft }}>
+          <strong style={{ color: theme.ink }}>{startDate}</strong> ~ <strong style={{ color: theme.ink }}>{endDate}</strong> 홀딩 처리돼요.<br />
+          만료일이 {days}일만큼 늘어나고, 이 기간 안에 이미 잡혀있던 수업 일정에서도 자동으로 빠져요.
+        </div>
+        <Button onClick={() => onConfirm(startDate, Number(days) || 0)}>홀딩 적용</Button>
+      </div>
+    </Modal>
+  );
+}
+
 function RhythmCalendarModal({ rhythm, passType, onClose }) {
   const slots = rhythm?.slots || [];
   const weekKey = (ymd) => {
