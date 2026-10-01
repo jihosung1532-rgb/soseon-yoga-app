@@ -4764,6 +4764,8 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
   
   // 시간 - isNew면 처음엔 빈값, 아니면 slot.time
   const [time, setTime] = useState(slot.time || (groupSlots?.[0] || '11:00'));
+  // 소그룹 시간을 고정 목록이 아니라 직접 입력하는 중인지 (고정 목록에 없는 시간으로 시작한 기존 수업이면 자동으로 켜줌)
+  const [customGroupTime, setCustomGroupTime] = useState(() => slot.time && groupSlots && !groupSlots.includes(slot.time));
   // 날짜 (YYYY-MM-DD 문자열로 관리, input[type=date]와 호환)
   const [date, setDate] = useState(slot.date ? toYMD(slot.date) : toYMD(new Date()));
   // 원래 키 (이동 감지용)
@@ -4960,18 +4962,39 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
         <div>
           <div className="text-xs font-medium mb-2" style={{ color: theme.inkSoft }}>시간</div>
           {category === 'group' ? (
-            <div className="flex gap-1.5 flex-wrap">
-              {(groupSlots || []).map(t => (
-                <button key={t} onClick={() => setTime(t)}
+            <div>
+              <div className="flex gap-1.5 flex-wrap mb-2">
+                {(groupSlots || []).map(t => (
+                  <button key={t} onClick={() => setTime(t)}
+                    className="px-3 py-1.5 rounded-full text-xs font-semibold transition-all"
+                    style={{
+                      backgroundColor: time === t ? theme.accent : theme.card,
+                      color: time === t ? '#FFF' : theme.inkSoft,
+                      border: `1px solid ${time === t ? theme.accent : theme.line}`,
+                    }}>
+                    {t}
+                  </button>
+                ))}
+                <button onClick={() => setCustomGroupTime(true)}
                   className="px-3 py-1.5 rounded-full text-xs font-semibold transition-all"
                   style={{
-                    backgroundColor: time === t ? theme.accent : theme.card,
-                    color: time === t ? '#FFF' : theme.inkSoft,
-                    border: `1px solid ${time === t ? theme.accent : theme.line}`,
+                    backgroundColor: customGroupTime ? theme.accent2 : theme.card,
+                    color: customGroupTime ? '#FFF' : theme.inkSoft,
+                    border: `1px solid ${customGroupTime ? theme.accent2 : theme.line}`,
                   }}>
-                  {t}
+                  + 직접 입력
                 </button>
-              ))}
+              </div>
+              {customGroupTime && (
+                <div className="flex items-center gap-2">
+                  <input type="time" value={time} onChange={(e) => setTime(e.target.value)}
+                    className="px-3 py-2 rounded-lg text-sm"
+                    style={{ backgroundColor: theme.cardAlt2, border: `1px solid ${theme.line}`, maxWidth: 140 }} />
+                  <span className="text-[11px]" style={{ color: theme.inkMute }}>
+                    이번 수업만 — 고정 시간대엔 안 들어가요
+                  </span>
+                </div>
+              )}
             </div>
           ) : (
             <div className="flex items-center gap-2">
