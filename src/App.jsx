@@ -4381,13 +4381,11 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                   <div className="text-center py-3 italic" style={{ color: theme.inkMute, fontFamily: theme.serif, fontSize: 13 }}>
                     — 수업 없음 —
                   </div>
-                  {!dayInfo.isPast && (
-                    <button onClick={() => onAddClass(d)}
-                      className="w-full py-2 rounded-xl text-[12px] mt-1"
-                      style={{ border: `1px dashed ${theme.line}`, color: theme.inkMute, backgroundColor: 'transparent' }}>
-                      + 수업 추가
-                    </button>
-                  )}
+                  <button onClick={() => onAddClass(d)}
+                    className="w-full py-2 rounded-xl text-[12px] mt-1"
+                    style={{ border: `1px dashed ${theme.line}`, color: theme.inkMute, backgroundColor: 'transparent' }}>
+                    + 수업 추가
+                  </button>
                 </>
               ) : (
                 <>
@@ -4602,13 +4600,11 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
                       </div>
                     );
                   })}
-                  {!dayInfo.isPast && (
-                    <button onClick={() => onAddClass(d)}
-                      className="w-full py-2 rounded-xl text-[11px] mt-1"
-                      style={{ border: `1px dashed ${theme.line}`, color: theme.inkMute, backgroundColor: 'transparent' }}>
-                      + 수업 추가
-                    </button>
-                  )}
+                  <button onClick={() => onAddClass(d)}
+                    className="w-full py-2 rounded-xl text-[11px] mt-1"
+                    style={{ border: `1px dashed ${theme.line}`, color: theme.inkMute, backgroundColor: 'transparent' }}>
+                    + 수업 추가
+                  </button>
                 </>
               )}
             </div>
@@ -4924,8 +4920,8 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
   return (
     <Modal open={true} onClose={onClose} title={titleText} maxWidth="max-w-md">
       <div className="space-y-4">
-        {/* 카테고리 토글 (isNew일 때만) */}
-        {isNewMode && (
+        {/* 카테고리 토글 (새 수업뿐 아니라 기존 수업 편집 시에도 전환 가능) */}
+        {true && (
           <div>
             <div className="text-xs font-medium mb-2" style={{ color: theme.inkSoft }}>수업 종류</div>
             <div className="flex gap-1 p-1 rounded-xl" style={{ backgroundColor: theme.cardAlt2 }}>
