@@ -5317,7 +5317,17 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
           )}
           <div className="flex gap-2 ml-auto">
             <Button variant="ghost" onClick={onClose}>취소</Button>
-            <Button icon={Check} onClick={() => onSave({ participants: parts, note, classNote, time, date, originalKey })}>저장</Button>
+            <Button icon={Check} onClick={() => {
+              // ⭐ 참가자들의 classType을 현재 선택된 카테고리에 맞춰 동기화
+              // (이게 없으면 개인↔소그룹 전환해도 목록 화면이 참가자의 예전 classType을 보고 되돌려버림)
+              const syncedParts = parts.map(p => {
+                if (category === 'private') return { ...p, classType: '개인' };
+                // 소그룹으로 전환 시 '개인' 표시 제거
+                if (p.classType === '개인') { const { classType, ...rest } = p; return rest; }
+                return p;
+              });
+              onSave({ participants: syncedParts, note, classNote, time, date, originalKey });
+            }}>저장</Button>
           </div>
         </div>
       </div>
@@ -11982,7 +11992,8 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
         if (!pass || !pass.totalSessions) return;
         let perSession = pass.pricePerSession || (pass.price ? Math.round(pass.price / pass.totalSessions) : 0);
         // ⭐ 스타터 패키지 개인레슨(price=0으로 묶여있음)은 회당 70,000원 고정으로 계산
-        if (!perSession && pass.bundleOf && pass.category === 'private') {
+        // 수강권이 private 카테고리여도, 그날 실제로는 소그룹으로 참여했으면(classType !== '개인') 적용 안 함
+        if (!perSession && pass.bundleOf && pass.category === 'private' && p.classType === '개인') {
           perSession = 70000;
         }
         if (!perSession) return;
