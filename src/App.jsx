@@ -2187,6 +2187,7 @@ function Header({ tab, setTab, onOpenSettings, onRefresh, refreshing }) {
             cursor: 'pointer',
           }}>
             소선요가
+            <span style={{ fontFamily: 'system-ui, sans-serif', fontSize: 10, fontWeight: 500, color: '#9A9A8E', marginLeft: 6, letterSpacing: 0 }}>v140</span>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -2339,10 +2340,21 @@ function SMSDialog({ open, onClose, phone, name, template, onConfirmed }) {
    Home Dashboard — today's tasks with dismiss
    ========================================================= */
 // 📊 정원현황 시트 - 시간대별 고정 회원 목록을 보여주는 하단 시트
-function CapacitySheet({ time, allTimes, capacityStatus, capacity, onClose, onChangeTime }) {
-  // 🔙 안드로이드 뒤로가기 처리 (전역 스택 사용)
+function CapacitySheet({ time, allTimes, capacityStatus, capacity, onClose, onChangeTime, members = [], onAddFixed, onRemoveFixed }) {
+  // ➕ 고정 회원 추가 피커 상태 (null이면 닫힘, 2=화 / 4=목)
+  const [pickerDow, setPickerDow] = useState(null);
+  const [pickerSearch, setPickerSearch] = useState('');
+  const [bothDays, setBothDays] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // 🔙 안드로이드 뒤로가기 처리 (전역 스택 사용) — 피커가 열려있으면 피커만 닫기
+  const pickerRef = useRef(null);
+  pickerRef.current = pickerDow;
   useEffect(() => {
-    const id = sosunBackStack.push(onClose);
+    const id = sosunBackStack.push(() => {
+      if (pickerRef.current !== null) { setPickerDow(null); return; }
+      onClose();
+    });
     return () => sosunBackStack.remove(id);
   }, []);
   
@@ -2350,9 +2362,39 @@ function CapacitySheet({ time, allTimes, capacityStatus, capacity, onClose, onCh
   if (!data) return null;
   
   const todayStr = toYMD(new Date());
+
+  // 추가 가능한 회원: 활성 소그룹 수강권 보유 + 해당 요일·시간에 아직 고정 아님
+  const hasValidGroupPass = (m) => (m.passes || []).some(p => {
+    if (p.archived || !p.startDate || !p.expiryDate) return false;
+    if (p.category !== 'group') return false;
+    if (p.expiryDate < todayStr) return false;
+    const trueUsed = (p.sessionDates || []).filter(d => d <= todayStr).length;
+    return trueUsed < (p.totalSessions || 0);
+  });
+  const isFixedAt = (m, dow) => (m.fixedSlots || []).some(fs => fs.dow === dow && fs.time === time);
+  const candidates = pickerDow === null ? [] : members
+    .filter(m => !isFixedAt(m, pickerDow) && hasValidGroupPass(m))
+    .filter(m => !pickerSearch.trim() || (m.name || '').includes(pickerSearch.trim()))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ko'));
+  const otherDow = pickerDow === 2 ? 4 : 2;
+
+  const openPicker = (dow) => { setPickerDow(dow); setPickerSearch(''); setBothDays(false); };
+  const handlePick = async (m) => {
+    if (busy || !onAddFixed) return;
+    const dows = [pickerDow];
+    if (bothDays && !isFixedAt(m, otherDow)) dows.push(otherDow);
+    setBusy(true);
+    try { await onAddFixed(m.id, dows, time); setPickerDow(null); }
+    finally { setBusy(false); }
+  };
+  const handleRemove = async (m, dow) => {
+    if (!onRemoveFixed) return;
+    if (!confirm(`${m.name}님을 ${WEEK_KR[dow]}요일 ${time} 고정에서 뺄까요?\n(지난 출석 기록은 그대로 유지돼요)`)) return;
+    await onRemoveFixed(m.id, dow, time);
+  };
   
   // 회원 한 명을 행으로 렌더링
-  const renderRow = (entry) => {
+  const renderRow = (dow) => (entry) => {
     const m = entry.member;
     const p = entry.pass;
     const since = p?.startDate || '';
@@ -2386,24 +2428,40 @@ function CapacitySheet({ time, allTimes, capacityStatus, capacity, onClose, onCh
             {remaining}회 남음
           </span>
         )}
+        {onRemoveFixed && (
+          <button onClick={() => handleRemove(m, dow)}
+            aria-label={`${m.name} 고정 해제`}
+            className="w-7 h-7 -mr-1 flex items-center justify-center rounded-full"
+            style={{ color: theme.inkMute }}>
+            <X size={14} />
+          </button>
+        )}
       </div>
     );
   };
   
   // 빈 슬롯 placeholder
-  const emptySlot = (count) => Array(Math.max(0, capacity - count)).fill(0).map((_, i) => (
-    <div key={`empty-${i}`} className="flex items-center justify-center px-3 py-2.5 rounded-xl"
+  const emptySlot = (count, dow) => Array(Math.max(0, capacity - count)).fill(0).map((_, i) => (
+    <button key={`empty-${i}`} onClick={() => openPicker(dow)}
+      className="w-full flex items-center justify-center gap-1 px-3 py-2.5 rounded-xl active:opacity-70"
       style={{ 
         backgroundColor: 'transparent', 
         border: `1px dashed ${theme.line}`,
         color: theme.inkMute,
         fontSize: 11,
-        fontStyle: 'italic',
-        fontFamily: theme.serif,
       }}>
-      비어있음
-    </div>
+      <Plus size={12} />
+      <span style={{ fontStyle: 'italic', fontFamily: theme.serif }}>비어있음 · 회원 추가</span>
+    </button>
   ));
+  // 정원이 다 찬 경우에도 추가할 수 있도록 작은 버튼
+  const overflowAdd = (count, dow) => count >= capacity && (
+    <button onClick={() => openPicker(dow)}
+      className="w-full flex items-center justify-center gap-1 py-2 rounded-xl text-[11px]"
+      style={{ border: `1px dashed ${theme.line}`, color: theme.inkMute }}>
+      <Plus size={12} /> 정원 초과로 추가
+    </button>
+  );
   
   return (
     <div onClick={onClose} 
@@ -2462,8 +2520,9 @@ function CapacitySheet({ time, allTimes, capacityStatus, capacity, onClose, onCh
             화요일 · {data.tueCount}/{capacity}
           </div>
           <div className="flex flex-col gap-1.5">
-            {data.tueMembers.map(renderRow)}
-            {emptySlot(data.tueCount)}
+            {data.tueMembers.map(renderRow(2))}
+            {emptySlot(data.tueCount, 2)}
+            {overflowAdd(data.tueCount, 2)}
           </div>
         </div>
         
@@ -2474,8 +2533,9 @@ function CapacitySheet({ time, allTimes, capacityStatus, capacity, onClose, onCh
             목요일 · {data.thuCount}/{capacity}
           </div>
           <div className="flex flex-col gap-1.5">
-            {data.thuMembers.map(renderRow)}
-            {emptySlot(data.thuCount)}
+            {data.thuMembers.map(renderRow(4))}
+            {emptySlot(data.thuCount, 4)}
+            {overflowAdd(data.thuCount, 4)}
           </div>
         </div>
         
@@ -2486,6 +2546,56 @@ function CapacitySheet({ time, allTimes, capacityStatus, capacity, onClose, onCh
           닫기
         </button>
       </div>
+
+      {/* ➕ 고정 회원 추가 피커 */}
+      {pickerDow !== null && (
+        <div onClick={(e) => { e.stopPropagation(); setPickerDow(null); }}
+          className="fixed inset-0 z-[60] flex items-end"
+          style={{ backgroundColor: 'rgba(0,0,0,0.35)' }}>
+          <div onClick={(e) => e.stopPropagation()}
+            className="w-full flex flex-col"
+            style={{ backgroundColor: theme.bg, borderRadius: '20px 20px 0 0', padding: '14px 18px 20px', maxHeight: '80vh' }}>
+            <div className="mx-auto mb-3" style={{ width: 36, height: 4, background: '#C8C7BA', borderRadius: 2 }}></div>
+            <div className="flex items-baseline justify-between mb-3">
+              <div style={{ fontFamily: theme.serif, fontSize: 20, fontWeight: 500, color: theme.ink }}>
+                {WEEK_KR[pickerDow]}요일 {time} 추가
+              </div>
+              <button onClick={() => setPickerDow(null)} style={{ color: theme.inkMute }}><X size={18} /></button>
+            </div>
+            <input value={pickerSearch} onChange={(e) => setPickerSearch(e.target.value)}
+              placeholder="이름 검색"
+              className="w-full px-3 py-2.5 rounded-xl text-[13px] mb-2 outline-none"
+              style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}`, color: theme.ink }} />
+            <label className="flex items-center gap-2 px-1 py-1.5 mb-2 text-[12px]" style={{ color: theme.inkSoft }}>
+              <input type="checkbox" checked={bothDays} onChange={(e) => setBothDays(e.target.checked)} />
+              {WEEK_KR[otherDow]}요일 {time}에도 함께 고정
+            </label>
+            <div className="flex flex-col gap-1.5 overflow-y-auto" style={{ minHeight: 0 }}>
+              {candidates.length === 0 ? (
+                <div className="text-center py-8 text-[12px] leading-relaxed" style={{ color: theme.inkMute }}>
+                  추가할 수 있는 회원이 없어요<br/>
+                  <span className="text-[11px]">활성 소그룹 수강권이 있는 회원만 표시돼요</span>
+                </div>
+              ) : candidates.map(m => {
+                const slots = (m.fixedSlots || []).map(fs => `${WEEK_KR[fs.dow]} ${fs.time}`).join(' · ');
+                return (
+                  <button key={m.id} disabled={busy} onClick={() => handlePick(m)}
+                    className="w-full text-left flex items-center gap-2.5 px-3 py-2.5 rounded-xl active:opacity-70"
+                    style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}`, opacity: busy ? 0.5 : 1 }}>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] font-semibold" style={{ color: theme.ink }}>{m.name}</div>
+                      <div className="text-[10px] mt-0.5 truncate" style={{ color: theme.inkMute }}>
+                        {slots ? `현재 고정: ${slots}` : '고정 시간 없음'}
+                      </div>
+                    </div>
+                    <Plus size={16} style={{ color: theme.accent }} />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3376,6 +3486,26 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
           capacity={CAPACITY}
           onClose={() => setCapacitySheetTime(null)}
           onChangeTime={(t) => setCapacitySheetTime(t)}
+          members={members}
+          onAddFixed={async (memberId, dows, time) => {
+            const target = members.find(m => m.id === memberId);
+            if (!target) return;
+            const cur = target.fixedSlots || [];
+            const add = dows.filter(d => !cur.some(fs => fs.dow === d && fs.time === time)).map(d => ({ dow: d, time }));
+            const nextList = members.map(m => m.id === memberId ? { ...m, fixedSlots: [...cur, ...add] } : m);
+            setMembers(nextList);
+            await saveKey(K.members, nextList);
+            toast && toast(`${target.name}님 ${dows.map(d => WEEK_KR[d]).join('·')} ${time} 고정 추가`);
+          }}
+          onRemoveFixed={async (memberId, dow, time) => {
+            const nextList = members.map(m => m.id !== memberId ? m : {
+              ...m,
+              fixedSlots: (m.fixedSlots || []).filter(fs => !(fs.dow === dow && fs.time === time)),
+            });
+            setMembers(nextList);
+            await saveKey(K.members, nextList);
+            toast && toast(`${WEEK_KR[dow]} ${time} 고정 해제`);
+          }}
         />
       )}
 
@@ -4027,6 +4157,45 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     return map;
   }, [members, sessions, todayYMD]);
 
+  // 🔧 개인/소그룹 표시를 세션에 명시적으로 기록 (회원 앱이 이 값을 보고 개인레슨을 숨김/표시)
+  //    오늘 이후 세션 중 category가 없는 것만 한 번 채움. 참가자 classType도 같이 맞춤.
+  const categoryBackfillDone = useRef(false);
+  useEffect(() => {
+    if (categoryBackfillDone.current) return;
+    if (!members.length || !Object.keys(sessions || {}).length) return;
+    categoryBackfillDone.current = true;
+    const todayStr = toYMD(new Date());
+    let changed = false;
+    const next = { ...sessions };
+    Object.keys(sessions).forEach(key => {
+      const sess = sessions[key];
+      if (!sess || sess.category) return;
+      const dateStr = key.slice(0, 10);
+      // 오늘 기준 60일 전 수업부터 채움 (지난 수업도 개인/소그룹 표시가 맞게)
+      const fromD = new Date(); fromD.setDate(fromD.getDate() - 60);
+      if (dateStr < toYMD(fromD)) return;
+      const time = key.slice(11);
+      const alive = (sess.participants || []).filter(p => !p.cancelled && p.status !== 'cancelled_advance' && p.status !== 'cancelled_sameday');
+      if (alive.length === 0) return;
+      const hasPrivate = alive.some(p => p.classType === '개인');
+      const hasGroupPass = alive.some(p => {
+        const pass = members.find(m => m.id === p.memberId)?.passes?.find(pp => pp.id === p.passId);
+        return pass?.category === 'group';
+      });
+      const category = hasPrivate ? 'private' : (hasGroupPass || (groupSlots || []).includes(time)) ? 'group' : 'private';
+      const participants = (sess.participants || []).map(p => {
+        if (category === 'private') return p.classType === '개인' ? p : { ...p, classType: '개인' };
+        return p;
+      });
+      next[key] = { ...sess, category, participants };
+      changed = true;
+    });
+    if (changed) {
+      setSessions(next);
+      saveKey(K.sessions, next);
+    }
+  }, [members, sessions, groupSlots]);
+
   // 그날의 모든 수업을 시간순으로 모음 (확정 + 자동추천)
   const getDayClasses = (date) => {
     const ymd = toYMD(date);
@@ -4050,11 +4219,21 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
           && p.status !== 'cancelled_sameday'
         );
         if (sess) {
-          // 개인레슨 여부 판단: 참석자 중 classType === '개인' 있거나, 모든 참석자가 개인 카테고리
+          // 개인/소그룹 판단 순서:
+          //  1) 수업 편집에서 저장한 명시값(sess.category)이 최우선
+          //  2) 참석자 중 classType === '개인' 있으면 개인
+          //  3) 참석자 수강권 중 소그룹(group) 수강권이 있으면 소그룹 (그룹 슬롯 밖 시간이어도)
+          //  4) 그 외엔 그룹 슬롯 시간이면 소그룹, 아니면 개인
           const hasPrivate = aliveParticipants.some(p => p.classType === '개인');
-          // 그룹 슬롯에 포함되면 group, 아니면 private
+          const hasGroupPass = aliveParticipants.some(p => {
+            if (!p.memberId || !p.passId) return false;
+            const pass = members.find(m => m.id === p.memberId)?.passes?.find(pp => pp.id === p.passId);
+            return pass?.category === 'group';
+          });
           const isGroupSlot = groupSlots.includes(time);
-          const category = hasPrivate ? 'private' : (isGroupSlot ? 'group' : 'private');
+          const category = (sess.category === 'group' || sess.category === 'private')
+            ? sess.category
+            : hasPrivate ? 'private' : (hasGroupPass || isGroupSlot) ? 'group' : 'private';
           explicit.push({
             time,
             category,
@@ -4755,6 +4934,7 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
   // 카테고리 (소그룹/개인) - isNew면 사용자가 선택, 아니면 slot.category로
   const [category, setCategory] = useState(() => {
     if (slot.category) return slot.category;
+    if (existing?.category === 'group' || existing?.category === 'private') return existing.category;
     if (existing) {
       const hasPrivate = existing.participants?.some(p => p.classType === '개인');
       return hasPrivate ? 'private' : 'group';
@@ -5326,7 +5506,7 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
                 if (p.classType === '개인') { const { classType, ...rest } = p; return rest; }
                 return p;
               });
-              onSave({ participants: syncedParts, note, classNote, time, date, originalKey });
+              onSave({ participants: syncedParts, note, classNote, time, date, originalKey, category });
             }}>저장</Button>
           </div>
         </div>
