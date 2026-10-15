@@ -2302,7 +2302,7 @@ function Header({ tab, setTab, onOpenSettings, onRefresh, refreshing }) {
             cursor: 'pointer',
           }}>
             소선요가
-            <span style={{ fontFamily: 'system-ui, sans-serif', fontSize: 10, fontWeight: 500, color: '#9A9A8E', marginLeft: 6, letterSpacing: 0 }}>v142</span>
+            <span style={{ fontFamily: 'system-ui, sans-serif', fontSize: 10, fontWeight: 500, color: '#9A9A8E', marginLeft: 6, letterSpacing: 0 }}>v143</span>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -4553,12 +4553,10 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
         && pp.startDate <= dateStr && pp.expiryDate >= dateStr
       );
       const hasRoom = pp => (pp.sessionDates || []).length < (pp.totalSessions || 0);
-      // 우선순위: 카테고리 일치+회수남음 → 회수남음 → 카테고리 일치 → 아무거나
-      const matched =
-        valid.find(pp => pp.category === cat && hasRoom(pp)) ||
-        valid.find(pp => hasRoom(pp)) ||
-        valid.find(pp => pp.category === cat) ||
-        valid[0];
+      // 우선순위: 카테고리 일치+회수남음 → 카테고리 일치
+      // ⚠️ 다른 카테고리 수강권(소그룹 수업에 개인레슨권 등)으로는 절대 차감하지 않음
+      const sameCat = valid.filter(pp => pp.category === cat || (cat === 'group' && !pp.category));
+      const matched = sameCat.find(pp => hasRoom(pp)) || sameCat[0];
       if (matched) {
         next.passId = matched.id;
         next.totalSessions = matched.totalSessions;
@@ -11851,7 +11849,7 @@ function getMonthlyAlerts(targetMonth) {
   return alerts;
 }
 
-function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
+function StatsView({ members, trials, sessions, closedDays = [], feeRates, setMembers, setSessions, toast }) {
   const now = new Date();
   const [monthOffset, setMonthOffset] = useState(0);
 
@@ -12331,25 +12329,33 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
       );
       if (attendees.length === 0) return;
       let sessionRevenue = 0;
+      const people = []; // 검수용: 회원별 수강권·단가
+      const sessKey = `${s.date}_${s.time}`;
       attendees.forEach(p => {
         if (p.isTrial) {
           const trial = trialByName[p.memberName];
-          if (trial?.status === '회원전환') return;
-          if (trial?.paid === true) sessionRevenue += TRIAL_FEE;
+          let amt = 0;
+          if (trial?.status !== '회원전환' && trial?.paid === true) amt = TRIAL_FEE;
+          sessionRevenue += amt;
+          people.push({ name: p.memberName || '체험', passType: trial?.status === '회원전환' ? '체험 (회원전환·무료)' : (trial?.paid ? '체험비' : '체험 (미입금)'), amount: amt });
           return;
         }
         const member = memberMap[p.memberId];
-        if (!member) return;
+        const name = p.memberName || member?.name || '(이름 없음)';
+        if (!member) { people.push({ name, passType: '회원 정보 없음', amount: 0 }); return; }
         const pass = (member.passes || []).find(x => x.id === p.passId);
-        if (!pass || !pass.totalSessions) return;
+        if (!pass || !pass.totalSessions) { people.push({ name, passType: '수강권 연결 안 됨 (차감 없음)', amount: 0, noPass: true }); return; }
         let perSession = pass.pricePerSession || (pass.price ? Math.round(pass.price / pass.totalSessions) : 0);
         // ⭐ 스타터 패키지 개인레슨(price=0으로 묶여있음)은 회당 70,000원 고정으로 계산
         // 수강권이 private 카테고리여도, 그날 실제로는 소그룹으로 참여했으면(classType !== '개인') 적용 안 함
         if (!perSession && pass.bundleOf && pass.category === 'private' && p.classType === '개인') {
           perSession = 70000;
         }
-        if (!perSession) return;
-        sessionRevenue += perSession;
+        // 수업 종류 vs 차감된 수강권 종류가 다르면 표시
+        const partCat = (s.category === 'private' || p.classType === '개인') ? 'private' : 'group';
+        const mismatch = (pass.category === 'group' || pass.category === 'private') && pass.category !== partCat;
+        sessionRevenue += perSession || 0;
+        people.push({ name, passType: pass.type || '', amount: perSession || 0, mismatch, partCat, sessKey, memberId: member.id });
       });
       if (!days[s.date]) days[s.date] = { date: s.date, count: 0, totalRevenue: 0, sessions: [] };
       days[s.date].count += 1;
@@ -12359,12 +12365,80 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
         classType: s.classType || (attendees.some(p => p.classType === '개인') ? '개인' : '소그룹'),
         ppl: attendees.length,
         revenue: sessionRevenue,
+        people,
       });
     });
     Object.values(days).forEach(d => d.sessions.sort((a, b) => a.time.localeCompare(b.time)));
     return days;
   }, [sessions, members, trials, targetYM]);
   const [dailyCalendarOpen, setDailyCalendarOpen] = useState(false);
+
+  // 🔧 잘못된 수강권으로 차감된 기록 바로잡기
+  //   (예: 소그룹 수업인데 개인레슨권에서 차감) → 맞는 종류 수강권으로 옮기거나, 없으면 차감 취소
+  const fixMismatch = async (sessKey, memberId) => {
+    if (!setMembers || !setSessions) return;
+    const sess = sessions[sessKey];
+    if (!sess) return;
+    const date = sess.date || sessKey.slice(0, 10);
+    const member = members.find(m => m.id === memberId);
+    const part = (sess.participants || []).find(x => x.memberId === memberId);
+    if (!member || !part) return;
+    const oldPass = (member.passes || []).find(x => x.id === part.passId);
+    const partCat = (sess.category === 'private' || part.classType === '개인') ? 'private' : 'group';
+    const candidates = (member.passes || []).filter(pp =>
+      pp.id !== oldPass?.id && !pp.archived && pp.category === partCat
+      && pp.startDate && pp.expiryDate && pp.startDate <= date && pp.expiryDate >= date
+    ).sort((a, b) => a.startDate.localeCompare(b.startDate));
+    const hasRoom = pp => (pp.sessionDates || []).length < (pp.totalSessions || 0);
+    const target = candidates.find(hasRoom) || candidates[0] || null;
+    const catKr = partCat === 'private' ? '개인레슨' : '소그룹';
+    const msg = target
+      ? `${member.name}님 ${date} ${sess.time} 수업을\n「${oldPass?.type || '수강권'}」에서 빼고\n「${target.type}」으로 옮길까요?\n\n(${oldPass?.type || '기존 수강권'} 회차 1회 복구, ${target.type} 1회 차감)`
+      : `${member.name}님은 ${date}에 쓸 수 있는 ${catKr} 수강권이 없어요.\n「${oldPass?.type || '수강권'}」 차감만 취소할까요?\n(출석 기록은 남고, 매출에서 빠져요)`;
+    if (!confirm(msg)) return;
+
+    const nextMembers = members.map(m => {
+      if (m.id !== memberId) return m;
+      return {
+        ...m,
+        passes: (m.passes || []).map(pp => {
+          if (oldPass && pp.id === oldPass.id) {
+            const dates = [...(pp.sessionDates || [])];
+            const idx = dates.lastIndexOf(date);
+            if (idx < 0) return pp;
+            dates.splice(idx, 1);
+            return { ...pp, sessionDates: dates, usedSessions: Math.max(0, (pp.usedSessions || 0) - 1) };
+          }
+          if (target && pp.id === target.id) {
+            const dates = [...(pp.sessionDates || [])];
+            if (dates.includes(date)) return pp;
+            dates.push(date); dates.sort();
+            return { ...pp, sessionDates: dates, usedSessions: Math.min(pp.totalSessions || 0, (pp.usedSessions || 0) + 1) };
+          }
+          return pp;
+        }),
+      };
+    });
+    const targetAfter = target && nextMembers.find(m => m.id === memberId).passes.find(pp => pp.id === target.id);
+    const nextSessions = {
+      ...sessions,
+      [sessKey]: {
+        ...sess,
+        participants: sess.participants.map(x => {
+          if (x.memberId !== memberId) return x;
+          if (!target) { const { passId, sessionNumber, totalSessions, ...rest } = x; return rest; }
+          const sorted = [...(targetAfter.sessionDates || [])].sort();
+          return { ...x, passId: target.id, totalSessions: target.totalSessions, sessionNumber: sorted.indexOf(date) + 1 };
+        }),
+      },
+    };
+    setMembers(nextMembers);
+    setSessions(nextSessions);
+    await saveKey(K.members, nextMembers);
+    await saveKey(K.sessions, nextSessions);
+    toast && toast(target ? `${member.name}님 차감을 ${target.type}으로 옮겼어요` : `${member.name}님 차감을 취소했어요`);
+  };
+  const mismatchCount = Object.values(dailyStats).reduce((n, d) => n + d.sessions.reduce((k, x) => k + (x.people || []).filter(p => p.mismatch).length, 0), 0);
 
   return (
     <div className="px-3 pb-28 pt-2 space-y-3">
@@ -12791,6 +12865,12 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
                             {totalRev.toLocaleString()}원
                           </div>
                         </div>
+                        {mismatchCount > 0 && (
+                          <div className="mt-3 px-3 py-2 rounded-xl text-[11.5px] font-semibold"
+                            style={{ backgroundColor: 'rgba(184,84,80,0.10)', color: '#B85450' }}>
+                            ⚠ 잘못된 수강권으로 차감된 출석 {mismatchCount}건 — 아래 일별 수익에서 빨간 줄 확인 후 '바로잡기'
+                          </div>
+                        )}
                         <button 
                           onClick={(e) => { e.stopPropagation(); setDailyCalendarOpen(true); }}
                           className="w-full mt-3 py-2.5 rounded-xl text-[12px] font-bold flex items-center justify-center gap-1.5"
@@ -12813,6 +12893,7 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates }) {
         <DailyRevenueCalendarModal
           targetMonth={targetMonth}
           dailyStats={dailyStats}
+          onFix={fixMismatch}
           onClose={() => setDailyCalendarOpen(false)}
         />
       )}
@@ -13517,11 +13598,10 @@ export default function App() {
               && pp.startDate <= s.date && pp.expiryDate >= s.date
             );
             const hasRoom = pp => (pp.sessionDates || []).length < (pp.totalSessions || 0);
-            const matched =
-              valid.find(pp => pp.category === 'group' && hasRoom(pp)) ||
-              valid.find(pp => hasRoom(pp)) ||
-              valid.find(pp => pp.category === 'group') ||
-              valid[0];
+            // 수업 종류에 맞는 수강권으로만 차감 (소그룹 ↔ 개인 섞이지 않게)
+            const cat = (s.category === 'private' || p.classType === '개인') ? 'private' : 'group';
+            const sameCat = valid.filter(pp => pp.category === cat || (cat === 'group' && !pp.category));
+            const matched = sameCat.find(pp => hasRoom(pp)) || sameCat[0];
             if (!matched) {
               // 매칭 패스 없으면 attended만 박고 차감은 안 함
               partsChanged = true;
@@ -14334,7 +14414,7 @@ export default function App() {
         <ClassLogView classLog={classLog} setClassLog={setClassLog} sessions={sessions} setSessions={setSessions} members={members} groupSlots={groupSlots} toast={toast} />
       )}
       {tab === 'stats' && (
-        <StatsView members={members} trials={trials} sessions={sessions} closedDays={closedDays} feeRates={feeRates} />
+        <StatsView members={members} trials={trials} sessions={sessions} closedDays={closedDays} feeRates={feeRates} setMembers={setMembers} setSessions={setSessions} toast={toast} />
       )}
       <Toast msg={toastMsg} onDone={() => setToastMsg('')} />
       {settingsOpen && (
@@ -14800,7 +14880,7 @@ function RhythmCalendarModal({ rhythm, passType, onClose }) {
 }
 
 
-function DailyRevenueCalendarModal({ targetMonth, dailyStats, onClose }) {
+function DailyRevenueCalendarModal({ targetMonth, dailyStats, onClose, onFix }) {
   const year = targetMonth.getFullYear();
   const month = targetMonth.getMonth(); // 0-indexed
   const firstDow = new Date(year, month, 1).getDay(); // 0=일
@@ -14915,10 +14995,36 @@ function DailyRevenueCalendarModal({ targetMonth, dailyStats, onClose }) {
               소그룹·개인 {selDay.count}회 · 참여 인원 {selDay.sessions.reduce((s, x) => s + x.ppl, 0)}명
             </div>
             {selDay.sessions.map((s, i) => (
-              <div key={i} className="flex items-center justify-between py-2" style={{ borderTop: i > 0 ? `1px solid ${theme.lineLight}` : 'none' }}>
-                <div className="text-[12.5px] font-bold" style={{ width: 52, flexShrink: 0 }}>{fmtTime24(s.time)}</div>
-                <div className="text-[11px] flex-1" style={{ color: theme.inkSoft }}>{s.classType} · {s.ppl}명</div>
-                <div className="text-[12.5px] font-bold" style={{ color: theme.accent }}>{fmtRev(s.revenue)}원</div>
+              <div key={i} className="py-2" style={{ borderTop: i > 0 ? `1px solid ${theme.lineLight}` : 'none' }}>
+                <div className="flex items-center justify-between">
+                  <div className="text-[12.5px] font-bold" style={{ width: 52, flexShrink: 0 }}>{fmtTime24(s.time)}</div>
+                  <div className="text-[11px] flex-1" style={{ color: theme.inkSoft }}>
+                    {s.classType} · {s.ppl}명
+                    {(s.people || []).some(p => p.mismatch) && <span style={{ color: '#B85450', fontWeight: 700 }}> · ⚠ 확인 필요</span>}
+                  </div>
+                  <div className="text-[12.5px] font-bold" style={{ color: theme.accent }}>{fmtRev(s.revenue)}원</div>
+                </div>
+                {/* 회원별 내역 (검수용) */}
+                <div className="mt-1 ml-[52px] space-y-0.5">
+                  {(s.people || []).map((p, j) => (
+                    <div key={j} className="flex items-center gap-2 text-[10.5px]"
+                      style={{ color: p.mismatch ? '#B85450' : theme.inkMute }}>
+                      <span className="font-semibold" style={{ color: p.mismatch ? '#B85450' : theme.inkSoft, minWidth: 40 }}>{p.name}</span>
+                      <span className="flex-1 truncate">
+                        {p.passType}
+                        {p.mismatch && ` — ${p.partCat === 'group' ? '소그룹 수업인데 개인레슨권' : '개인레슨인데 소그룹권'}에서 차감됨`}
+                      </span>
+                      <span className="tabular-nums">{fmtRev(p.amount)}</span>
+                      {p.mismatch && onFix && (
+                        <button onClick={() => onFix(p.sessKey, p.memberId)}
+                          className="px-2 py-0.5 rounded-full text-[10px] font-bold"
+                          style={{ backgroundColor: '#B85450', color: '#FFF' }}>
+                          바로잡기
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             ))}
             <div className="flex justify-between mt-2 pt-2.5 font-bold text-[13px]" style={{ borderTop: `1.5px solid ${theme.line}` }}>
