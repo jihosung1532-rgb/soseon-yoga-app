@@ -687,6 +687,22 @@ function PrivateSlotPicker({ value = [], onChange }) {
   );
 }
 
+// 💰 수강권 회당 단가 (매출 계산은 모두 이 함수 하나로)
+//   스타터 패키지: 결제 금액이 소그룹 쪽 수강권에 몰려 있어서 나누면 틀어짐
+//   → 개인레슨 70,000원 / 소그룹 25,000원 고정 (3×70,000 + 6×25,000 = 360,000)
+const STARTER_PRIVATE_UNIT = 70000;
+const STARTER_GROUP_UNIT = 25000;
+function passUnitPrice(pass) {
+  if (!pass) return 0;
+  if (pass.bundleOf && String(pass.bundleOf).includes('스타터')) {
+    if (pass.category === 'private') return STARTER_PRIVATE_UNIT;
+    if (pass.category === 'group') return STARTER_GROUP_UNIT;
+  }
+  if (pass.pricePerSession) return pass.pricePerSession;
+  if (pass.price > 0 && pass.totalSessions > 0) return Math.round(pass.price / pass.totalSessions);
+  return 0;
+}
+
 function computeExpiry(startDate, days) {
   let end = toYMD(addDays(fromYMD(startDate), days - 1));
   let h = countHolidaysIn(startDate, end);
@@ -2302,7 +2318,7 @@ function Header({ tab, setTab, onOpenSettings, onRefresh, refreshing }) {
             cursor: 'pointer',
           }}>
             소선요가
-            <span style={{ fontFamily: 'system-ui, sans-serif', fontSize: 10, fontWeight: 500, color: '#9A9A8E', marginLeft: 6, letterSpacing: 0 }}>v143</span>
+            <span style={{ fontFamily: 'system-ui, sans-serif', fontSize: 10, fontWeight: 500, color: '#9A9A8E', marginLeft: 6, letterSpacing: 0 }}>v144</span>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -7342,7 +7358,7 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                           })()}
                         </div>
                         {(() => {
-                          const perSession = p.pricePerSession || (p.price > 0 && p.totalSessions > 0 ? Math.round(p.price / p.totalSessions) : 0);
+                          const perSession = passUnitPrice(p);
                           if (perSession > 0) {
                             return (
                               <div className="text-[10px] mt-0.5" style={{ color: theme.accent }}>
@@ -7500,11 +7516,11 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                             {p.paymentDate && `결제 ${p.paymentDate} · `}{p.startDate} ~ {p.expiryDate}
                             {p.holdUsed && <span style={{ color: theme.warn }}> · 홀딩{p.holdDays}일 사용</span>}
                           </div>
-                          {p.price > 0 && (() => {
-                            const perSession = p.pricePerSession || (p.totalSessions > 0 ? Math.round(p.price / p.totalSessions) : 0);
+                          {(p.price > 0 || p.bundleOf) && (() => {
+                            const perSession = passUnitPrice(p);
                             return (
                               <div className="text-[11px] mt-0.5" style={{ color: theme.accent }}>
-                                {p.price.toLocaleString()}원
+                                {(p.price || 0).toLocaleString()}원
                                 {perSession > 0 && <span style={{ color: theme.inkMute }}> · 회당 {perSession.toLocaleString()}원</span>}
                               </div>
                             );
@@ -12015,8 +12031,8 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates, setMe
         const member = memberMap[p.memberId];
         if (!member) return;
         const pass = (member.passes || []).find(x => x.id === p.passId);
-        if (!pass || !pass.price || !pass.totalSessions) return;
-        const perSession = pass.pricePerSession || Math.round(pass.price / pass.totalSessions);
+        const perSession = passUnitPrice(pass);
+        if (!perSession) return;
         byTimeMap[time].revenue += perSession;
         byTimeMap[time].attendees++;
       });
@@ -12295,8 +12311,8 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates, setMe
         const member = memberMap[p.memberId];
         if (!member) return;
         const pass = (member.passes || []).find(x => x.id === p.passId);
-        if (!pass || !pass.price || !pass.totalSessions) return;
-        const perSession = pass.pricePerSession || Math.round(pass.price / pass.totalSessions);
+        const perSession = passUnitPrice(pass);
+        if (!perSession) return;
         slots[s.time].totalRevenue += perSession;
       });
     });
@@ -12345,12 +12361,7 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates, setMe
         if (!member) { people.push({ name, passType: '회원 정보 없음', amount: 0 }); return; }
         const pass = (member.passes || []).find(x => x.id === p.passId);
         if (!pass || !pass.totalSessions) { people.push({ name, passType: '수강권 연결 안 됨 (차감 없음)', amount: 0, noPass: true }); return; }
-        let perSession = pass.pricePerSession || (pass.price ? Math.round(pass.price / pass.totalSessions) : 0);
-        // ⭐ 스타터 패키지 개인레슨(price=0으로 묶여있음)은 회당 70,000원 고정으로 계산
-        // 수강권이 private 카테고리여도, 그날 실제로는 소그룹으로 참여했으면(classType !== '개인') 적용 안 함
-        if (!perSession && pass.bundleOf && pass.category === 'private' && p.classType === '개인') {
-          perSession = 70000;
-        }
+        const perSession = passUnitPrice(pass);
         // 수업 종류 vs 차감된 수강권 종류가 다르면 표시
         const partCat = (s.category === 'private' || p.classType === '개인') ? 'private' : 'group';
         const mismatch = (pass.category === 'group' || pass.category === 'private') && pass.category !== partCat;
