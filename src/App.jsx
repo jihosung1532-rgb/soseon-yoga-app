@@ -572,6 +572,121 @@ function countHolidaysIn(startYMD, endYMD) {
   return n;
 }
 
+/* =========================================================
+   개인레슨 고정 시간 → 자동 일정
+   수강권(category === 'private')에 fixedSlots: [{ dow, time }]를 지정하면
+   남은 회수만큼 가까운 날짜부터 자동 일정으로 표시 (소그룹 고정 회원과 같은 방식)
+   반환: Map("YYYY-MM-DD_HH:MM" → [{ member, pass }])
+   ========================================================= */
+const CANCELLED_STATUSES = ['cancelled_advance', 'cancelled_sameday', 'cancelled_by_teacher'];
+function computePrivateAutoSlots(members, sessions, closedDays = []) {
+  const result = new Map();
+  const todayStr = toYMD(new Date());
+  const closedDates = new Set((closedDays || []).filter(c => c?.date && !c.time).map(c => c.date));
+  const closedSlots = new Set((closedDays || []).filter(c => c?.date && c.time).map(c => `${c.date}_${c.time}`));
+  (members || []).forEach(m => {
+    (m.passes || []).forEach(p => {
+      if (p.archived || p.category !== 'private') return;
+      if (!Array.isArray(p.fixedSlots) || p.fixedSlots.length === 0) return;
+      if (!p.startDate || !p.expiryDate || p.expiryDate < todayStr) return;
+      // 오늘 이후 이 회원이 들어간 슬롯(취소 포함) — 강사가 직접 처리한 슬롯엔 자동이 끼어들지 않음
+      const touchedKeys = new Set();
+      const passDates = new Set(); // 이 수강권으로 이미 잡힌 날짜 (하루 1회)
+      let registered = 0;
+      Object.entries(sessions || {}).forEach(([k, sess]) => {
+        if (k.slice(0, 10) < todayStr) return;
+        const part = (sess?.participants || []).find(x => x.memberId === m.id);
+        if (!part) return;
+        touchedKeys.add(k);
+        if (part.cancelled || CANCELLED_STATUSES.includes(part.status)) return;
+        if (part.passId === p.id) { registered++; passDates.add(k.slice(0, 10)); }
+      });
+      const usedBefore = (p.sessionDates || []).filter(d => d < todayStr).length;
+      let remaining = (p.totalSessions || 0) - usedBefore - registered;
+      if (remaining <= 0) return;
+      const cursor = fromYMD(p.startDate > todayStr ? p.startDate : todayStr);
+      const limit = fromYMD(p.expiryDate);
+      const slots = [...p.fixedSlots].filter(fs => fs && fs.time != null).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+      while (cursor <= limit && remaining > 0) {
+        const ymd = toYMD(cursor);
+        const dow = cursor.getDay();
+        const blocked = HOLIDAYS.has(ymd) || closedDates.has(ymd) || passDates.has(ymd)
+          || (p.holdStart && p.holdEnd && ymd >= p.holdStart && ymd <= p.holdEnd);
+        if (!blocked) {
+          for (const fs of slots) {
+            if (fs.dow !== dow) continue;
+            const key = `${ymd}_${fs.time}`;
+            if (touchedKeys.has(key) || closedSlots.has(key)) continue;
+            if (!result.has(key)) result.set(key, []);
+            result.get(key).push({ member: m, pass: p });
+            remaining--;
+            break; // 하루 1회
+          }
+        }
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    });
+  });
+  return result;
+}
+
+// 개인레슨 고정 시간 선택 (요일 + 시간)
+function PrivateSlotPicker({ value = [], onChange }) {
+  const [dow, setDow] = useState(2);
+  const [time, setTime] = useState('14:00');
+  const DOWS = [1, 2, 3, 4, 5, 6, 0];
+  const add = () => {
+    if (!time) return;
+    if (value.some(v => v.dow === dow && v.time === time)) return;
+    onChange([...value, { dow, time }].sort((a, b) => ((a.dow + 6) % 7) - ((b.dow + 6) % 7) || a.time.localeCompare(b.time)));
+  };
+  return (
+    <div className="rounded-xl p-3 space-y-2" style={{ backgroundColor: theme.cardAlt2 || '#F5F4EC', border: `1px solid ${theme.line}` }}>
+      <div className="text-[11px] font-bold" style={{ color: theme.ink }}>🗓 고정 수업 시간 (선택)</div>
+      <div className="text-[10px] leading-relaxed" style={{ color: theme.inkMute }}>
+        지정하면 남은 회수만큼 일정에 자동으로 표시돼요. 회원앱에도 본인에게만 개인레슨으로 보여요.
+      </div>
+      {value.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {value.map(v => (
+            <span key={`${v.dow}_${v.time}`} className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full text-[11px] font-semibold"
+              style={{ backgroundColor: theme.card, border: `1px solid ${theme.line}`, color: theme.ink }}>
+              {WEEK_KR[v.dow]} {v.time}
+              <button type="button" onClick={() => onChange(value.filter(x => !(x.dow === v.dow && x.time === v.time)))}
+                className="w-5 h-5 flex items-center justify-center rounded-full" style={{ color: theme.inkMute }}>
+                <X size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-1">
+        {DOWS.map(d => (
+          <button key={d} type="button" onClick={() => setDow(d)}
+            className="w-8 h-8 rounded-full text-[12px] font-semibold"
+            style={{
+              backgroundColor: dow === d ? theme.accent : theme.card,
+              color: dow === d ? '#FFF' : theme.ink,
+              border: `1px solid ${dow === d ? theme.accent : theme.line}`,
+            }}>
+            {WEEK_KR[d]}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input type="time" value={time} onChange={e => setTime(e.target.value)} step="600"
+          className="flex-1 px-3 py-2 rounded-lg text-sm"
+          style={{ border: `1px solid ${theme.lineLight || theme.line}`, backgroundColor: theme.card }} />
+        <button type="button" onClick={add}
+          className="px-3 py-2 rounded-lg text-[12px] font-semibold inline-flex items-center gap-1"
+          style={{ backgroundColor: theme.accent, color: '#FFF' }}>
+          <Plus size={13} /> 추가
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function computeExpiry(startDate, days) {
   let end = toYMD(addDays(fromYMD(startDate), days - 1));
   let h = countHolidaysIn(startDate, end);
@@ -2187,7 +2302,7 @@ function Header({ tab, setTab, onOpenSettings, onRefresh, refreshing }) {
             cursor: 'pointer',
           }}>
             소선요가
-            <span style={{ fontFamily: 'system-ui, sans-serif', fontSize: 10, fontWeight: 500, color: '#9A9A8E', marginLeft: 6, letterSpacing: 0 }}>v141</span>
+            <span style={{ fontFamily: 'system-ui, sans-serif', fontSize: 10, fontWeight: 500, color: '#9A9A8E', marginLeft: 6, letterSpacing: 0 }}>v142</span>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -2779,6 +2894,22 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
       }
     }
     
+    // 개인레슨 고정 시간 자동 일정 (오늘)
+    computePrivateAutoSlots(members, sessions, closedDays).forEach((entries, key) => {
+      if (!key.startsWith(todayYMD + '_')) return;
+      const time = key.slice(todayYMD.length + 1);
+      if (confirmedTimes.has(time) || autoList.some(a => a.time === time)) return;
+      autoList.push({
+        date: todayYMD,
+        time,
+        category: 'private',
+        isAuto: true,
+        participants: entries.map(({ member, pass }) => ({
+          memberId: member.id, memberName: member.name, passId: pass.id, classType: '개인',
+        })),
+      });
+    });
+
     return [...confirmed, ...autoList]
       .sort((a, b) => a.time.localeCompare(b.time));
   }, [sessions, todayYMD, members, groupSlots, closedDays]);
@@ -4157,6 +4288,12 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
     return map;
   }, [members, sessions, todayYMD]);
 
+  // 개인레슨 고정 시간 자동 일정 (수강권별 fixedSlots)
+  const privateAutoSlots = useMemo(
+    () => computePrivateAutoSlots(members, sessions, closedDays),
+    [members, sessions, closedDays]
+  );
+
   // 🔧 개인/소그룹 표시를 세션에 명시적으로 기록 (회원 앱이 이 값을 보고 개인레슨을 숨김/표시)
   //    오늘 이후 세션 중 category가 없는 것만 한 번 채움. 참가자 classType도 같이 맞춤.
   const categoryBackfillDone = useRef(false);
@@ -4287,6 +4424,21 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
         });
       });
     }
+
+    // 2-b) 개인레슨 자동 일정 (개인 수강권 고정 시간) — 같은 시간에 다른 수업이 있으면 표시 안 함
+    privateAutoSlots.forEach((entries, key) => {
+      if (!key.startsWith(ymd + '_')) return;
+      const time = key.slice(ymd.length + 1);
+      if (explicit.some(e => e.time === time) || autoItems.some(a => a.time === time)) return;
+      autoItems.push({
+        time,
+        category: 'private',
+        isAuto: true,
+        participants: entries.map(({ member, pass }) => ({
+          memberId: member.id, memberName: member.name, passId: pass.id, classType: '개인',
+        })),
+      });
+    });
 
     // 3) 고정 반복 빈 수업 (참여자 없어도 항상 표시)
     const RECURRING_EMPTY = [
@@ -4953,7 +5105,10 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
   // autoFill 멤버를 참가자 객체로 변환하는 헬퍼
   const buildAutoPart = (p) => {
     const m = members.find(x => x.id === p.memberId);
-    const pass = m && activePass(m, 'group');
+    const pass = m && (
+      (p.passId && (m.passes || []).find(x => x.id === p.passId))
+      || activePass(m, slot.category === 'private' ? 'private' : 'group')
+    );
     // 자동 표시 슬롯은 미래 또는 오늘 수업 전 → reserved로 명시 박음
     const slotDateStr = slot.date ? toYMD(slot.date) : toYMD(new Date());
     const slotTime = slot.time || '';
@@ -4967,6 +5122,7 @@ function SessionEditor({ slot, members, setMembers, saveMembers, groupSlots, toa
       sessionNumber: pass ? pass.usedSessions + 1 : undefined,
       totalSessions: pass?.totalSessions,
       _isAutoAdded: true, // 자동 추천으로 채워진 회원 — X 누르면 의도 물어봄
+      ...((p.classType === '개인' || pass?.category === 'private' && slot.category === 'private') ? { classType: '개인' } : {}),
       ...(beforeClass ? { status: 'reserved' } : {}),
     };
   };
@@ -7198,6 +7354,11 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                           }
                           return null;
                         })()}
+                        {p.category === 'private' && Array.isArray(p.fixedSlots) && p.fixedSlots.length > 0 && (
+                            <div className="text-[11px] mt-1 font-semibold" style={{ color: theme.accent2 }}>
+                              🗓 고정 {p.fixedSlots.map(fs => `${WEEK_KR[fs.dow]} ${fs.time}`).join(' · ')}
+                            </div>
+                          )}
                         {p.note && (
                           <div className="text-[10px] mt-1 italic" style={{ color: theme.inkSoft }}>{p.note}</div>
                         )}
@@ -7350,6 +7511,11 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                               </div>
                             );
                           })()}
+                          {p.category === 'private' && Array.isArray(p.fixedSlots) && p.fixedSlots.length > 0 && (
+                            <div className="text-[11px] mt-1 font-semibold" style={{ color: theme.accent2 }}>
+                              🗓 고정 {p.fixedSlots.map(fs => `${WEEK_KR[fs.dow]} ${fs.time}`).join(' · ')}
+                            </div>
+                          )}
                           {p.note && (
                             <div className="text-[10px] mt-1 italic" style={{ color: theme.inkSoft }}>{p.note}</div>
                           )}
@@ -8918,6 +9084,7 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
   const [canHold, setCanHold] = useState(!!preset.canHold);
   const [note, setNote] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('');
+  const [privSlots, setPrivSlots] = useState([]);
 
   useEffect(() => {
     const p = PASS_PRESETS[presetIdx];
@@ -8943,6 +9110,7 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
           totalSessions: 3, days: 90,
           paymentDate, startDate, expiryDate: computeExpiry(startDate, 90),
           price: 0, bundleOf: '스타터 패키지', paymentMethod: paymentMethod || undefined,
+          ...(privSlots.length ? { fixedSlots: privSlots } : {}),
         },
         {
           type: '스타터 · 소그룹 6회', category: 'group',
@@ -8958,6 +9126,7 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
         paymentDate, startDate, expiryDate: extendedExpiry,
         price, canHold, days, note: note || undefined,
         paymentMethod: paymentMethod || undefined,
+        ...(category === 'private' && privSlots.length ? { fixedSlots: privSlots } : {}),
       };
       if (pricePerSession > 0) data.pricePerSession = pricePerSession;
       // 보상 적용 정보
@@ -9207,6 +9376,10 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
               </div>
             )}
           </>
+        )}
+
+        {((category === 'private' && !preset.special) || preset.special === 'starter') && (
+          <PrivateSlotPicker value={privSlots} onChange={setPrivSlots} />
         )}
 
         <div className="flex justify-end gap-2 pt-2">
@@ -14344,6 +14517,7 @@ function PassEditModal({ pass, onClose, onSave }) {
   const [rhythmBonus, setRhythmBonus] = useState(pass.rhythmBonus || 0);
   const [reviewEventBonus, setReviewEventBonus] = useState(pass.reviewEventBonus || 0);
   const [mayEventBonus, setMayEventBonus] = useState(pass.mayEventBonus || 0);
+  const [privSlots, setPrivSlots] = useState(Array.isArray(pass.fixedSlots) ? pass.fixedSlots : []);
 
   const handleSave = () => {
     const usedCount = (pass.sessionDates || []).length;
@@ -14362,6 +14536,7 @@ function PassEditModal({ pass, onClose, onSave }) {
       startDate, expiryDate, paymentDate,
       note, paymentMethod,
       ...bonusFields,
+      ...(pass.category === 'private' ? { fixedSlots: privSlots } : {}),
     });
   };
 
@@ -14435,6 +14610,9 @@ function PassEditModal({ pass, onClose, onSave }) {
             className="w-full px-3 py-2 rounded-lg text-sm"
             style={{ border: `1px solid ${theme.lineLight}`, backgroundColor: theme.card }} />
         </div>
+        {pass.category === 'private' && (
+          <PrivateSlotPicker value={privSlots} onChange={setPrivSlots} />
+        )}
         {/* 보너스 소급 적용 */}
         <div className="rounded-xl p-3 space-y-2" style={{ backgroundColor: '#F5EBC8', border: '1px solid #C9A961' }}>
           <div className="text-[11px] font-bold" style={{ color: '#6B5410' }}>🎁 보너스 소급 적용 (선택)</div>
