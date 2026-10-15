@@ -2187,7 +2187,7 @@ function Header({ tab, setTab, onOpenSettings, onRefresh, refreshing }) {
             cursor: 'pointer',
           }}>
             소선요가
-            <span style={{ fontFamily: 'system-ui, sans-serif', fontSize: 10, fontWeight: 500, color: '#9A9A8E', marginLeft: 6, letterSpacing: 0 }}>v140</span>
+            <span style={{ fontFamily: 'system-ui, sans-serif', fontSize: 10, fontWeight: 500, color: '#9A9A8E', marginLeft: 6, letterSpacing: 0 }}>v141</span>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -4161,9 +4161,8 @@ function ScheduleView({ members, setMembers, sessions, setSessions, classLog = {
   //    오늘 이후 세션 중 category가 없는 것만 한 번 채움. 참가자 classType도 같이 맞춤.
   const categoryBackfillDone = useRef(false);
   useEffect(() => {
-    if (categoryBackfillDone.current) return;
+    // 세션이 바뀔 때마다 category 없는 세션만 채움 (예약 승인 등 다른 경로로 생긴 세션 포함)
     if (!members.length || !Object.keys(sessions || {}).length) return;
-    categoryBackfillDone.current = true;
     const todayStr = toYMD(new Date());
     let changed = false;
     const next = { ...sessions };
