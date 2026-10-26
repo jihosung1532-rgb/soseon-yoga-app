@@ -1747,15 +1747,24 @@ function tueThuDatesBetween(startYMD, endYMD) {
 }
 
 // 그날이 면제 대상인가? (공휴일 / 휴강일 / 홀딩 기간)
-function isExemptDay(ymd, pass, closedDays) {
+// ⚠️ closedDays 중 time이 있는 건 "그 시간만 이번만 폐강" — 그날 전체 휴강이 아님
+//    → 그 시간이 본인 고정 시간(fixedSlots)인 회원에게만 면제. 다른 시간 회원은 평소대로 출석해야 함
+//    (예전엔 한 시간만 폐강해도 그날 전체를 면제 처리 → 다른 시간에 출석한 날이 '메꿈'으로 잘못 쓰이던 버그)
+function isExemptDay(ymd, pass, closedDays, fixedSlots = null) {
   if (HOLIDAYS.has(ymd)) return true;
-  if (Array.isArray(closedDays) && closedDays.some(c => c.date === ymd)) return true;
+  if (Array.isArray(closedDays)) {
+    if (closedDays.some(c => c.date === ymd && !c.time)) return true;
+    if (Array.isArray(fixedSlots) && fixedSlots.length > 0) {
+      const dow = fromYMD(ymd).getDay();
+      if (closedDays.some(c => c.date === ymd && c.time && fixedSlots.some(fs => fs.dow === dow && fs.time === c.time))) return true;
+    }
+  }
   // 홀딩 기간 (pass.holdStart ~ pass.holdEnd 사이)
   if (pass?.holdStart && pass?.holdEnd && ymd >= pass.holdStart && ymd <= pass.holdEnd) return true;
   return false;
 }
 
-function rhythmStatus(p, closedDays = [], cancelledDates = null) {
+function rhythmStatus(p, closedDays = [], cancelledDates = null, fixedSlots = null, groupAttendDates = null) {
   if (!p) return null;
   if (p.archived) return null;
   if (p.category === 'trial') return null;
@@ -1793,7 +1802,7 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   let challengeEndYMD = toYMD(addDays(fromYMD(challengeStartYMD), weeks * 7 - 1));
   // 면제일 만큼 연장 - 화/목인 면제일만 카운트 (다른 요일은 도전과 무관)
   const initialSlotsAll = tueThuDatesBetween(challengeStartYMD, challengeEndYMD);
-  const exemptCount = initialSlotsAll.filter(d => isExemptDay(d, p, closedDays)).length;
+  const exemptCount = initialSlotsAll.filter(d => isExemptDay(d, p, closedDays, fixedSlots)).length;
   if (exemptCount > 0) {
     // 한 주에 화/목 2슬롯 = 7일이 한 주. 면제 슬롯 1개당 한 주 연장이 아닌, 
     // 정확히 슬롯 1개만큼 연장 = 다음 화/목까지 (3.5일 평균)
@@ -1815,7 +1824,7 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   // 도전 기간 내의 모든 화·목 날짜 (첫 출석일부터)
   const allTueThu = tueThuDatesBetween(challengeStartYMD, challengeEndYMD);
   // 면제일 제외 → 진짜 와야 할 슬롯 후보
-  const validSlots = allTueThu.filter(d => !isExemptDay(d, p, closedDays));
+  const validSlots = allTueThu.filter(d => !isExemptDay(d, p, closedDays, fixedSlots));
   
   // 출석한 날짜
   const attendedSet = new Set(sortedDates);
@@ -1842,9 +1851,16 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
   // ⭐ 메꿈 처리: 화/목이 아닌 다른 요일(예: 월요일반)에 도전 기간 안에서 추가로 출석한 날이 있으면
   //    화/목 결석을 그 날로 메꿔서 인정 — 소선요가가 화·목 2일 운영에서 월·화·목 3일 운영으로 바뀌면서 추가됨
   const validSlotSet = new Set(validSlots);
-  const makeupPool = sortedDates.filter(d => 
-    !cancelledSet.has(d) && d >= challengeStartYMD && d <= challengeEndYMD && !validSlotSet.has(d)
-  ).sort();
+  // ⚠️ 메꿈은 화·목이 아닌 다른 요일(월요일반 등) 출석만 인정
+  //    화·목에 출석한 날은 그 자체로 출석이지, 다른 결석을 메꾸는 용도가 아님
+  const makeupPool = [...new Set(sortedDates)].filter(d => {
+    if (cancelledSet.has(d) || d < challengeStartYMD || d > challengeEndYMD || validSlotSet.has(d)) return false;
+    const dw = fromYMD(d).getDay();
+    if (dw === 2 || dw === 4) return false;
+    // 그날 실제 소그룹 수업 출석 기록이 있어야 메꿈 인정 (sessions 정보가 있을 때)
+    if (groupAttendDates instanceof Set && !groupAttendDates.has(d)) return false;
+    return true;
+  }).sort();
   const makeupPairs = [];
   const unresolvedMissedDays = [];
   const poolLeft = [...makeupPool];
@@ -1863,8 +1879,8 @@ function rhythmStatus(p, closedDays = [], cancelledDates = null) {
       const dow = fromYMD(d).getDay() === 2 ? '화' : '목';
       let st;
       // ⭐ 실제 출석 기록이 있으면 그게 최우선 — 홀딩/휴무일 설정과 상관없이 실제로 온 건 온 거임
-      if (attendedSet.has(d)) st = 'attended';
-      else if (isExemptDay(d, p, closedDays)) st = 'exempt';
+      if (attendedSet.has(d) && !cancelledSet.has(d)) st = 'attended';
+      else if (isExemptDay(d, p, closedDays, fixedSlots)) st = 'exempt';
       else if (cancelledSet.has(d)) st = makeupCoveredSet.has(d) ? 'missed_covered' : 'missed';   // 취소 먼저 (당일취소 차감도 결석)
       else if (d <= yesterdayStr) st = makeupCoveredSet.has(d) ? 'missed_covered' : 'missed';
       else st = 'future';
@@ -1961,7 +1977,23 @@ function memberRhythmStatus(member, closedDays = []) {
   // 소그룹 활성 수강권만 (개인레슨은 대상 X)
   const active = member.passes.find(p => !p.archived && p.category === 'group' && p.totalSessions);
   if (!active) return null;
-  return rhythmStatus(active, closedDays);
+  return rhythmStatus(active, closedDays, null, member.fixedSlots);
+}
+
+// sessions에서 회원이 실제로 "소그룹 수업"에 출석한 날짜 Set
+// (리듬 수련 메꿈은 소그룹 수업 출석만 인정 — 개인레슨·잘못 차감된 날은 제외)
+function getGroupAttendDates(sessions, memberId) {
+  const set = new Set();
+  if (!sessions || !memberId) return set;
+  Object.entries(sessions).forEach(([key, sess]) => {
+    const date = key.split('_')[0];
+    const part = (sess?.participants || []).find(x => x.memberId === memberId);
+    if (!part || part.cancelled) return;
+    if (['cancelled_advance', 'cancelled_sameday', 'cancelled_by_teacher', 'no_show', 'reserved'].includes(part.status)) return;
+    if (sess.category === 'private' || part.classType === '개인') return;
+    set.add(date);
+  });
+  return set;
 }
 
 // sessions에서 특정 회원+패스의 "취소 확정" 날짜 Set 추출
@@ -1980,7 +2012,8 @@ function getCancelledDatesForPass(sessions, memberId, passId) {
       // 출석한 날짜 수집
       if (p.status === 'attended' && !p.cancelled) attendedDates.add(date);
       // 취소된 날짜 수집
-      if (p.status === 'cancelled_advance' || p.status === 'cancelled_sameday' || p.status === 'cancelled_by_teacher' || p.cancelled) {
+      // 노쇼도 결석 (회차는 차감되지만 리듬 수련에선 출석 아님)
+      if (p.status === 'cancelled_advance' || p.status === 'cancelled_sameday' || p.status === 'cancelled_by_teacher' || p.status === 'no_show' || p.cancelled) {
         cancelledDates.add(date);
       }
     });
@@ -2318,7 +2351,7 @@ function Header({ tab, setTab, onOpenSettings, onRefresh, refreshing }) {
             cursor: 'pointer',
           }}>
             소선요가
-            <span style={{ fontFamily: 'system-ui, sans-serif', fontSize: 10, fontWeight: 500, color: '#9A9A8E', marginLeft: 6, letterSpacing: 0 }}>v144</span>
+            <span style={{ fontFamily: 'system-ui, sans-serif', fontSize: 10, fontWeight: 500, color: '#9A9A8E', marginLeft: 6, letterSpacing: 0 }}>v146</span>
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -2762,7 +2795,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
           member: m, pass,
           title: `${m.name} · 수강권 ${remaining}회 남음`,
           desc: '수강권 소진 안내 문자',
-          template: SMS_TEMPLATES.expiring(m, pass, !!rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, m.id, pass.id))?.achieved),
+          template: SMS_TEMPLATES.expiring(m, pass, !!rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, m.id, pass.id), m.fixedSlots, getGroupAttendDates(sessions, m.id))?.achieved),
         });
       }
       // Expired
@@ -3240,7 +3273,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
     members.forEach(m => {
       const pass = activePass(m);
       if (!pass) return;
-      const rs = rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, m.id, pass.id));
+      const rs = rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, m.id, pass.id), m.fixedSlots, getGroupAttendDates(sessions, m.id));
       if (rs?.achieved) {
         alerts.push({ icon: '🏆', name: m.name, suffix: '님 리듬 수련 대상자에요' });
       }
@@ -3732,7 +3765,7 @@ function HomeView({ members, setMembers, sessions, setSessions, trials, classLog
         const achievers = members
           .map(m => {
             const pass = activePass(m);
-            const rs = pass ? rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, m.id, pass.id)) : null;
+            const rs = pass ? rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, m.id, pass.id), m.fixedSlots, getGroupAttendDates(sessions, m.id)) : null;
             return rs?.achieved ? { member: m, pass, rs } : null;
           })
           .filter(Boolean);
@@ -6228,7 +6261,7 @@ function MemberCard({ member, onClick, closedDays = [], sessions = {} }) {
   const pass = activePass(member);
   const ps = passStatus(pass);
   // 리듬 수련 — sessions의 취소 기록 반영 (취소한 날은 결석 처리)
-  const rs = pass ? rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, member.id, pass.id)) : null;
+  const rs = pass ? rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, member.id, pass.id), member.fixedSlots, getGroupAttendDates(sessions, member.id)) : null;
   const progress = pass ? (pass.usedSessions / pass.totalSessions) : 0;
   const fixedLabel = member.fixedSlots?.length
     ? member.fixedSlots.map(fs => `${WEEK_KR[fs.dow]}${fs.time}`).join(' · ')
@@ -6977,7 +7010,7 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
       }
     }
 
-    return rhythmStatus(passToUse, closedDays, cancelledDates);
+    return rhythmStatus(passToUse, closedDays, cancelledDates, member.fixedSlots, getGroupAttendDates(sessions, member.id));
   };
 
   const history = useMemo(() => {
@@ -7700,7 +7733,7 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
                             if (p.reviewEventBonus > 0) badges.push({ label: `리뷰 이벤트 +${p.reviewEventBonus}`, bg: '#F5EBC8', fg: '#6B5410' });
                             if (p.rhythmBonus > 0) badges.push({ label: `리듬 완주 보상 +${p.rhythmBonus}`, bg: '#DCEAD9', fg: '#2F5D3A' });
                             // 리듬수련 도전 결과 (이 패스 기준)
-                            const rs = rhythmStatus(p, closedDays);
+                            const rs = rhythmStatus(p, closedDays, getCancelledDatesForPass(sessions, member.id, p.id), member.fixedSlots, getGroupAttendDates(sessions, member.id));
                             if (rs && !p.rhythmBonus) {
                               if (rs.achieved) badges.push({ label: '리듬 완주 ✓', bg: '#DCEAD9', fg: '#2F5D3A' });
                               else if (rs.missedDays?.length > 0) badges.push({ label: `리듬 제외 (${rs.missedDays.length}회 결석)`, bg: theme.cardAlt2, fg: theme.inkMute });
@@ -7902,6 +7935,7 @@ function MemberDetail({ member, onClose, initialTab, onUpdate, onDelete, onSaveH
           <PassEditor
             member={member}
             closedDays={closedDays}
+            sessions={sessions}
             onClose={() => setAddingPass(false)}
             onSave={async (data, rewardSourceId, mayBonusUsed) => {
               await addPass(data, rewardSourceId);
@@ -9058,7 +9092,7 @@ function FilesPanel({ member, toast }) {
 /* =========================================================
    Pass Editor + Pass Converter
    ========================================================= */
-function PassEditor({ member, onClose, onSave, closedDays = [] }) {
+function PassEditor({ member, onClose, onSave, closedDays = [], sessions = null }) {
   const [presetIdx, setPresetIdx] = useState(1);
   const preset = PASS_PRESETS[presetIdx];
   const [paymentDate, setPaymentDate] = useState(toYMD(new Date()));
@@ -9075,7 +9109,7 @@ function PassEditor({ member, onClose, onSave, closedDays = [] }) {
     // 가장 최근 완료된(대상자 + 보상 미사용) 수강권 찾기
     const candidates = member.passes
       .filter(p => !p.archived || p.archived) // 모든 수강권 (archived는 전환된 것)
-      .map(p => ({ p, rs: rhythmStatus(p, closedDays) }))
+      .map(p => ({ p, rs: rhythmStatus(p, closedDays, sessions ? getCancelledDatesForPass(sessions, member.id, p.id) : null, member.fixedSlots, sessions ? getGroupAttendDates(sessions, member.id) : null) }))
       .filter(({ rs }) => rs?.achieved && !rs?.bonusApplied);
     // p.rhythmRewardUsed === true 면 이미 적용됨
     const usable = candidates.find(({ p }) => !p.rhythmRewardUsed);
@@ -12196,7 +12230,7 @@ function StatsView({ members, trials, sessions, closedDays = [], feeRates, setMe
       if (!pass) return;
       const att = memberAtt[m.id] || { attend: 0, total: 0, lastDate: '' };
       const attRate = att.total > 0 ? Math.round((att.attend / att.total) * 100) : 0;
-      const rs = rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, m.id, pass.id));
+      const rs = rhythmStatus(pass, closedDays, getCancelledDatesForPass(sessions, m.id, pass.id), m.fixedSlots, getGroupAttendDates(sessions, m.id));
       
       if (rs?.challenging) challengingCount++;
       
